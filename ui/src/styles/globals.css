@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-forge-bg: #09090b;
+  --color-forge-surface: #18181b;
+  --color-forge-surface-hover: #27272a;
+  --color-forge-border: #3f3f46;
+  --color-forge-border-subtle: #27272a;
+  --color-forge-text: #fafafa;
+  --color-forge-text-muted: #a1a1aa;
+  --color-forge-text-dim: #71717a;
+  --color-forge-accent: #14b8a6;
+  --color-forge-accent-hover: #0d9488;
+  --color-forge-accent-subtle: rgba(20, 184, 166, 0.1);
+  --color-forge-success: #34d399;
+  --color-forge-warning: #fbbf24;
+  --color-forge-error: #f87171;
+  --color-forge-info: #22d3ee;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+
+::selection {
+  background: rgba(20, 184, 166, 0.25);
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-forge-bg);
+  color: var(--color-forge-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.15s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.bg-grid {
+  background-image:
+    radial-gradient(circle, rgba(63, 63, 70, 0.3) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
