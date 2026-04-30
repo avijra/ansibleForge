@@ -1,6 +1,6 @@
 {
   "name": "ansibleforge-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "AnsibleForge Desktop — IDE-like experience for Ansible engineers",
   "author": {
     "name": "AnsibleForge Contributors",
@@ -24,8 +24,7 @@
       "output": "release"
     },
     "files": [
-      "dist/**/*",
-      "!node_modules"
+      "dist/**/*"
     ],
     "extraResources": [
       {
