@@ -113,17 +113,43 @@ export function SettingsModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {/* Recommended models */}
+          <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/30 px-3.5 py-3 space-y-2">
+            <p className="text-[11px] font-medium text-zinc-300">Recommended Models</p>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              For best results use <span className="text-zinc-300 font-mono">deepseek/deepseek-chat</span> (DeepSeek V4 Flash).
+              Other good options:
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { provider: "deepseek", model: "deepseek/deepseek-chat", label: "DeepSeek V4 Flash" },
+                { provider: "groq", model: "groq/llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
+                { provider: "ollama", model: "ollama/qwen2.5:32b", label: "Qwen 2.5 32B" },
+                { provider: "mistral", model: "mistral/mistral-large-latest", label: "Mistral Large" },
+                { provider: "openrouter", model: "openrouter/deepseek/deepseek-chat-v3-0324", label: "DeepSeek via OpenRouter" },
+              ].map((m) => (
+                <button
+                  key={m.model}
+                  onClick={() => { setProvider(m.provider); setModel(m.model); }}
+                  className="rounded-md border border-zinc-700/50 bg-zinc-900/50 px-2 py-1 text-[10px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 transition-colors"
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Provider */}
           <Field
             label="Provider"
-            hint="e.g. openai, anthropic, google, groq, mistral, deepseek, ollama, openrouter, azure, together_ai, anyscale"
+            hint="e.g. deepseek, openai, anthropic, groq, mistral, ollama, openrouter, together_ai, google, azure"
             icon={<Globe className="h-3.5 w-3.5" />}
           >
             <input
               type="text"
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
-              placeholder="openai"
+              placeholder="deepseek"
               className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
           </Field>
@@ -131,14 +157,14 @@ export function SettingsModal({
           {/* Model */}
           <Field
             label="Model"
-            hint="The full model identifier your provider expects, e.g. gpt-4o, claude-sonnet-4-20250514, gemini-2.5-pro"
+            hint="The full model identifier, e.g. deepseek/deepseek-chat, groq/llama-3.3-70b-versatile, ollama/qwen2.5:32b"
             icon={<Cpu className="h-3.5 w-3.5" />}
           >
             <input
               type="text"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder={provider ? `${provider}/model-name` : "provider/model-name"}
+              placeholder={provider ? `${provider}/model-name` : "deepseek/deepseek-chat"}
               className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
           </Field>
