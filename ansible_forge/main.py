@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +23,21 @@ from ansible_forge.logging import get_logger, setup_logging
 from ansible_forge.workspace.manager import WorkspaceManager
 
 logger = get_logger(__name__)
+
+
+def _setup_frozen_env() -> None:
+    """When running as a PyInstaller bundle, prepend the bundle directory to
+    PATH so that companion CLI executables (ansible-playbook, ansible-galaxy,
+    etc.) are found by ansible-runner and subprocess calls."""
+    if not getattr(sys, "frozen", False):
+        return
+    bundle_dir = Path(sys.executable).resolve().parent
+    current_path = os.environ.get("PATH", "")
+    if str(bundle_dir) not in current_path.split(os.pathsep):
+        os.environ["PATH"] = str(bundle_dir) + os.pathsep + current_path
+
+
+_setup_frozen_env()
 
 UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 

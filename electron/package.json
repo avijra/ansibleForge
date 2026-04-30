@@ -1,6 +1,6 @@
 {
   "name": "ansibleforge-desktop",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "AnsibleForge Desktop — IDE-like experience for Ansible engineers",
   "author": {
     "name": "AnsibleForge Contributors",

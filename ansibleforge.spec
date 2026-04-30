@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for bundling the AnsibleForge backend into a standalone directory."""
+"""PyInstaller spec for bundling the AnsibleForge backend into a standalone directory.
+
+Builds the main backend executable plus frozen Ansible CLI tools
+(ansible-playbook, ansible-galaxy, ansible-vault, ansible-doc, ansible-lint)
+so the packaged app is fully self-contained — no system Python required.
+"""
 
 import importlib
 import os
@@ -10,6 +15,7 @@ block_cipher = None
 
 project_root = os.path.abspath(".")
 ui_dist = os.path.join(project_root, "ui", "dist")
+cli_entries = os.path.join(project_root, "scripts", "cli_entries")
 
 hidden_imports = [
     # --- Core framework ---
@@ -111,10 +117,16 @@ hidden_imports = [
     # --- Ansible ---
     "ansible",
     "ansible.cli",
+    "ansible.cli.playbook",
+    "ansible.cli.galaxy",
+    "ansible.cli.vault",
+    "ansible.cli.doc",
     "ansible.config",
     "ansible.constants",
     "ansible.context",
     "ansible.executor",
+    "ansible.executor.task_queue_manager",
+    "ansible.executor.playbook_executor",
     "ansible.galaxy",
     "ansible.inventory",
     "ansible.module_utils",
@@ -122,11 +134,41 @@ hidden_imports = [
     "ansible.parsing",
     "ansible.playbook",
     "ansible.plugins",
+    "ansible.plugins.callback",
+    "ansible.plugins.connection",
+    "ansible.plugins.shell",
+    "ansible.plugins.become",
+    "ansible.plugins.strategy",
+    "ansible.plugins.strategy.linear",
+    "ansible.plugins.strategy.free",
+    "ansible.plugins.action",
+    "ansible.plugins.lookup",
+    "ansible.plugins.filter",
+    "ansible.plugins.test",
+    "ansible.plugins.inventory",
     "ansible.vars.hostvars",
     "ansible.template",
     "ansible.utils",
     "ansible.vars",
     "ansible_runner",
+    "ansible_runner.runner",
+    "ansible_runner.config",
+    "ansible_runner.config._ansible_runner",
+    # --- ansible-lint ---
+    "ansiblelint",
+    "ansiblelint.__main__",
+    "ansiblelint.app",
+    "ansiblelint.cli",
+    "ansiblelint.config",
+    "ansiblelint.constants",
+    "ansiblelint.errors",
+    "ansiblelint.file_utils",
+    "ansiblelint.formatter",
+    "ansiblelint.rules",
+    "ansiblelint.runner",
+    "ansiblelint.skip_utils",
+    "ansiblelint.text",
+    "ansiblelint.yaml_utils",
     # --- tiktoken (for litellm token counting) ---
     "tiktoken",
     "tiktoken.registry",
@@ -161,7 +203,6 @@ datas = []
 if os.path.isdir(ui_dist):
     datas.append((ui_dist, os.path.join("ui", "dist")))
 
-# Collect ansible data files (config, module_utils, plugins)
 try:
     ansible_path = os.path.dirname(importlib.import_module("ansible").__file__)
     datas.append((ansible_path, "ansible"))
@@ -174,14 +215,12 @@ try:
 except Exception:
     pass
 
-# Collect litellm data (model cost maps, etc.)
 try:
     litellm_path = os.path.dirname(importlib.import_module("litellm").__file__)
     datas.append((litellm_path, "litellm"))
 except Exception:
     pass
 
-# Collect certifi CA bundle
 try:
     import certifi
     ca_bundle = certifi.where()
@@ -189,7 +228,6 @@ try:
 except Exception:
     pass
 
-# Collect tiktoken_ext (encoding constructors)
 try:
     import tiktoken_ext
     tiktoken_ext_path = os.path.dirname(tiktoken_ext.__file__)
@@ -197,7 +235,35 @@ try:
 except Exception:
     pass
 
-a = Analysis(
+try:
+    ansiblelint_path = os.path.dirname(importlib.import_module("ansiblelint").__file__)
+    datas.append((ansiblelint_path, "ansiblelint"))
+except Exception:
+    pass
+
+excludes = [
+    "matplotlib",
+    "scipy",
+    "numpy",
+    "pandas",
+    "tkinter",
+    "_tkinter",
+    "PIL",
+    "cv2",
+    "torch",
+    "tensorflow",
+    "IPython",
+    "notebook",
+    "sphinx",
+    "docutils",
+    "pytest",
+    "hypothesis",
+]
+
+# ---------------------------------------------------------------------------
+# Main backend
+# ---------------------------------------------------------------------------
+a_main = Analysis(
     [os.path.join("ansible_forge", "main.py")],
     pathex=[project_root],
     binaries=[],
@@ -206,35 +272,60 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        "matplotlib",
-        "scipy",
-        "numpy",
-        "pandas",
-        "tkinter",
-        "_tkinter",
-        "PIL",
-        "cv2",
-        "torch",
-        "tensorflow",
-        "IPython",
-        "notebook",
-        "sphinx",
-        "docutils",
-        "pytest",
-        "hypothesis",
-    ],
+    excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+# ---------------------------------------------------------------------------
+# Ansible CLI companions — share the same hidden imports / data so they can
+# resolve all ansible modules from the shared _internal directory.
+# ---------------------------------------------------------------------------
+cli_tools = {
+    "ansible-playbook": os.path.join(cli_entries, "cli_ansible_playbook.py"),
+    "ansible-galaxy": os.path.join(cli_entries, "cli_ansible_galaxy.py"),
+    "ansible-vault": os.path.join(cli_entries, "cli_ansible_vault.py"),
+    "ansible-doc": os.path.join(cli_entries, "cli_ansible_doc.py"),
+    "ansible-lint": os.path.join(cli_entries, "cli_ansible_lint.py"),
+}
 
-exe = EXE(
-    pyz,
-    a.scripts,
+cli_analyses = {}
+for tool_name, entry_script in cli_tools.items():
+    cli_analyses[tool_name] = Analysis(
+        [entry_script],
+        pathex=[project_root],
+        binaries=[],
+        datas=datas,
+        hiddenimports=hidden_imports,
+        hookspath=[],
+        hooksconfig={},
+        runtime_hooks=[],
+        excludes=excludes,
+        win_no_prefer_redirects=False,
+        win_private_assemblies=False,
+        cipher=block_cipher,
+        noarchive=False,
+    )
+
+# ---------------------------------------------------------------------------
+# Deduplicate across all Analysis objects
+# ---------------------------------------------------------------------------
+merge_args = [(a_main, "ansibleforge-backend", "ansibleforge-backend")]
+for tool_name, analysis in cli_analyses.items():
+    merge_args.append((analysis, tool_name, tool_name))
+
+MERGE(*merge_args)
+
+# ---------------------------------------------------------------------------
+# Build PYZ + EXE for main backend
+# ---------------------------------------------------------------------------
+pyz_main = PYZ(a_main.pure, a_main.zipped_data, cipher=block_cipher)
+
+exe_main = EXE(
+    pyz_main,
+    a_main.scripts,
     [],
     exclude_binaries=True,
     name="ansibleforge-backend",
@@ -246,11 +337,47 @@ exe = EXE(
     disable_windowed_traceback=False,
 )
 
+# ---------------------------------------------------------------------------
+# Build PYZ + EXE for each CLI tool
+# ---------------------------------------------------------------------------
+cli_exes = {}
+cli_pyzs = {}
+for tool_name, analysis in cli_analyses.items():
+    cli_pyzs[tool_name] = PYZ(analysis.pure, analysis.zipped_data, cipher=block_cipher)
+    cli_exes[tool_name] = EXE(
+        cli_pyzs[tool_name],
+        analysis.scripts,
+        [],
+        exclude_binaries=True,
+        name=tool_name,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=True,
+        disable_windowed_traceback=False,
+    )
+
+# ---------------------------------------------------------------------------
+# Collect everything into one directory — all executables share _internal
+# ---------------------------------------------------------------------------
+collect_args = [
+    exe_main,
+    a_main.binaries,
+    a_main.zipfiles,
+    a_main.datas,
+]
+
+for tool_name in cli_analyses:
+    collect_args.extend([
+        cli_exes[tool_name],
+        cli_analyses[tool_name].binaries,
+        cli_analyses[tool_name].zipfiles,
+        cli_analyses[tool_name].datas,
+    ])
+
 coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+    *collect_args,
     strip=False,
     upx=True,
     upx_exclude=[],
