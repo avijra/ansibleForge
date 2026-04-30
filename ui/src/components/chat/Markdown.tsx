@@ -53,14 +53,14 @@ const components: Components = {
       );
     }
     return (
-      <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-teal-300" {...props}>
+      <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-zinc-200" {...props}>
         {children}
       </code>
     );
   },
   pre: ({ children }) => <>{children}</>,
   blockquote: ({ children }) => (
-    <blockquote className="my-2 border-l-2 border-teal-500/40 pl-3 text-sm italic text-zinc-400">
+    <blockquote className="my-2 border-l-2 border-zinc-600 pl-3 text-sm italic text-zinc-400">
       {children}
     </blockquote>
   ),
@@ -84,7 +84,7 @@ const components: Components = {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="text-teal-400 underline decoration-teal-400/30 hover:decoration-teal-400 transition-colors"
+      className="text-zinc-300 underline decoration-zinc-500/40 hover:decoration-zinc-300 transition-colors"
     >
       {children}
     </a>

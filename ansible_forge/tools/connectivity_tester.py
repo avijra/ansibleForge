@@ -1,0 +1,191 @@
+"""Quick connectivity test via ansible.builtin.ping — saves two tool calls vs generate+execute."""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import os
+import stat
+from pathlib import Path
+from typing import Any
+
+import ansible_runner
+
+from ansible_forge.logging import get_logger
+from ansible_forge.safety.secret_vault import SecretVault
+from ansible_forge.tools.base import BaseTool, ToolResult
+
+logger = get_logger(__name__)
+
+_SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
+_SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
+
+
+class ConnectivityTester(BaseTool):
+    @property
+    def name(self) -> str:
+        return "test_connectivity"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Test SSH connectivity to target hosts by running ansible.builtin.ping. "
+            "Returns pass/fail per host with diagnostic output. Use this BEFORE "
+            "generating playbooks to confirm the host is reachable."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Absolute path to the workspace directory",
+                },
+                "host_pattern": {
+                    "type": "string",
+                    "description": "Host or group pattern to target (default: 'all')",
+                },
+                "inventory": {
+                    "type": "string",
+                    "description": "Inventory filename in workspace/inventory/",
+                },
+            },
+            "required": ["workspace_path", "inventory"],
+        }
+
+    @staticmethod
+    def _materialize_ssh_keys(ws: Path, merged_vars: dict[str, Any]) -> list[Path]:
+        files: list[Path] = []
+        keys_dir = ws / "ssh_keys"
+        for var_name in list(merged_vars):
+            value = merged_vars[var_name]
+            if not isinstance(value, str):
+                continue
+            is_key = (
+                var_name.lower() in _SSH_KEY_SECRET_NAMES
+                or all(h in value for h in _SSH_KEY_HEADERS)
+            )
+            if not is_key:
+                continue
+            keys_dir.mkdir(parents=True, exist_ok=True)
+            key_file = keys_dir / var_name
+            if key_file.exists():
+                os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
+            key_file.write_text(value)
+            os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
+            merged_vars[var_name] = str(key_file)
+            files.append(key_file)
+        return files
+
+    @staticmethod
+    def _resolve_inventory(ws: Path, inventory: str) -> Path:
+        stripped = inventory.removeprefix("inventory/").removeprefix("inventory\\")
+        candidates = [
+            ws / "inventory" / stripped,
+            ws / inventory,
+            ws / "inventory" / inventory,
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return candidates[0]
+
+    @staticmethod
+    def _clean_stale_env(ws: Path) -> None:
+        env_dir = ws / "env"
+        if not env_dir.exists():
+            return
+        for artifact in ("cmdline", "extravars"):
+            path = env_dir / artifact
+            if path.exists():
+                path.unlink()
+
+    async def execute(
+        self,
+        workspace_path: str = "",
+        host_pattern: str = "all",
+        inventory: str = "",
+        **kwargs: Any,
+    ) -> ToolResult:
+        if not workspace_path or not inventory:
+            return ToolResult.fail("workspace_path and inventory are required")
+
+        ws = Path(workspace_path)
+        inv_path = self._resolve_inventory(ws, inventory)
+        if not inv_path.exists():
+            return ToolResult.fail(f"Inventory not found: {inv_path}")
+
+        extravars: dict[str, Any] = {}
+        session_id = kwargs.get("_session_id")
+        if session_id:
+            vault = SecretVault.get_instance().for_session(session_id)
+            extravars.update(vault.get_all())
+        self._materialize_ssh_keys(ws, extravars)
+        self._clean_stale_env(ws)
+
+        runner_kwargs: dict[str, Any] = {
+            "private_data_dir": str(ws),
+            "module": "ansible.builtin.ping",
+            "host_pattern": host_pattern,
+            "inventory": str(inv_path),
+        }
+        if extravars:
+            runner_kwargs["extravars"] = extravars
+
+        loop = asyncio.get_event_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, functools.partial(ansible_runner.run, **runner_kwargs)
+                ),
+                timeout=60,
+            )
+        except TimeoutError:
+            return ToolResult.fail(
+                "Connectivity test timed out after 60 seconds. "
+                "Check host reachability, SSH configuration, and firewall rules."
+            )
+
+        passed: list[str] = []
+        failed: list[dict[str, str]] = []
+        for event in result.events:
+            event_type = event.get("event", "")
+            host = event.get("event_data", {}).get("host", "")
+            if not host:
+                continue
+            if event_type == "runner_on_ok":
+                passed.append(host)
+            elif event_type in ("runner_on_failed", "runner_on_unreachable"):
+                msg = event.get("event_data", {}).get("res", {}).get("msg", "")
+                stderr = event.get("event_data", {}).get("res", {}).get("stderr", "")
+                failed.append({
+                    "host": host,
+                    "error": msg or stderr or f"event={event_type}",
+                })
+
+        if failed and not passed:
+            diagnostics = "; ".join(
+                f"{f['host']}: {f['error']}" for f in failed
+            )
+            return ToolResult.fail(
+                f"All hosts unreachable. {diagnostics}",
+                passed=passed,
+                failed=failed,
+            )
+
+        summary_parts = []
+        if passed:
+            summary_parts.append(f"{len(passed)} host(s) reachable: {', '.join(passed)}")
+        if failed:
+            summary_parts.append(
+                f"{len(failed)} host(s) failed: "
+                + ", ".join(f"{f['host']} ({f['error']})" for f in failed)
+            )
+
+        return ToolResult.ok(
+            output=". ".join(summary_parts),
+            passed=passed,
+            failed=failed,
+        )

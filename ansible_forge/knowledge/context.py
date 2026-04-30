@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ansible_forge.knowledge.graph import KnowledgeGraph
 from ansible_forge.logging import get_logger
+
+if TYPE_CHECKING:
+    from ansible_forge.workspace.manager import Workspace
 
 logger = get_logger(__name__)
 
@@ -19,15 +24,72 @@ _MODULE_PATTERN = re.compile(
 )
 
 
-def _extract_mentions(messages: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
-    """Pull host names and module FQCNs from recent user/assistant messages."""
+def _extract_hosts_from_workspace(workspace: Workspace | None) -> set[str]:
+    """Extract hostnames from inventory files and cached facts."""
+    hosts: set[str] = set()
+    if workspace is None:
+        return hosts
+
+    facts_file = workspace.artifacts_dir / "host_facts.json"
+    if facts_file.is_file():
+        try:
+            data = json.loads(facts_file.read_text(encoding="utf-8"))
+            hosts.update(data.keys())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    inv_dir = workspace.inventory_dir
+    if inv_dir.is_dir():
+        for inv_file in inv_dir.iterdir():
+            if not inv_file.is_file():
+                continue
+            try:
+                content = inv_file.read_text(encoding="utf-8")
+                hosts.update(_HOST_PATTERN.findall(content))
+            except OSError:
+                pass
+
+    hosts.discard("0.0.0.0")
+    return hosts
+
+
+def _extract_modules_from_workspace(workspace: Workspace | None) -> set[str]:
+    """Extract module FQCNs from playbook files in the project directory."""
+    modules: set[str] = set()
+    if workspace is None:
+        return modules
+
+    project_dir = workspace.project_dir
+    if not project_dir.is_dir():
+        return modules
+
+    for yml_file in project_dir.rglob("*.yml"):
+        try:
+            content = yml_file.read_text(encoding="utf-8")
+            modules.update(_MODULE_PATTERN.findall(content))
+        except OSError:
+            pass
+
+    return modules
+
+
+def _extract_mentions_from_messages(messages: list[Any]) -> tuple[set[str], set[str]]:
+    """Fallback: pull hosts and modules from recent chat messages."""
     hosts: set[str] = set()
     modules: set[str] = set()
     tail = messages[-10:] if len(messages) > 10 else messages
     for msg in tail:
-        text = msg.get("content") or ""
+        text = ""
+        if isinstance(msg, dict):
+            text = msg.get("content") or ""
+        elif isinstance(msg, str):
+            text = msg
+        else:
+            continue
         if isinstance(text, list):
             text = " ".join(str(p) for p in text)
+        if not isinstance(text, str):
+            continue
         hosts.update(_HOST_PATTERN.findall(text))
         modules.update(_MODULE_PATTERN.findall(text))
     hosts.discard("0.0.0.0")
@@ -41,7 +103,7 @@ def _format_errors(rows: list[list[Any]]) -> list[str]:
         entry = f"  - [{os_fam or '?'}] {template}"
         if resolution:
             status = "fixed" if success else "attempted"
-            entry += f" → {status}: {resolution}"
+            entry += f" -> {status}: {resolution}"
         lines.append(entry)
     return lines
 
@@ -51,23 +113,32 @@ def _format_host_history(rows: list[list[Any]]) -> list[str]:
     for row in rows:
         task_name, module_fqcn, outcome, _ts = row
         mod = f" ({module_fqcn})" if module_fqcn else ""
-        lines.append(f"  - {task_name}{mod} → {outcome}")
+        lines.append(f"  - {task_name}{mod} -> {outcome}")
     return lines
 
 
 def build_knowledge_context(
     global_graph: KnowledgeGraph | None,
     project_graph: KnowledgeGraph | None,
-    messages: list[dict[str, Any]],
+    messages: list[Any],
+    workspace: Workspace | None = None,
 ) -> str:
     """Query both graphs for context relevant to the current conversation.
 
-    Returns an empty string when there is nothing useful to inject.
+    Uses workspace inventory/facts and playbook files as the primary source
+    for host and module mentions (deterministic), with chat message regex
+    as a fallback.
     """
     if global_graph is None and project_graph is None:
         return ""
 
-    hosts, modules = _extract_mentions(messages)
+    hosts = _extract_hosts_from_workspace(workspace)
+    modules = _extract_modules_from_workspace(workspace)
+
+    msg_hosts, msg_modules = _extract_mentions_from_messages(messages)
+    hosts.update(msg_hosts)
+    modules.update(msg_modules)
+
     sections: list[str] = []
 
     if global_graph is not None:
@@ -91,7 +162,7 @@ def build_knowledge_context(
                 entry = f"  - [{mod or '?'} on {os_f or '?'}] {tmpl}"
                 if resolution:
                     tag = "fixed" if success else "attempted"
-                    entry += f" → {tag}: {resolution}"
+                    entry += f" -> {tag}: {resolution}"
                 lines.append(entry)
             sections.append("Recent error patterns:\n" + "\n".join(lines))
 

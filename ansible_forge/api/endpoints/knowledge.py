@@ -1,140 +1,110 @@
-"""Knowledge graph API endpoints for stats and graph data."""
+"""Experience store API endpoints for stats and learning data."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from ansible_forge.config import get_settings
-from ansible_forge.knowledge.graph import KnowledgeGraph
+from ansible_forge.api.middleware.auth import verify_api_key
+from ansible_forge.knowledge.experience_store import ExperienceStore
 from ansible_forge.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
+_store: ExperienceStore | None = None
 
-def _get_global_graph() -> KnowledgeGraph | None:
-    settings = get_settings()
-    if not settings.knowledge_enabled:
-        return None
-    global_path = settings.knowledge_dir / "global.kuzu"
-    return KnowledgeGraph(global_path)
+
+def _get_store() -> ExperienceStore:
+    global _store
+    if _store is None:
+        _store = ExperienceStore()
+    return _store
+
+
+def _build_stats(store: ExperienceStore) -> dict[str, Any]:
+    stats = {
+        "recipes": store.count("recipe"),
+        "error_resolutions": store.count("error_resolution"),
+        "corrections": store.count("correction"),
+        "reflections": store.count("reflection"),
+        "rules": store.count("rule"),
+        "total": store.count(),
+    }
+
+    recent_errors = []
+    for exp in store.query_by_type("error_resolution", limit=10):
+        recent_errors.append({
+            "pattern": exp.trigger[:100],
+            "module": exp.context.get("tool", ""),
+            "os_family": "",
+            "resolution": exp.solution[:200],
+            "resolved": exp.outcome == "resolved",
+            "count": exp.use_count,
+        })
+
+    return {"stats": stats, "recent_errors": recent_errors}
+
+
+def _build_graph(store: ExperienceStore) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    type_colors = {
+        "recipe": "recipe",
+        "error_resolution": "error",
+        "correction": "correction",
+        "reflection": "reflection",
+        "rule": "rule",
+    }
+
+    for exp_type in type_colors:
+        experiences = store.query_by_type(exp_type, limit=50)
+        for exp in experiences:
+            nodes.append({
+                "id": f"{exp_type}:{exp.id}",
+                "type": type_colors[exp_type],
+                "label": exp.trigger[:60],
+                "confidence": exp.confidence,
+                "use_count": exp.use_count,
+            })
+
+            modules = exp.context.get("modules", [])
+            for mod in modules:
+                mod_id = f"module:{mod}"
+                if not any(n["id"] == mod_id for n in nodes):
+                    nodes.append({
+                        "id": mod_id,
+                        "type": "module",
+                        "label": mod,
+                    })
+                edges.append({
+                    "source": f"{exp_type}:{exp.id}",
+                    "target": mod_id,
+                    "type": "USES_MODULE",
+                })
+
+    return {"nodes": nodes, "edges": edges}
 
 
 @router.get("/knowledge/stats")
-async def knowledge_stats() -> dict[str, Any]:
-    graph = _get_global_graph()
-    if graph is None:
-        return {"stats": None, "recent_errors": []}
-
+async def knowledge_stats(_: Any = Depends(verify_api_key)) -> dict[str, Any]:
+    store = _get_store()
     try:
-        stats = {
-            "hosts": graph.node_count("Host"),
-            "modules": graph.node_count("Module"),
-            "error_patterns": graph.node_count("ErrorPattern"),
-            "resolutions": graph.node_count("Resolution"),
-            "executions": graph.node_count("Execution"),
-        }
-
-        raw_errors = graph.query_recent_errors(limit=10)
-        recent_errors = []
-        for row in raw_errors:
-            recent_errors.append({
-                "pattern": row[0] or "",
-                "module": row[1] or "",
-                "os_family": row[2] or "",
-                "resolution": row[3] or None,
-                "resolved": bool(row[4]) if len(row) > 4 else False,
-                "count": 1,
-            })
-
-        return {"stats": stats, "recent_errors": recent_errors}
+        return await asyncio.to_thread(_build_stats, store)
     except Exception:
         logger.warning("knowledge_stats_failed", exc_info=True)
         return {"stats": None, "recent_errors": []}
 
 
 @router.get("/knowledge/graph")
-async def knowledge_graph_data() -> dict[str, Any]:
-    graph = _get_global_graph()
-    if graph is None:
-        return {"nodes": [], "edges": []}
-
+async def knowledge_graph_data(_: Any = Depends(verify_api_key)) -> dict[str, Any]:
+    store = _get_store()
     try:
-        nodes: list[dict[str, Any]] = []
-        edges: list[dict[str, Any]] = []
-
-        for row in graph.execute("MATCH (h:Host) RETURN h.hostname, h.distribution, h.os_family"):
-            nodes.append({
-                "id": f"host:{row[0]}",
-                "type": "host",
-                "label": row[0],
-                "distribution": row[1] or "",
-                "os_family": row[2] or "",
-            })
-
-        for row in graph.execute("MATCH (m:Module) RETURN m.fqcn, m.doc_summary"):
-            nodes.append({
-                "id": f"module:{row[0]}",
-                "type": "module",
-                "label": row[0],
-                "doc_summary": row[1] or "",
-            })
-
-        for row in graph.execute(
-            "MATCH (e:ErrorPattern) RETURN e.message_hash, e.message_template, e.module"
-        ):
-            nodes.append({
-                "id": f"error:{row[0]}",
-                "type": "error",
-                "label": (row[1] or "")[:60],
-                "module": row[2] or "",
-            })
-
-        for row in graph.execute(
-            "MATCH (r:Resolution) RETURN r.resolution_id, r.descr, r.success"
-        ):
-            nodes.append({
-                "id": f"resolution:{row[0]}",
-                "type": "resolution",
-                "label": (row[1] or "")[:60],
-                "success": bool(row[2]),
-            })
-
-        for row in graph.execute(
-            "MATCH (h:Host)-[r:RAN_TASK]->(t:Task) "
-            "RETURN h.hostname, t.task_id, r.outcome LIMIT 200"
-        ):
-            edges.append({
-                "source": f"host:{row[0]}",
-                "target": f"task:{row[1]}",
-                "type": "RAN_TASK",
-                "outcome": row[2] or "",
-            })
-
-        for row in graph.execute(
-            "MATCH (e:ErrorPattern)-[:OCCURRED_ON]->(h:Host) "
-            "RETURN e.message_hash, h.hostname"
-        ):
-            edges.append({
-                "source": f"error:{row[0]}",
-                "target": f"host:{row[1]}",
-                "type": "OCCURRED_ON",
-            })
-
-        for row in graph.execute(
-            "MATCH (r:Resolution)-[:RESOLVES]->(e:ErrorPattern) "
-            "RETURN r.resolution_id, e.message_hash"
-        ):
-            edges.append({
-                "source": f"resolution:{row[0]}",
-                "target": f"error:{row[1]}",
-                "type": "RESOLVES",
-            })
-
-        return {"nodes": nodes, "edges": edges}
+        return await asyncio.to_thread(_build_graph, store)
     except Exception:
         logger.warning("knowledge_graph_data_failed", exc_info=True)
         return {"nodes": [], "edges": []}

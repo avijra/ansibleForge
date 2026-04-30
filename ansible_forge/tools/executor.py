@@ -234,6 +234,8 @@ class Executor(BaseTool):
                     "result": _summarize_event_result(event.get("event_data", {}).get("res", {})),
                 })
 
+        raw_stdout = result.stdout.read() if hasattr(result.stdout, "read") else str(result.stdout)
+
         summary = {
             "status": result.status,
             "rc": result.rc,
@@ -241,29 +243,34 @@ class Executor(BaseTool):
             "event_count": len(events),
         }
 
+        result_data = {
+            "summary": summary,
+            "events": events[:50],
+            "mode": mode,
+            "playbook": playbook,
+            "raw_stdout": raw_stdout,
+        }
+
         if mode == "check":
             if result.status == "successful":
                 return ToolResult(
                     status=ToolStatus.NEEDS_APPROVAL,
                     output=f"Dry-run completed successfully. {len(events)} task event(s).",
-                    data={"summary": summary, "events": events[:50], "mode": "check"},
+                    data=result_data,
                 )
             return ToolResult.fail(
                 f"Dry-run failed (status={result.status}, rc={result.rc})",
-                summary=summary,
-                events=events[:50],
+                **result_data,
             )
 
         if result.status == "successful":
             return ToolResult.ok(
                 output=f"Playbook executed successfully. {len(events)} task event(s).",
-                summary=summary,
-                events=events[:50],
+                **result_data,
             )
         return ToolResult.fail(
             f"Playbook execution failed (status={result.status}, rc={result.rc})",
-            summary=summary,
-            events=events[:50],
+            **result_data,
         )
 
 
@@ -273,12 +280,16 @@ _RESULT_KEYS = (
 )
 
 
-def _summarize_event_result(res: dict[str, Any]) -> dict[str, Any]:
+def _summarize_event_result(res: Any) -> dict[str, Any]:
     """Extract key fields from a task result to keep event data manageable."""
+    if not isinstance(res, dict):
+        return {"msg": str(res)} if res else {}
     out = {k: res[k] for k in _RESULT_KEYS if k in res}
     if "results" in res and isinstance(res["results"], list):
         out["results"] = [
             {k: item[k] for k in _RESULT_KEYS if k in item}
+            if isinstance(item, dict)
+            else {"msg": str(item)}
             for item in res["results"][:20]
         ]
     return out

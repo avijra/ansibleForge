@@ -95,10 +95,20 @@ class VaultManager(BaseTool):
             f.write(password)
         return path
 
+    @staticmethod
+    def _resolve_workspace_path(workspace: str, file_path: str) -> tuple[Path, str | None]:
+        workspace_dir = Path(workspace).resolve()
+        target = (workspace_dir / file_path).resolve()
+        if not target.is_relative_to(workspace_dir):
+            return target, f"Path escapes workspace: {file_path!r}"
+        return target, None
+
     async def _encrypt_file(
         self, workspace: str, file_path: str, pw_file: str
     ) -> ToolResult:
-        target = Path(workspace) / file_path
+        target, err = self._resolve_workspace_path(workspace, file_path)
+        if err:
+            return ToolResult.fail(err)
         if not target.exists():
             return ToolResult.fail(f"File not found: {target}")
 
@@ -112,7 +122,9 @@ class VaultManager(BaseTool):
     async def _decrypt_file(
         self, workspace: str, file_path: str, pw_file: str
     ) -> ToolResult:
-        target = Path(workspace) / file_path
+        target, err = self._resolve_workspace_path(workspace, file_path)
+        if err:
+            return ToolResult.fail(err)
         if not target.exists():
             return ToolResult.fail(f"File not found: {target}")
 
@@ -144,7 +156,9 @@ class VaultManager(BaseTool):
         if not file_path or not content:
             return ToolResult.fail("file_path and content are required for create_encrypted")
 
-        target = Path(workspace) / file_path
+        target, err = self._resolve_workspace_path(workspace, file_path)
+        if err:
+            return ToolResult.fail(err)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 

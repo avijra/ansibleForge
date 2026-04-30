@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { streamChat, api } from "@/api/client";
-import type { AgentEvent, Session } from "@/api/types";
+import type { AgentEvent, Session, WorkspaceFile } from "@/api/types";
 
 interface UseChatOptions {
   addEvent: (sessionId: string, event: AgentEvent) => void;
@@ -8,19 +8,49 @@ interface UseChatOptions {
   updateSessionId: (oldId: string, newId: string) => void;
   setPlaybooks: (sessionId: string, playbooks: Record<string, string>) => void;
   setInventory: (sessionId: string, inventory: Record<string, string>) => void;
+  setWorkspaceFiles: (sessionId: string, files: WorkspaceFile[]) => void;
 }
 
-export function useChat(opts: UseChatOptions) {
-  const [isStreaming, setIsStreaming] = useState(false);
-  const controllerRef = useRef<AbortController | null>(null);
-  const serverSessionRef = useRef<string | null>(null);
+interface PerSessionState {
+  serverSid: string | null;
+  controller: AbortController | null;
+  streaming: boolean;
+}
+
+const sessionStates = new Map<string, PerSessionState>();
+
+function getSessionState(id: string): PerSessionState {
+  let s = sessionStates.get(id);
+  if (!s) {
+    const isServerSid = id && !id.startsWith("local-");
+    s = { serverSid: isServerSid ? id : null, controller: null, streaming: false };
+    sessionStates.set(id, s);
+  }
+  return s;
+}
+
+export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
+  const [streamingSet, setStreamingSet] = useState<Set<string>>(new Set());
+  const forceUpdate = useRef(0);
+
+  const activeId = opts.activeSessionId ?? "";
+  const isStreaming = streamingSet.has(activeId);
+
+  const markStreaming = useCallback((sid: string, on: boolean) => {
+    setStreamingSet((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(sid); else next.delete(sid);
+      return next;
+    });
+    const ss = getSessionState(sid);
+    ss.streaming = on;
+  }, []);
 
   const send = useCallback(
     (message: string, sessionId: string) => {
-      if (isStreaming) return;
-      setIsStreaming(true);
-
-      const serverSid = serverSessionRef.current;
+      const ss = getSessionState(sessionId);
+      if (ss.streaming) return;
+      markStreaming(sessionId, true);
 
       opts.addEvent(sessionId, {
         id: `usr-${Date.now()}`,
@@ -31,13 +61,13 @@ export function useChat(opts: UseChatOptions) {
 
       const controller = streamChat(
         message,
-        serverSid,
+        ss.serverSid,
         (event) => {
           if (
             event.event === "session_started" &&
             event.data?.session_id
           ) {
-            serverSessionRef.current = event.data.session_id as string;
+            ss.serverSid = event.data.session_id as string;
             return;
           }
 
@@ -58,11 +88,15 @@ export function useChat(opts: UseChatOptions) {
             timestamp: Date.now(),
           });
           opts.updateStatus(sessionId, "error");
-          setIsStreaming(false);
+          markStreaming(sessionId, false);
         },
         async (returnedSessionId) => {
-          serverSessionRef.current = returnedSessionId;
+          ss.serverSid = returnedSessionId;
           opts.updateSessionId(sessionId, returnedSessionId);
+
+          const newSs = getSessionState(returnedSessionId);
+          newSs.serverSid = returnedSessionId;
+          newSs.controller = ss.controller;
 
           try {
             const pb = await api.playbooks(returnedSessionId);
@@ -74,26 +108,34 @@ export function useChat(opts: UseChatOptions) {
             opts.setInventory(returnedSessionId, inv.inventory_files);
           } catch { /* ignore */ }
 
-          setIsStreaming(false);
+          try {
+            const ws = await api.workspaceFiles(returnedSessionId);
+            opts.setWorkspaceFiles(returnedSessionId, ws.files);
+          } catch { /* ignore */ }
+
+          markStreaming(sessionId, false);
+          markStreaming(returnedSessionId, false);
         }
       );
 
-      controllerRef.current = controller;
+      ss.controller = controller;
     },
-    [isStreaming, opts]
+    [opts, markStreaming]
   );
 
   const approve = useCallback(
     async (sessionId: string) => {
-      const sid = serverSessionRef.current || sessionId;
+      const ss = getSessionState(sessionId);
+      const sid = ss.serverSid || sessionId;
       try {
         await api.approve(sid);
         opts.updateStatus(sessionId, "active");
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         opts.addEvent(sessionId, {
           id: `err-${Date.now()}`,
           event: "error_recovery",
-          data: { error: `Approval failed: ${err}` },
+          data: { error: `Approval failed: ${msg}` },
           timestamp: Date.now(),
         });
       }
@@ -103,15 +145,17 @@ export function useChat(opts: UseChatOptions) {
 
   const reject = useCallback(
     async (sessionId: string, feedback = "") => {
-      const sid = serverSessionRef.current || sessionId;
+      const ss = getSessionState(sessionId);
+      const sid = ss.serverSid || sessionId;
       try {
         await api.reject(sid, feedback);
         opts.updateStatus(sessionId, "rejected");
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         opts.addEvent(sessionId, {
           id: `err-${Date.now()}`,
           event: "error_recovery",
-          data: { error: `Rejection failed: ${err}` },
+          data: { error: `Rejection failed: ${msg}` },
           timestamp: Date.now(),
         });
       }
@@ -120,9 +164,10 @@ export function useChat(opts: UseChatOptions) {
   );
 
   const cancel = useCallback(() => {
-    controllerRef.current?.abort();
-    setIsStreaming(false);
-  }, []);
+    const ss = getSessionState(activeId);
+    ss.controller?.abort();
+    markStreaming(activeId, false);
+  }, [activeId, markStreaming]);
 
   return { send, approve, reject, cancel, isStreaming };
 }

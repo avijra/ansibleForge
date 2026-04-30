@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ansible_forge.logging import get_logger
-from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 
 logger = get_logger(__name__)
 
@@ -95,12 +95,16 @@ class LintRunner(BaseTool):
                 profile=profile,
             )
 
-        return ToolResult.ok(
+        return ToolResult(
+            status=ToolStatus.SUCCESS if count == 0 else ToolStatus.ERROR,
             output=f"Lint found {count} violation(s) with profile '{profile}'.",
-            violations=violations,
-            violation_count=count,
-            profile=profile,
-            stderr=stderr if not violations else "",
+            error=f"{count} lint violation(s) found" if count else None,
+            data={
+                "violations": violations,
+                "violation_count": count,
+                "profile": profile,
+                "stderr": stderr if not violations else "",
+            },
         )
 
     @staticmethod

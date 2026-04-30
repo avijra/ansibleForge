@@ -85,6 +85,19 @@ export interface InventoryResponse {
   inventory_files: Record<string, string>;
 }
 
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+  size: number;
+  content: string;
+}
+
+export interface WorkspaceFilesResponse {
+  session_id: string;
+  file_count: number;
+  files: WorkspaceFile[];
+}
+
 export type AgentEventType =
   | "session_started"
   | "step_start"
@@ -98,6 +111,7 @@ export type AgentEventType =
   | "secret_request"
   | "message"
   | "user_message"
+  | "progress"
   | "error_recovery"
   | "max_steps"
   | "done";
@@ -115,6 +129,7 @@ export interface Session {
   events: AgentEvent[];
   playbooks: Record<string, string>;
   inventory: Record<string, string>;
+  workspaceFiles: WorkspaceFile[];
   createdAt: number;
   title?: string;
 }

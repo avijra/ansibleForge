@@ -2,10 +2,11 @@ import { cn } from "@/lib/utils";
 
 export function LoadingSpinner({ className }: { className?: string }) {
   return (
-    <div className={cn("flex items-center gap-1.5", className)}>
-      <span className="h-1.5 w-1.5 rounded-full bg-teal-400 animate-pulse-dot" />
-      <span className="h-1.5 w-1.5 rounded-full bg-teal-400 animate-pulse-dot [animation-delay:300ms]" />
-      <span className="h-1.5 w-1.5 rounded-full bg-teal-400 animate-pulse-dot [animation-delay:600ms]" />
+    <div className={cn("flex items-center gap-1.5", className)} role="status" aria-live="polite">
+      <span className="h-1 w-1 rounded-full bg-zinc-600 animate-pulse-dot" aria-hidden="true" />
+      <span className="h-1 w-1 rounded-full bg-zinc-600 animate-pulse-dot [animation-delay:300ms]" aria-hidden="true" />
+      <span className="h-1 w-1 rounded-full bg-zinc-600 animate-pulse-dot [animation-delay:600ms]" aria-hidden="true" />
+      <span className="sr-only">Loading</span>
     </div>
   );
 }

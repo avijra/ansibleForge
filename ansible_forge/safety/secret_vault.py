@@ -90,6 +90,12 @@ class SessionVault:
     def cleanup_pending(self, name: str) -> None:
         self._pending.pop(name, None)
 
+    def cancel_all_pending(self) -> None:
+        """Set all pending events so blocked coroutines unblock, then clear."""
+        for evt in self._pending.values():
+            evt.set()
+        self._pending.clear()
+
     def redact(self, text: str) -> str:
         """Replace any known secret value in *text* with its placeholder."""
         self._evict_expired()

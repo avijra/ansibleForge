@@ -8,7 +8,7 @@ import {
   Cpu,
   Globe,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { HealthResponse, LLMSettings, LLMSettingsUpdate } from "@/api/types";
 import { cn } from "@/lib/utils";
 
@@ -78,19 +78,35 @@ export function SettingsModal({
     setApiKey("");
   };
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    },
+    [onClose]
+  );
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    dialogRef.current?.focus();
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Model Configuration">
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
+        aria-hidden="true"
       />
-      <div className="relative flex w-full max-w-md max-h-[85vh] flex-col rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl">
-        {/* Header */}
+      <div ref={dialogRef} tabIndex={-1} className="relative flex w-full max-w-md max-h-[85vh] flex-col rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl outline-none">
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
           <h2 className="text-sm font-semibold">Model Configuration</h2>
           <button
             onClick={onClose}
             className="rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            aria-label="Close settings"
           >
             <X className="h-4 w-4" />
           </button>
@@ -108,7 +124,7 @@ export function SettingsModal({
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
               placeholder="openai"
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-teal-500/50 transition-colors"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
           </Field>
 
@@ -123,7 +139,7 @@ export function SettingsModal({
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder={provider ? `${provider}/model-name` : "provider/model-name"}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-teal-500/50 transition-colors"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
           </Field>
 
@@ -142,7 +158,7 @@ export function SettingsModal({
                   ? "Key is set — enter a new one to change"
                   : "Enter your API key"
               }
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-teal-500/50 transition-colors"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
             {llmSettings?.api_key_set && !apiKey && (
               <p className="mt-1.5 flex items-center gap-1 text-[11px] text-emerald-400">
@@ -162,7 +178,7 @@ export function SettingsModal({
               value={apiBase}
               onChange={(e) => setApiBase(e.target.value)}
               placeholder="http://localhost:11434"
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-teal-500/50 transition-colors"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
             />
           </Field>
 
@@ -188,7 +204,7 @@ export function SettingsModal({
                   step={0.05}
                   value={temperature}
                   onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                  className="w-full accent-teal-500"
+                  className="w-full accent-zinc-500"
                 />
                 <div className="mt-0.5 flex justify-between text-[10px] text-zinc-600">
                   <span>Precise</span>
@@ -205,7 +221,7 @@ export function SettingsModal({
                   max={128000}
                   value={maxTokens}
                   onChange={(e) => setMaxTokens(parseInt(e.target.value) || 16384)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-teal-500/50 transition-colors"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
                 />
               </div>
             </div>
@@ -221,7 +237,7 @@ export function SettingsModal({
 
           {/* Active config summary */}
           {llmSettings && llmSettings.source === "runtime" && (
-            <div className="rounded-lg border border-teal-500/20 bg-teal-500/5 px-3 py-2.5 text-[11px] text-teal-300">
+            <div className="rounded-lg border border-zinc-700 bg-zinc-800/30 px-3 py-2.5 text-[11px] text-zinc-300">
               Active: <span className="font-mono font-medium">{llmSettings.provider}/{llmSettings.model}</span>
             </div>
           )}
@@ -267,7 +283,7 @@ export function SettingsModal({
                 ? "bg-zinc-800 text-zinc-600 cursor-not-allowed"
                 : saved
                   ? "bg-emerald-600 text-white"
-                  : "bg-teal-600 text-white hover:bg-teal-500"
+                  : "bg-zinc-600 text-white hover:bg-zinc-500"
             )}
           >
             {llmLoading ? (
@@ -283,6 +299,8 @@ export function SettingsModal({
   );
 }
 
+let _fieldId = 0;
+
 function Field({
   label,
   hint,
@@ -294,9 +312,10 @@ function Field({
   icon: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const id = `field-${++_fieldId}`;
   return (
     <div>
-      <label className="mb-1.5 block text-xs font-medium text-zinc-300">
+      <label htmlFor={id} className="mb-1.5 block text-xs font-medium text-zinc-300">
         {label}
       </label>
       <div className="relative">

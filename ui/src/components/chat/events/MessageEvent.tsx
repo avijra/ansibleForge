@@ -9,10 +9,10 @@ export function MessageEvent({ event }: { event: AgentEvent }) {
   if (!content) return null;
 
   return (
-    <div className="animate-slide-in rounded-xl border border-zinc-800 bg-gradient-to-b from-zinc-900/80 to-zinc-900/40 p-4">
+    <div className="animate-slide-in rounded-xl border border-zinc-700/50 bg-gradient-to-b from-zinc-900/80 to-zinc-900/40 shadow-[0_0_12px_-4px_rgba(161,161,170,0.08)] p-4">
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 shrink-0 rounded-lg bg-teal-500/10 p-2 ring-1 ring-teal-500/20">
-          <Terminal className="h-4 w-4 text-teal-400" />
+        <div className="mt-0.5 shrink-0 rounded-md bg-zinc-800/40 p-1.5">
+          <Terminal className="h-3.5 w-3.5 text-zinc-500" />
         </div>
         <div className="min-w-0 flex-1">
           <Markdown content={content} />

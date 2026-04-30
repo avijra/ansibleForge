@@ -10,6 +10,7 @@ import {
   Play,
   AlertTriangle,
   ScrollText,
+  Terminal,
 } from "lucide-react";
 import type { AgentEvent } from "@/api/types";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,7 @@ interface ExecutionRun {
   summary?: AnsibleSummary;
   timestamp: number;
   playbook?: string;
+  rawStdout?: string;
 }
 
 type StatusFilter = "ok" | "changed" | "failed" | "skipped" | "unreachable";
@@ -70,6 +72,7 @@ function extractRuns(events: AgentEvent[]): ExecutionRun[] {
       summary: data?.summary as AnsibleSummary | undefined,
       timestamp: ev.timestamp,
       playbook,
+      rawStdout: (data?.raw_stdout as string) || undefined,
     });
   }
   return runs;
@@ -243,7 +246,7 @@ function TaskNode({
               )}
               {!!diffText && (
                 <div className="rounded bg-zinc-900 border border-zinc-800 overflow-hidden">
-                  <div className="px-2.5 py-1 text-[10px] text-teal-400/70 bg-zinc-900 border-b border-zinc-800 font-medium">
+                  <div className="px-2.5 py-1 text-[10px] text-zinc-400 bg-zinc-900 border-b border-zinc-800 font-medium">
                     diff
                   </div>
                   <pre className="px-2.5 py-1.5 text-[11px] font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
@@ -351,6 +354,8 @@ function RecapBar({ stats }: { stats: Record<string, Record<string, number>> }) 
   );
 }
 
+type ViewMode = "structured" | "raw";
+
 function RunSection({
   run,
   isLatest,
@@ -365,6 +370,7 @@ function RunSection({
     new Set(["ok", "changed", "failed", "skipped", "unreachable"])
   );
   const [showFilters, setShowFilters] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("structured");
 
   const filteredTasks = run.tasks.filter((t) => {
     const mapped = STATUS_MAP[t.event];
@@ -391,7 +397,7 @@ function RunSection({
 
   const isRunActive = isLatest && isStreaming;
   const modePill = run.mode === "apply"
-    ? "bg-teal-500/20 text-teal-400 border-teal-500/30"
+    ? "bg-zinc-700/30 text-zinc-300 border-zinc-600/40"
     : "bg-zinc-800 text-zinc-400 border-zinc-700";
 
   return (
@@ -416,8 +422,8 @@ function RunSection({
           {run.mode}
         </span>
         {isRunActive && (
-          <span className="flex items-center gap-1 text-[10px] text-teal-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-teal-400 animate-pulse-dot" />
+          <span className="flex items-center gap-1 text-[10px] text-zinc-400">
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-pulse-dot" />
             running
           </span>
         )}
@@ -428,74 +434,177 @@ function RunSection({
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 animate-slide-in min-w-0 overflow-hidden">
-          {/* Filter bar */}
+          {/* Toolbar: view mode toggle + filter */}
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors shrink-0"
-            >
-              <Filter className="h-3 w-3" />
-              Filter
-            </button>
-            {showFilters && (
-              <div className="flex flex-wrap gap-1.5">
-                {(["ok", "changed", "failed", "skipped", "unreachable"] as StatusFilter[]).map(
-                  (f) => (
-                    <button
-                      key={f}
-                      onClick={() => toggleFilter(f)}
-                      className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded font-mono transition-colors",
-                        filters.has(f)
-                          ? f === "ok" ? "bg-emerald-500/20 text-emerald-400"
-                            : f === "changed" ? "bg-amber-500/20 text-amber-400"
-                            : f === "failed" ? "bg-red-500/20 text-red-400"
-                            : f === "unreachable" ? "bg-orange-500/20 text-orange-400"
-                            : "bg-zinc-700/50 text-zinc-400"
-                          : "bg-zinc-900 text-zinc-600"
-                      )}
-                    >
-                      {f} {counts[f]}
-                    </button>
-                  )
+            <div className="flex items-center rounded-md border border-zinc-800 overflow-hidden shrink-0">
+              <button
+                onClick={() => setViewMode("structured")}
+                className={cn(
+                  "flex items-center gap-1 px-2 py-1 text-[10px] font-medium transition-colors",
+                  viewMode === "structured"
+                    ? "bg-zinc-800 text-zinc-200"
+                    : "text-zinc-500 hover:text-zinc-300"
                 )}
-              </div>
+              >
+                <Filter className="h-3 w-3" />
+                Tasks
+              </button>
+              <button
+                onClick={() => setViewMode("raw")}
+                className={cn(
+                  "flex items-center gap-1 px-2 py-1 text-[10px] font-medium transition-colors border-l border-zinc-800",
+                  viewMode === "raw"
+                    ? "bg-zinc-800 text-zinc-200"
+                    : "text-zinc-500 hover:text-zinc-300",
+                  !run.rawStdout && "opacity-40 cursor-not-allowed"
+                )}
+                disabled={!run.rawStdout}
+                title={run.rawStdout ? "View raw Ansible output" : "Raw output not available"}
+              >
+                <Terminal className="h-3 w-3" />
+                Raw
+              </button>
+            </div>
+
+            {viewMode === "structured" && (
+              <>
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors shrink-0"
+                >
+                  <Filter className="h-3 w-3" />
+                  Filter
+                </button>
+                {showFilters && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {(["ok", "changed", "failed", "skipped", "unreachable"] as StatusFilter[]).map(
+                      (f) => (
+                        <button
+                          key={f}
+                          onClick={() => toggleFilter(f)}
+                          className={cn(
+                            "text-[10px] px-1.5 py-0.5 rounded font-mono transition-colors",
+                            filters.has(f)
+                              ? f === "ok" ? "bg-emerald-500/20 text-emerald-400"
+                                : f === "changed" ? "bg-amber-500/20 text-amber-400"
+                                : f === "failed" ? "bg-red-500/20 text-red-400"
+                                : f === "unreachable" ? "bg-orange-500/20 text-orange-400"
+                                : "bg-zinc-700/50 text-zinc-400"
+                              : "bg-zinc-900 text-zinc-600"
+                          )}
+                        >
+                          {f} {counts[f]}
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
+              </>
             )}
+
             {isRunActive && (
-              <span className="ml-auto text-[10px] font-mono text-teal-400/60 animate-pulse">
+              <span className="ml-auto text-[10px] font-mono text-zinc-500 animate-pulse">
                 Task {run.tasks.length} executing...
               </span>
             )}
           </div>
 
-          {/* Task tree */}
-          <div className="pl-1">
-            {filteredTasks.map((task, i) => (
-              <TaskNode
-                key={i}
-                task={task}
-                isLast={i === filteredTasks.length - 1}
-                isActive={isRunActive && i === filteredTasks.length - 1}
-              />
-            ))}
-            {filteredTasks.length === 0 && (
-              <p className="text-[11px] text-zinc-600 py-2">No tasks match current filters</p>
-            )}
-          </div>
-
-          {/* Recap bar */}
-          {run.summary?.stats && (
-            <div className="rounded-lg bg-zinc-900/50 border border-zinc-800 p-3">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium mb-2">
-                Play Recap
+          {viewMode === "structured" ? (
+            <>
+              {/* Task tree */}
+              <div className="pl-1">
+                {filteredTasks.map((task, i) => (
+                  <TaskNode
+                    key={i}
+                    task={task}
+                    isLast={i === filteredTasks.length - 1}
+                    isActive={isRunActive && i === filteredTasks.length - 1}
+                  />
+                ))}
+                {filteredTasks.length === 0 && (
+                  <p className="text-[11px] text-zinc-600 py-2">No tasks match current filters</p>
+                )}
               </div>
-              <RecapBar stats={run.summary.stats} />
-            </div>
+
+              {/* Recap bar */}
+              {run.summary?.stats && (
+                <div className="rounded-lg bg-zinc-900/50 border border-zinc-800 p-3">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium mb-2">
+                    Play Recap
+                  </div>
+                  <RecapBar stats={run.summary.stats} />
+                </div>
+              )}
+            </>
+          ) : (
+            <RawOutputView stdout={run.rawStdout || ""} />
           )}
         </div>
       )}
     </div>
   );
+}
+
+function RawOutputView({ stdout }: { stdout: string }) {
+  if (!stdout) {
+    return (
+      <div className="rounded-md bg-zinc-900/50 border border-zinc-800 px-4 py-6 text-center">
+        <Terminal className="h-5 w-5 text-zinc-600 mx-auto mb-2" />
+        <p className="text-[11px] text-zinc-600">Raw output not available for this run</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-zinc-800 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border-b border-zinc-800">
+        <Terminal className="h-3 w-3 text-zinc-500" />
+        <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">
+          ansible-playbook output
+        </span>
+      </div>
+      <pre className="p-3 text-[11px] font-mono bg-zinc-950 overflow-x-auto overflow-y-auto max-h-[70vh] whitespace-pre leading-relaxed">
+        {colorizeAnsibleOutput(stdout)}
+      </pre>
+    </div>
+  );
+}
+
+function colorizeAnsibleOutput(text: string): React.ReactNode {
+  return text.split("\n").map((line, i) => {
+    let className = "text-zinc-400";
+
+    if (/^PLAY \[/.test(line)) {
+      className = "text-zinc-200 font-bold";
+    } else if (/^TASK \[/.test(line)) {
+      className = "text-zinc-300 font-medium";
+    } else if (/^PLAY RECAP/.test(line)) {
+      className = "text-zinc-200 font-bold";
+    } else if (/^ok:/.test(line)) {
+      className = "text-emerald-400";
+    } else if (/^changed:/.test(line)) {
+      className = "text-amber-400";
+    } else if (/^fatal:/.test(line) || /^FAILED/.test(line)) {
+      className = "text-red-400";
+    } else if (/^skipping:/.test(line)) {
+      className = "text-zinc-600";
+    } else if (/unreachable=\d+/.test(line) || /failed=\d+/.test(line)) {
+      const hasFailures = /failed=[1-9]/.test(line) || /unreachable=[1-9]/.test(line);
+      className = hasFailures ? "text-red-400" : "text-emerald-400";
+    } else if (line.startsWith("---") || line.startsWith("+++")) {
+      className = "text-zinc-500";
+    } else if (line.startsWith("+")) {
+      className = "text-emerald-400/80";
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      className = "text-red-400/80";
+    } else if (line.startsWith("*")) {
+      className = "text-zinc-500";
+    }
+
+    return (
+      <div key={i} className={className}>{line || "\u00A0"}</div>
+    );
+  });
 }
 
 interface ExecutionTimelineProps {

@@ -14,10 +14,14 @@ from ansible_forge.agent.planner import build_context
 from ansible_forge.agent.prompts.system import SYSTEM_PROMPT
 from ansible_forge.agent.prompts.templates import ERROR_RECOVERY_PROMPT
 from ansible_forge.config import Settings, get_settings
-from ansible_forge.knowledge.context import build_knowledge_context
-from ansible_forge.knowledge.extractor import ingest_tool_result
-from ansible_forge.knowledge.graph import KnowledgeGraph
+from ansible_forge.knowledge.experience_store import (
+    Experience,
+    ExperienceStore,
+    build_experience_context,
+    extract_modules_from_workspace,
+)
 from ansible_forge.logging import get_logger
+from ansible_forge.persistence.session_store import SessionStore
 from ansible_forge.safety.approval import ApprovalGate, ApprovalStatus
 from ansible_forge.safety.diff_analyzer import DiffAnalyzer
 from ansible_forge.safety.secret_vault import SecretVault
@@ -48,6 +52,55 @@ LOOP_BREAK_PROMPT = (
     "Respond NOW with your final answer."
 )
 
+_PROGRESS_INTERVAL = 5
+
+_TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
+    "execute_playbook": [
+        "Your playbook is running. Yes, I checked it first. You're welcome.",
+        "Still running. Complex tasks take time — shocking, I know.",
+        "This is taking a while. I'd blame the playbook but I wrote it, so it's the hosts.",
+        "Still going. Go get coffee or something — I'll handle this.",
+    ],
+    "collect_facts": [
+        "Gathering facts. Someone has to know what OS we're deploying to.",
+        "Still waiting. Hosts aren't exactly sprinting to share their life stories.",
+        "Facts are still trickling in. Patience — I'm learning more about your hosts than you know.",
+    ],
+    "test_connectivity": [
+        "Checking if your hosts are even alive. Fingers crossed.",
+        "Still trying. Maybe double-check that these hosts actually exist?",
+        "SSH is thinking about it. I've seen faster handshakes at awkward parties.",
+    ],
+    "install_collection": [
+        "Installing from Galaxy. Because reinventing the wheel is for amateurs.",
+        "Still downloading. Galaxy isn't exactly a CDN, is it.",
+    ],
+    "run_molecule_test": [
+        "Running tests. Because I believe in verification, even if nobody asked.",
+        "Tests are still going. Good code takes time to prove it's good.",
+        "Still testing. Quality assurance — look it up.",
+    ],
+    "search_web": [
+        "Looking this up. Yes, I could do it from memory, but let's be thorough.",
+        "Still fetching results. The internet is not as fast as my opinions.",
+    ],
+}
+
+_DEFAULT_PROGRESS_MESSAGES = [
+    "Working. Patience is a virtue you should practice.",
+    "Still at it. I don't rush my work.",
+    "Taking a moment. Quality over speed — write that down.",
+    "Still here, still working. Miss me?",
+]
+
+_LLM_THINKING_MESSAGES = [
+    "Hold on. I'm thinking. Don't rush me.",
+    "Analyzing your request. Yes, it needs analyzing.",
+    "Planning the right approach. Unlike some people, I plan first.",
+    "Still thinking. Good answers take time — write that down.",
+    "Almost there. Brilliance can't be hurried.",
+]
+
 
 class SessionState:
     """Tracks state for a single agent session."""
@@ -64,6 +117,11 @@ class SessionState:
         self._loop_break_count = 0
         self._consecutive_errors = 0
         self._max_error_retries = 3
+        self._generation = 0
+        self._last_error_by_tool: dict[str, str] = {}
+        self._rejected_output: str | None = None
+        self._rejected_feedback: str | None = None
+        self._rejected_tool: str | None = None
 
     def record_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         sig = f"{name}:{json.dumps(arguments, sort_keys=True)}"
@@ -137,12 +195,8 @@ class Orchestrator:
         self._validator = PlaybookValidator()
         self._diff_analyzer = DiffAnalyzer()
         self._sessions: dict[str, SessionState] = {}
-
-        if self._settings.knowledge_enabled:
-            global_path = self._settings.knowledge_dir / "global.kuzu"
-            self._global_graph: KnowledgeGraph | None = KnowledgeGraph(global_path)
-        else:
-            self._global_graph = None
+        self._session_store = SessionStore()
+        self._experience_store = ExperienceStore()
 
     def create_session(self, session_id: str | None = None) -> SessionState:
         sid = session_id or uuid.uuid4().hex[:12]
@@ -157,23 +211,136 @@ class Orchestrator:
     def get_session(self, session_id: str) -> SessionState | None:
         return self._sessions.get(session_id)
 
+    def _restore_session(self, session_id: str) -> SessionState | None:
+        """Restore a session from the workspace on disk.
+
+        Instead of replaying raw conversation messages (which breaks
+        reasoning-mode models that require ``reasoning_content`` passback),
+        the agent receives a workspace summary and a digest of recent user
+        requests.  This is model-agnostic and keeps context small.
+        """
+        workspace = self._workspace_mgr.get(session_id)
+        if workspace is None:
+            return None
+
+        all_events = self._session_store.get_events(session_id)
+        if not all_events:
+            return None
+
+        state = SessionState(session_id=session_id, workspace=workspace)
+        state.memory.attach_vault(self._secret_vault.for_session(session_id))
+        state.memory.add_system(SYSTEM_PROMPT)
+
+        ws_summary = self._build_workspace_summary(workspace)
+        recent_requests = [
+            e["data"].get("content", "")
+            for e in all_events
+            if e["event"] == "user_message" and e["data"].get("content")
+        ][-5:]
+        recent_responses = [
+            e["data"].get("content", "")
+            for e in all_events
+            if e["event"] == "message" and e["data"].get("content")
+        ][-3:]
+
+        restore_ctx_parts = [
+            "This session is being resumed after an app restart.",
+            "The workspace and all previously generated files are intact.",
+        ]
+        if ws_summary:
+            restore_ctx_parts.append(f"\n## Workspace contents\n{ws_summary}")
+        if recent_requests:
+            restore_ctx_parts.append(
+                "\n## Recent user requests\n"
+                + "\n".join(f"- {r[:200]}" for r in recent_requests)
+            )
+        if recent_responses:
+            last_response = recent_responses[-1]
+            if len(last_response) > 500:
+                last_response = last_response[:500] + "…"
+            restore_ctx_parts.append(
+                f"\n## Last agent response (summary)\n{last_response}"
+            )
+
+        state.memory.add_user("\n".join(restore_ctx_parts))
+        state.memory.add_assistant(
+            content=(
+                "Understood — I have the full workspace context from our prior session. "
+                "I can see the existing playbooks, inventory, and other files. "
+                "How would you like to continue?"
+            )
+        )
+
+        self._sessions[session_id] = state
+        logger.info(
+            "session_restored",
+            session_id=session_id,
+            total_events=len(all_events),
+            workspace=str(workspace.path),
+        )
+        return state
+
+    @staticmethod
+    def _build_workspace_summary(workspace: Workspace) -> str:
+        parts: list[str] = []
+        project = workspace.project_dir
+        inventory = workspace.inventory_dir
+
+        if project.exists():
+            playbooks = list(project.glob("*.yml")) + list(project.glob("*.yaml"))
+            if playbooks:
+                parts.append(
+                    "Playbooks: " + ", ".join(p.name for p in playbooks)
+                )
+            roles = [d.name for d in (project / "roles").iterdir()] if (project / "roles").is_dir() else []
+            if roles:
+                parts.append("Roles: " + ", ".join(roles))
+
+        if inventory.exists():
+            inv_files = list(inventory.iterdir())
+            if inv_files:
+                parts.append(
+                    "Inventory: " + ", ".join(f.name for f in inv_files)
+                )
+
+        return "\n".join(parts)
+
     async def handle_message(
         self, session_id: str, user_message: str
     ) -> AsyncIterator[AgentEvent]:
         """Process a user message through the ReAct loop, yielding events."""
         state = self._sessions.get(session_id)
         if state is None:
+            state = self._restore_session(session_id)
+        if state is None:
             state = self.create_session(session_id)
 
+        state._generation += 1
+
+        if state.status == "awaiting_secret":
+            session_vault = self._secret_vault.for_session(session_id)
+            session_vault.cancel_all_pending()
+            logger.info("secret_wait_cancelled", session_id=session_id)
+
+        if state.status == "awaiting_approval":
+            self._approval_gate.cleanup(session_id)
+
+        state.status = "active"
+        await asyncio.sleep(0)
+
         context = build_context(state.workspace)
-        kg_context = build_knowledge_context(
-            self._global_graph,
-            self._project_graph(state),
-            state.memory.messages,
-        )
+        exp_context = ""
+        try:
+            ws_modules = extract_modules_from_workspace(state.workspace)
+            exp_context = build_experience_context(
+                self._experience_store, user_message, ws_modules
+            )
+        except Exception:
+            logger.debug("experience_context_build_failed", exc_info=True)
+
         full_context = f"{user_message}\n\n---\nWorkspace context:\n{context}"
-        if kg_context:
-            full_context += f"\n{kg_context}"
+        if exp_context:
+            full_context += f"\n{exp_context}"
         state.memory.add_user(full_context)
 
         async for event in self._react_loop(state):
@@ -184,8 +351,12 @@ class Orchestrator:
         max_steps = self._settings.max_agent_steps
         progress_check_interval = max(max_steps // 5, 8)
         llm_timeout = 120
+        my_generation = state._generation
 
         while state.step_count < max_steps:
+            if state._generation != my_generation:
+                logger.info("react_loop_superseded", session_id=state.session_id)
+                return
             state.step_count += 1
             logger.info(
                 "react_step",
@@ -256,10 +427,38 @@ class Orchestrator:
             response: LLMResponse | None = None
             streamed = False
             try:
+                llm_progress_tick = 0
+                stream_iter = self._stream_llm_call(
+                    state, self._registry.to_openai_tools()
+                ).__aiter__()
+                get_next: asyncio.Future[AgentEvent | LLMResponse] | None = None
+
                 async with asyncio.timeout(llm_timeout):
-                    async for item in self._stream_llm_call(
-                        state, self._registry.to_openai_tools()
-                    ):
+                    while True:
+                        if get_next is None:
+                            get_next = asyncio.ensure_future(stream_iter.__anext__())
+                        done, _ = await asyncio.wait(
+                            {get_next}, timeout=_PROGRESS_INTERVAL
+                        )
+                        if not done:
+                            llm_progress_tick += 1
+                            hint = _LLM_THINKING_MESSAGES[
+                                min(llm_progress_tick - 1, len(_LLM_THINKING_MESSAGES) - 1)
+                            ]
+                            yield AgentEvent("progress", {
+                                "tool": "thinking",
+                                "elapsed_seconds": llm_progress_tick * _PROGRESS_INTERVAL,
+                                "message": hint,
+                            })
+                            continue
+
+                        try:
+                            item = get_next.result()
+                        except StopAsyncIteration:
+                            break
+                        finally:
+                            get_next = None
+
                         if isinstance(item, LLMResponse):
                             response = item
                         else:
@@ -311,6 +510,9 @@ class Orchestrator:
                     "error": "LLM returned an empty response.",
                 })
                 continue
+
+            if state._generation != my_generation:
+                return
 
             # ── Log the full LLM response ──────────────────────────────
             logger.info(
@@ -407,7 +609,28 @@ class Orchestrator:
                     "tool_call_id": tc.id,
                 }))
 
-                result = await self._execute_tool(state, tc.name, tc.arguments)
+                task = asyncio.create_task(
+                    self._execute_tool(state, tc.name, tc.arguments)
+                )
+                progress_tick = 0
+                msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
+                while not task.done():
+                    done, _ = await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL)
+                    if done:
+                        break
+                    progress_tick += 1
+                    elapsed = progress_tick * _PROGRESS_INTERVAL
+                    hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
+                    yield AgentEvent("progress", {
+                        "tool": tc.name,
+                        "elapsed_seconds": elapsed,
+                        "message": hint,
+                    })
+
+                result = task.result()
+
+                if state._generation != my_generation:
+                    return
 
                 logger.info(
                     "tool_result",
@@ -458,6 +681,25 @@ class Orchestrator:
                     finally:
                         session_vault.cleanup_pending(secret_name)
 
+                    if state._generation != my_generation:
+                        return
+
+                    stored_value = session_vault.get(secret_name)
+                    if stored_value is None:
+                        state.status = "active"
+                        cancel_msg = (
+                            f"Secret '{secret_name}' request was cancelled. "
+                            "The user may have interrupted. Ask them what they'd prefer."
+                        )
+                        state.memory.add_tool_result(tc.id, cancel_msg)
+                        yield AgentEvent("tool_result", {
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": "error",
+                            "output": cancel_msg,
+                        })
+                        continue
+
                     state.status = "active"
                     confirm = (
                         f"Secret '{secret_name}' has been securely stored. "
@@ -475,7 +717,7 @@ class Orchestrator:
                     continue
 
                 state.memory.add_tool_result(tc.id, result.model_dump_json())
-                self._ingest_to_graph(tc.name, result, state.session_id, state)
+                self._capture_experience(tc.name, result, state)
 
                 tool_result_payload: dict[str, Any] = {
                     "tool": tc.name,
@@ -505,12 +747,19 @@ class Orchestrator:
                     )
 
                     status = await approval.wait(timeout=600)
+                    if state._generation != my_generation:
+                        return
                     if status == ApprovalStatus.APPROVED:
                         state.status = "active"
                         yield AgentEvent("approval_granted", {"session_id": state.session_id})
+                        if state._rejected_output and state._rejected_tool == tc.name:
+                            self._capture_correction(state, tc.name, result)
                     else:
                         state.status = "rejected"
                         feedback = approval.feedback or "User rejected the operation."
+                        state._rejected_output = result.output[:2000]
+                        state._rejected_feedback = feedback
+                        state._rejected_tool = tc.name
                         state.memory.add_user(f"User rejected: {feedback}")
                         yield AgentEvent("approval_rejected", {
                             "session_id": state.session_id,
@@ -521,6 +770,7 @@ class Orchestrator:
                 if result.status == ToolStatus.ERROR:
                     state._consecutive_errors += 1
                     state.last_error = result.error
+                    state._last_error_by_tool[tc.name] = result.error or "Unknown error"
                     remaining = max(state._max_error_retries - state._consecutive_errors, 0)
                     error_ctx = ERROR_RECOVERY_PROMPT.format(
                         tool_name=tc.name,
@@ -609,41 +859,106 @@ class Orchestrator:
             reasoning_content="".join(reasoning_parts) or None,
         )
 
-    def _project_graph(self, state: SessionState) -> KnowledgeGraph | None:
-        if not self._settings.knowledge_enabled:
-            return None
-        kg_path = state.workspace.path / "knowledge" / "project.kuzu"
-        return KnowledgeGraph(kg_path)
-
-    def _ingest_to_graph(
-        self, tool_name: str, result: ToolResult, session_id: str, state: SessionState
+    def _capture_experience(
+        self, tool_name: str, result: ToolResult, state: SessionState
     ) -> None:
-        if not self._settings.knowledge_enabled:
-            return
         try:
-            ingest_tool_result(
-                tool_name,
-                result,
-                session_id,
-                self._global_graph,  # type: ignore[arg-type]
-                self._project_graph(state),  # type: ignore[arg-type]
-            )
+            if tool_name == "execute_playbook" and result.status == ToolStatus.SUCCESS:
+                self._capture_recipe(state, result)
+            if result.status != ToolStatus.ERROR and tool_name in state._last_error_by_tool:
+                prev_error = state._last_error_by_tool.pop(tool_name)
+                self._capture_error_resolution(state, tool_name, prev_error, result)
         except Exception:
-            logger.warning("knowledge_ingest_failed", tool=tool_name, exc_info=True)
+            logger.debug("experience_capture_failed", tool=tool_name, exc_info=True)
+
+    def _capture_recipe(self, state: SessionState, result: ToolResult) -> None:
+        data = result.data
+        playbook_name = data.get("playbook", "unknown")
+        events = data.get("events", [])
+        modules = {
+            e.get("result", {}).get("module_fqcn", "")
+            for e in events if e.get("result", {}).get("module_fqcn")
+        }
+        hosts = {e.get("host", "") for e in events if e.get("host")}
+        hosts.discard("")
+
+        user_goal = self._extract_user_goal(state)
+        task_names = [e.get("task", "") for e in events if e.get("task")]
+
+        self._experience_store.save(Experience(
+            type="recipe",
+            trigger=user_goal,
+            context={"modules": sorted(modules), "hosts": sorted(hosts), "playbook": playbook_name},
+            solution=f"Playbook '{playbook_name}' with tasks: {', '.join(task_names[:10])}",
+            outcome=f"success ({len(events)} tasks)",
+            confidence=0.6,
+            session_id=state.session_id,
+        ))
+        logger.info("experience_recipe_captured", playbook=playbook_name, session_id=state.session_id)
+
+    def _capture_error_resolution(
+        self, state: SessionState, tool_name: str, error_msg: str, result: ToolResult
+    ) -> None:
+        self._experience_store.save(Experience(
+            type="error_resolution",
+            trigger=error_msg[:500],
+            context={"tool": tool_name, "modules": [], "hosts": []},
+            solution=f"Tool '{tool_name}' succeeded after prior failure. Output: {result.output[:500]}",
+            outcome="resolved",
+            confidence=0.5,
+            session_id=state.session_id,
+        ))
+        logger.info("experience_error_resolution_captured", tool=tool_name, session_id=state.session_id)
+
+    def _capture_correction(
+        self, state: SessionState, tool_name: str, result: ToolResult
+    ) -> None:
+        try:
+            self._experience_store.save(Experience(
+                type="correction",
+                trigger=state._rejected_feedback or "User rejected",
+                context={"tool": tool_name},
+                solution=f"After rejection, approved output: {result.output[:500]}",
+                outcome=f"Rejected: {(state._rejected_output or '')[:300]}",
+                confidence=0.7,
+                session_id=state.session_id,
+            ))
+            logger.info("experience_correction_captured", tool=tool_name, session_id=state.session_id)
+        except Exception:
+            logger.debug("correction_capture_failed", exc_info=True)
+        finally:
+            state._rejected_output = None
+            state._rejected_feedback = None
+            state._rejected_tool = None
+
+    @staticmethod
+    def _extract_user_goal(state: SessionState) -> str:
+        for msg in state.memory.messages:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    text = content.split("---")[0].strip()
+                    return text[:300] if text else "Unknown goal"
+        return "Unknown goal"
 
     async def _execute_tool(
         self, state: SessionState, tool_name: str, arguments: dict[str, Any]
     ) -> ToolResult:
         """Execute a tool, injecting workspace_path and session_id where needed."""
-        if "workspace_path" in arguments:
-            pass
-        elif any(
-            p in self._registry.get(tool_name).parameters.get("properties", {})  # type: ignore[union-attr]
-            for p in ("workspace_path",)
-        ):
+        tool = self._registry.get(tool_name)
+        if tool is None:
+            return ToolResult.fail(f"Unknown tool: {tool_name}")
+
+        tool_props = tool.parameters.get("properties", {})
+        if "workspace_path" in tool_props:
             arguments["workspace_path"] = str(state.workspace.path)
 
         arguments["_session_id"] = state.session_id
+
+        if tool_name == "execute_playbook":
+            result = self._pre_validate_playbook(arguments)
+            if result is not None:
+                return result
 
         try:
             result = await self._registry.execute(tool_name, arguments)
@@ -651,7 +966,39 @@ class Orchestrator:
             logger.error("tool_execution_error", tool=tool_name, error=str(exc))
             result = ToolResult.fail(f"Tool execution failed: {exc}")
 
+        if tool_name == "execute_playbook" and result.data.get("events"):
+            report = self._diff_analyzer.analyze(result.data["events"])
+            if report.has_changes:
+                result.data["diff_summary"] = report.to_dict()
+
         return result
+
+    def _pre_validate_playbook(self, arguments: dict[str, Any]) -> ToolResult | None:
+        ws = arguments.get("workspace_path", "")
+        pb = arguments.get("playbook", "")
+        if not ws or not pb:
+            return None
+        vr = self._validator.validate(ws, pb)
+        if not vr.passed:
+            issues_str = "; ".join(
+                f"[{i.severity}] {i.message}" for i in vr.issues
+            )
+            logger.warning(
+                "playbook_validation_failed",
+                playbook=pb,
+                issues=vr.to_dict(),
+            )
+            return ToolResult.fail(
+                f"Playbook validation blocked execution: {issues_str}",
+                validation=vr.to_dict(),
+            )
+        if vr.warnings:
+            logger.info(
+                "playbook_validation_warnings",
+                playbook=pb,
+                warnings=[w.to_dict() for w in vr.warnings],
+            )
+        return None
 
     def store_secret(self, session_id: str, name: str, value: str, description: str = "") -> bool:
         """Store a secret in the session vault and unblock any pending request."""

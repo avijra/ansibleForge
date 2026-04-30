@@ -20,6 +20,8 @@ htmlcov/
 
 node_modules/
 ui/dist/
+electron/release/
+electron/resources/backend/
 
 *.log
 /artifacts/

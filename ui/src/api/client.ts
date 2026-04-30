@@ -13,16 +13,28 @@ import type {
   LLMSettingsUpdate,
   PlaybooksResponse,
   SessionStatusResponse,
+  WorkspaceFilesResponse,
 } from "./types";
 
 const BASE = "/api/v1";
+
+export function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const key = import.meta.env.VITE_API_KEY;
+  if (key) {
+    headers["X-API-Key"] = key;
+  }
+  return headers;
+}
 
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     ...options,
   });
   if (!res.ok) {
@@ -64,6 +76,15 @@ export const api = {
 
   inventory: (sessionId: string) =>
     request<InventoryResponse>(`/inventory/${sessionId}`),
+
+  workspaceFiles: (sessionId: string) =>
+    request<WorkspaceFilesResponse>(`/workspace/${sessionId}/files`),
+
+  saveFile: (sessionId: string, path: string, content: string) =>
+    request<{ path: string; size: number; ok: boolean }>(`/workspace/${sessionId}/files`, {
+      method: "PUT",
+      body: JSON.stringify({ path, content }),
+    }),
 
   collections: {
     list: () => request<CollectionResponse>("/collections"),
@@ -121,7 +142,7 @@ export function streamChat(
 
   fetch(`${BASE}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify({
       message,
       session_id: sessionId,
@@ -138,6 +159,7 @@ export function streamChat(
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let currentEvent: AgentEventType | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -146,8 +168,6 @@ export function streamChat(
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-
-        let currentEvent: AgentEventType | null = null;
 
         for (const line of lines) {
           if (line.startsWith("event: ")) {
@@ -169,6 +189,8 @@ export function streamChat(
             } catch {
               // skip malformed JSON
             }
+            currentEvent = null;
+          } else if (line.trim() === "") {
             currentEvent = null;
           }
         }

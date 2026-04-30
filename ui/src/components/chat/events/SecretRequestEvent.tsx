@@ -53,16 +53,16 @@ export function SecretRequestEvent({ event }: SecretRequestEventProps) {
   }
 
   return (
-    <div className="animate-slide-in rounded-lg border-2 border-teal-700/50 bg-teal-950/20 p-4 space-y-3">
+    <div className="animate-slide-in rounded-lg border border-cyan-800/30 bg-cyan-950/15 shadow-[0_0_12px_-4px_rgba(6,182,212,0.12)] p-4 space-y-3">
       <div className="flex items-center gap-2.5">
-        <div className="rounded-lg bg-teal-900/40 p-1.5">
-          <KeyRound className="h-4 w-4 text-teal-400" />
+        <div className="rounded-lg bg-zinc-800/60 p-1.5">
+          <KeyRound className="h-4 w-4 text-zinc-400" />
         </div>
         <div>
-          <span className="text-sm font-semibold text-teal-300">
+          <span className="text-sm font-semibold text-zinc-200">
             Secret Required
           </span>
-          <span className="ml-2 rounded-full bg-teal-900/50 px-2 py-0.5 text-[10px] font-mono text-teal-400/80">
+          <span className="ml-2 rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
             {secretName}
           </span>
         </div>
@@ -85,7 +85,7 @@ export function SecretRequestEvent({ event }: SecretRequestEventProps) {
               onChange={(e) => setValue(e.target.value)}
               placeholder={`Paste your ${secretName} here...`}
               rows={4}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-xs font-mono text-zinc-200 placeholder-zinc-600 focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600/50 resize-none"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 text-xs font-mono text-zinc-200 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500/50 resize-none"
               style={showValue ? {} : { WebkitTextSecurity: "disc" } as React.CSSProperties}
             />
             <button
@@ -105,7 +105,7 @@ export function SecretRequestEvent({ event }: SecretRequestEventProps) {
               onChange={(e) => setValue(e.target.value)}
               placeholder={`Enter ${secretName}...`}
               onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 pr-16 text-xs font-mono text-zinc-200 placeholder-zinc-600 focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600/50"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 pr-16 text-xs font-mono text-zinc-200 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500/50"
             />
             <button
               type="button"
@@ -125,7 +125,7 @@ export function SecretRequestEvent({ event }: SecretRequestEventProps) {
         <button
           onClick={handleSubmit}
           disabled={!value.trim() || submitting}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-700 px-4 py-2 text-xs font-medium text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <Send className="h-3.5 w-3.5" />
           {submitting ? "Submitting..." : "Submit Securely"}

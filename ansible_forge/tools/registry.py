@@ -49,6 +49,7 @@ class ToolRegistry:
 
 def create_default_registry() -> ToolRegistry:
     """Instantiate a registry with all built-in tools."""
+    from ansible_forge.tools.connectivity_tester import ConnectivityTester
     from ansible_forge.tools.doc_searcher import DocSearcher
     from ansible_forge.tools.executor import Executor
     from ansible_forge.tools.facts_collector import FactsCollector
@@ -74,6 +75,7 @@ def create_default_registry() -> ToolRegistry:
         GalaxyManager,
         Executor,
         FactsCollector,
+        ConnectivityTester,
         DocSearcher,
         WebSearcher,
         FileWriter,

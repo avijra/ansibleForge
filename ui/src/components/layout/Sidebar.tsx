@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, MessageSquare, Trash2, Terminal, Server, GitBranch, Brain } from "lucide-react";
+import { Plus, MessageSquare, Trash2, Terminal, Server, GitBranch, Brain, Trash } from "lucide-react";
 import type { Session } from "@/api/types";
 import { cn } from "@/lib/utils";
 
@@ -9,6 +9,7 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onClearAll?: () => void;
 }
 
 function timeAgo(ts: number): string {
@@ -89,13 +90,15 @@ function SessionRow({
   );
 }
 
-export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete }: SidebarProps) {
+export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClearAll }: SidebarProps) {
+  const [confirmClear, setConfirmClear] = useState(false);
+
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
       {/* Logo area */}
       <div className="px-3 py-3 border-b border-zinc-800/50">
         <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-teal-400" />
+          <Terminal className="h-4 w-4 text-zinc-400" />
           <span className="text-xs font-semibold tracking-tight text-zinc-200">
             AnsibleForge
           </span>
@@ -107,14 +110,43 @@ export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete }: Sideb
         <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-600">
           Sessions ({sessions.length})
         </span>
-        <button
-          onClick={onNew}
-          className="rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-teal-400 transition-colors"
-          title="New session"
-          aria-label="New session"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          {sessions.length > 1 && onClearAll && (
+            confirmClear ? (
+              <div className="flex items-center gap-1 mr-1">
+                <button
+                  onClick={() => { onClearAll(); setConfirmClear(false); }}
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-red-400 bg-red-950/40 hover:bg-red-900/40 transition-colors"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => setConfirmClear(false)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmClear(true)}
+                className="rounded-md p-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400 transition-colors"
+                title="Clear all sessions"
+                aria-label="Clear all sessions"
+              >
+                <Trash className="h-3 w-3" />
+              </button>
+            )
+          )}
+          <button
+            onClick={onNew}
+            className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            title="New session"
+            aria-label="New session"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Session list */}

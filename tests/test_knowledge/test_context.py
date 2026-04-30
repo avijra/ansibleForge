@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ansible_forge.knowledge.context import (
-    _extract_mentions,
+    _extract_mentions_from_messages,
     build_knowledge_context,
 )
 from ansible_forge.knowledge.graph import KnowledgeGraph
@@ -26,28 +26,28 @@ def project_graph(tmp_path: Path) -> KnowledgeGraph:
 class TestExtractMentions:
     def test_extracts_ip_addresses(self) -> None:
         msgs = [{"content": "Deploy to 192.168.1.10 and 10.0.0.5"}]
-        hosts, _ = _extract_mentions(msgs)
+        hosts, _ = _extract_mentions_from_messages(msgs)
         assert "192.168.1.10" in hosts
         assert "10.0.0.5" in hosts
 
     def test_extracts_module_fqcns(self) -> None:
         msgs = [{"content": "Use ansible.builtin.apt to install nginx"}]
-        _, modules = _extract_mentions(msgs)
+        _, modules = _extract_mentions_from_messages(msgs)
         assert "ansible.builtin.apt" in modules
 
     def test_ignores_0000(self) -> None:
         msgs = [{"content": "bind to 0.0.0.0"}]
-        hosts, _ = _extract_mentions(msgs)
+        hosts, _ = _extract_mentions_from_messages(msgs)
         assert "0.0.0.0" not in hosts
 
     def test_handles_empty_messages(self) -> None:
-        hosts, modules = _extract_mentions([])
+        hosts, modules = _extract_mentions_from_messages([])
         assert len(hosts) == 0
         assert len(modules) == 0
 
     def test_only_scans_last_10(self) -> None:
         msgs = [{"content": f"host 10.0.0.{i}"} for i in range(20)]
-        hosts, _ = _extract_mentions(msgs)
+        hosts, _ = _extract_mentions_from_messages(msgs)
         assert "10.0.0.0" not in hosts
         assert "10.0.0.19" in hosts
 

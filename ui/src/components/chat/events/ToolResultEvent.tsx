@@ -23,17 +23,17 @@ interface AnsibleSummary {
 function taskIcon(eventType: string) {
   switch (eventType) {
     case "runner_on_ok":
-      return <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />;
-    case "runner_on_changed":
-      return <CheckCircle2 className="h-3 w-3 text-amber-400 shrink-0" />;
-    case "runner_on_failed":
-      return <XCircle className="h-3 w-3 text-red-400 shrink-0" />;
-    case "runner_on_skipped":
-      return <Clock className="h-3 w-3 text-zinc-500 shrink-0" />;
-    case "runner_on_unreachable":
-      return <WifiOff className="h-3 w-3 text-red-400 shrink-0" />;
-    default:
       return <CheckCircle2 className="h-3 w-3 text-zinc-500 shrink-0" />;
+    case "runner_on_changed":
+      return <CheckCircle2 className="h-3 w-3 text-zinc-400 shrink-0" />;
+    case "runner_on_failed":
+      return <XCircle className="h-3 w-3 text-zinc-400 shrink-0" />;
+    case "runner_on_skipped":
+      return <Clock className="h-3 w-3 text-zinc-600 shrink-0" />;
+    case "runner_on_unreachable":
+      return <WifiOff className="h-3 w-3 text-zinc-400 shrink-0" />;
+    default:
+      return <CheckCircle2 className="h-3 w-3 text-zinc-600 shrink-0" />;
   }
 }
 
@@ -91,11 +91,11 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
         <span
           className={cn(
             "text-[10px] font-mono px-1.5 py-0.5 rounded",
-            task.event === "runner_on_ok" && "text-emerald-400 bg-emerald-500/10",
-            task.event === "runner_on_changed" && "text-amber-400 bg-amber-500/10",
-            task.event === "runner_on_failed" && "text-red-400 bg-red-500/10",
-            task.event === "runner_on_skipped" && "text-zinc-500 bg-zinc-500/10",
-            task.event === "runner_on_unreachable" && "text-red-400 bg-red-500/10"
+            task.event === "runner_on_ok" && "text-zinc-400 bg-zinc-700/20",
+            task.event === "runner_on_changed" && "text-zinc-300 bg-zinc-700/30",
+            task.event === "runner_on_failed" && "text-zinc-300 bg-zinc-700/30",
+            task.event === "runner_on_skipped" && "text-zinc-600 bg-zinc-800/30",
+            task.event === "runner_on_unreachable" && "text-zinc-300 bg-zinc-700/30"
           )}
         >
           {taskLabel(task.event)}
@@ -132,7 +132,7 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
           )}
           {!!diffText && (
             <div>
-              <div className="text-[10px] text-teal-400/70 mb-0.5 font-medium">diff</div>
+              <div className="text-[10px] text-zinc-400 mb-0.5 font-medium">diff</div>
               <DiffView content={diffText} maxHeight="max-h-48" />
             </div>
           )}
@@ -152,19 +152,30 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
   );
 }
 
+function hasNonZeroStats(stats: Record<string, Record<string, number>>): boolean {
+  return Object.values(stats).some((counts) =>
+    Object.values(counts).some((v) => v > 0)
+  );
+}
+
 function RecapBar({ stats }: { stats: Record<string, Record<string, number>> }) {
+  if (!hasNonZeroStats(stats)) return null;
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono">
-      {Object.entries(stats).map(([host, counts]) => (
-        <div key={host} className="flex items-center gap-2">
-          <span className="text-zinc-400">{host}:</span>
-          {counts.ok > 0 && <span className="text-emerald-400">ok={counts.ok}</span>}
-          {counts.changed > 0 && <span className="text-amber-400">changed={counts.changed}</span>}
-          {counts.failures > 0 && <span className="text-red-400">failed={counts.failures}</span>}
-          {counts.unreachable > 0 && <span className="text-red-300">unreachable={counts.unreachable}</span>}
-          {counts.skipped > 0 && <span className="text-zinc-500">skipped={counts.skipped}</span>}
-        </div>
-      ))}
+      {Object.entries(stats).map(([host, counts]) => {
+        const hasValues = Object.values(counts).some((v) => v > 0);
+        if (!hasValues) return null;
+        return (
+          <div key={host} className="flex items-center gap-2">
+            <span className="text-zinc-400">{host}:</span>
+            {counts.ok > 0 && <span className="text-zinc-400">ok={counts.ok}</span>}
+            {counts.changed > 0 && <span className="text-zinc-300">changed={counts.changed}</span>}
+            {counts.failures > 0 && <span className="text-zinc-300">failed={counts.failures}</span>}
+            {counts.unreachable > 0 && <span className="text-zinc-400">unreachable={counts.unreachable}</span>}
+            {counts.skipped > 0 && <span className="text-zinc-600">skipped={counts.skipped}</span>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -190,34 +201,28 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
 
   const borderColor =
     status === "success"
-      ? "border-emerald-800/50"
+      ? "border-emerald-800/30 shadow-[0_0_12px_-4px_rgba(16,185,129,0.10)]"
       : status === "needs_approval"
-        ? "border-amber-800/50"
-        : "border-red-800/50";
+        ? "border-amber-800/30 shadow-[0_0_12px_-4px_rgba(245,158,11,0.10)]"
+        : "border-red-800/30 shadow-[0_0_12px_-4px_rgba(239,68,68,0.10)]";
 
   return (
     <div
       className={cn(
-        "animate-slide-in rounded-lg border bg-zinc-900/50 p-3 space-y-2",
+        "animate-slide-in rounded-lg border bg-zinc-900/40 p-3 space-y-2",
         borderColor
       )}
     >
       <div className="flex items-center gap-2">
-        <Icon
-          className={cn(
-            "h-3.5 w-3.5",
-            status === "success"
-              ? "text-emerald-400"
-              : status === "needs_approval"
-                ? "text-amber-400"
-                : "text-red-400"
-          )}
-        />
+        <Icon className="h-3.5 w-3.5 text-zinc-500" />
         <span className="text-xs font-mono text-zinc-400">{tool}</span>
         <StatusBadge status={status} className="ml-auto" />
       </div>
 
-      {output && <TerminalOutput content={output} maxHeight="max-h-48" />}
+      {output && (() => {
+        const cleaned = output.replace(/\nPLAY RECAP[\s\S]*$/, "").trim();
+        return cleaned ? <TerminalOutput content={cleaned} maxHeight="max-h-48" /> : null;
+      })()}
 
       {hasAnsibleLogs && (
         <div className="space-y-2">
@@ -242,7 +247,7 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
             </div>
           )}
 
-          {summary?.stats && logsOpen && (
+          {summary?.stats && logsOpen && hasNonZeroStats(summary.stats) && (
             <div className="rounded-md bg-zinc-950/40 border border-zinc-800 px-3 py-2">
               <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Play Recap</div>
               <RecapBar stats={summary.stats} />

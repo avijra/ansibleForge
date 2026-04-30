@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,10 +18,39 @@ from ansible_forge.api.middleware.logging import RequestLoggingMiddleware
 from ansible_forge.api.router import api_router
 from ansible_forge.config import get_settings
 from ansible_forge.logging import get_logger, setup_logging
+from ansible_forge.workspace.manager import WorkspaceManager
 
 logger = get_logger(__name__)
 
 UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
+
+
+async def _periodic_cleanup(interval: int = 300) -> None:
+    """Remove expired workspaces every *interval* seconds."""
+    mgr = WorkspaceManager()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            mgr.cleanup_expired()
+        except Exception:
+            logger.warning("workspace_cleanup_error", exc_info=True)
+
+
+async def _periodic_consolidation(interval: int = 3600) -> None:
+    """Consolidate repeated experiences into generalized rules."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            from ansible_forge.api.endpoints.chat import get_orchestrator
+            from ansible_forge.knowledge.consolidation import consolidate_experiences
+
+            orch = get_orchestrator()
+            count = await consolidate_experiences(orch._experience_store, orch._llm)
+            if count:
+                logger.info("periodic_consolidation_done", rules_created=count)
+        except Exception:
+            logger.debug("periodic_consolidation_failed", exc_info=True)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
@@ -33,13 +63,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_provider=settings.llm_provider,
         llm_model=settings.llm_model,
     )
-    yield
-    logger.info("ansibleforge_shutdown")
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
+    consolidation_task = asyncio.create_task(_periodic_consolidation())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        consolidation_task.cancel()
+        logger.info("ansibleforge_shutdown")
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    setup_logging(settings.log_level)
 
     app = FastAPI(
         title="AnsibleForge",
@@ -54,7 +89,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -69,9 +104,9 @@ def create_app() -> FastAPI:
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str) -> FileResponse:
             """Serve the SPA index.html for all non-API routes."""
-            file_path = UI_DIST / full_path
-            if file_path.is_file():
-                return FileResponse(file_path)
+            resolved = (UI_DIST / full_path).resolve()
+            if resolved.is_relative_to(UI_DIST.resolve()) and resolved.is_file():
+                return FileResponse(resolved)
             return FileResponse(UI_DIST / "index.html")
 
     return app

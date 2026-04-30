@@ -32,18 +32,18 @@ class Settings(BaseSettings):
 
     # ── Agent ──────────────────────────────────────────────────────
     max_agent_steps: int = 100
-    workspace_dir: Path = Path("/tmp/ansibleforge")
-    workspace_ttl_seconds: int = 3600
-
-    # ── Knowledge Graph ───────────────────────────────────────────
-    knowledge_enabled: bool = True
-    knowledge_dir: Path = Path.home() / ".ansibleforge" / "knowledge"
+    workspace_dir: Path = Path.home() / ".ansibleforge" / "workspaces"
+    workspace_ttl_seconds: int = 604800  # 7 days
 
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None
+    jwt_secret: str | None = None
     host: str = "0.0.0.0"
     port: int = 8420
     log_level: str = "info"
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://localhost:8420"]
+    )
 
 
 class RuntimeLLMConfig(BaseModel):

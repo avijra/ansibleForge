@@ -8,10 +8,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from jinja2 import Environment, TemplateSyntaxError
 
 from ansible_forge.logging import get_logger
 
 logger = get_logger(__name__)
+
+_JINJA_ENV = Environment(
+    variable_start_string="{{",
+    variable_end_string="}}",
+    block_start_string="{%",
+    block_end_string="%}",
+    comment_start_string="{#",
+    comment_end_string="#}",
+    keep_trailing_newline=True,
+)
 
 
 @dataclass
@@ -122,6 +133,9 @@ class PlaybookValidator:
         issues.extend(self._check_dangerous_patterns(content, str(playbook_path)))
         issues.extend(self._check_plays(plays, str(playbook_path)))
 
+        project_dir = playbook_path.parent
+        issues.extend(self._check_referenced_templates(plays, project_dir))
+
         has_errors = any(i.severity == "error" for i in issues)
         return ValidationResult(passed=not has_errors, issues=issues)
 
@@ -198,6 +212,93 @@ class PlaybookValidator:
             )
 
         self._check_unencrypted_secrets(task, filepath, issues)
+        return issues
+
+    def _check_referenced_templates(
+        self, plays: list[dict[str, Any]], project_dir: Path
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        template_srcs = self._extract_template_sources(plays)
+        for src in template_srcs:
+            issues.extend(
+                self._validate_template_file(src, project_dir)
+            )
+        return issues
+
+    def _extract_template_sources(
+        self, plays: list[dict[str, Any]]
+    ) -> set[str]:
+        sources: set[str] = set()
+        for play in plays:
+            for task in play.get("tasks", []):
+                self._collect_template_src(task, sources)
+            for role_entry in play.get("roles", []):
+                role_name = (
+                    role_entry.get("role")
+                    if isinstance(role_entry, dict)
+                    else role_entry
+                )
+                if role_name:
+                    sources.add(f"__role__:{role_name}")
+        return sources
+
+    def _collect_template_src(
+        self, task: dict[str, Any], sources: set[str]
+    ) -> None:
+        tpl = task.get("ansible.builtin.template") or task.get("template")
+        if isinstance(tpl, dict) and "src" in tpl:
+            sources.add(tpl["src"])
+        for block_key in ("block", "rescue", "always"):
+            for sub in task.get(block_key, []):
+                if isinstance(sub, dict):
+                    self._collect_template_src(sub, sources)
+
+    def _validate_template_file(
+        self, src: str, project_dir: Path
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+
+        if src.startswith("__role__:"):
+            role_name = src[len("__role__:"):]
+            templates_dir = project_dir / "roles" / role_name / "templates"
+            if not templates_dir.is_dir():
+                return issues
+            for tpl_path in templates_dir.rglob("*.j2"):
+                issues.extend(self._lint_single_template(tpl_path))
+            return issues
+
+        candidates = [
+            project_dir / src,
+            project_dir / "templates" / src,
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                issues.extend(self._lint_single_template(candidate))
+                return issues
+        return issues
+
+    @staticmethod
+    def _lint_single_template(path: Path) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            return issues
+        try:
+            _JINJA_ENV.parse(source)
+        except TemplateSyntaxError as exc:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    rule="jinja2_syntax_error",
+                    message=(
+                        f"Jinja2 syntax error in template '{path.name}': "
+                        f"{exc.message} (line {exc.lineno})"
+                    ),
+                    file=str(path),
+                    line=exc.lineno or 0,
+                )
+            )
         return issues
 
     @staticmethod

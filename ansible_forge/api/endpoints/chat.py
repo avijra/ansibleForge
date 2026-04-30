@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,10 +17,37 @@ from ansible_forge.api.schemas.responses import (
     ChatResponse,
     SessionStatusResponse,
 )
+from ansible_forge.logging import get_logger
+from ansible_forge.persistence.session_store import SessionStore
+
+logger = get_logger(__name__)
+
+_session_store: SessionStore | None = None
+
+
+def _get_session_store() -> SessionStore:
+    global _session_store
+    if _session_store is None:
+        _session_store = SessionStore()
+    return _session_store
 
 router = APIRouter()
 
 _orchestrator: Orchestrator | None = None
+
+
+async def _run_reflection(session_id: str, orch: Orchestrator, store: SessionStore) -> None:
+    try:
+        from ansible_forge.knowledge.reflection import reflect_on_session
+
+        events = store.get_events(session_id)
+        count = await reflect_on_session(
+            session_id, events, orch._llm, orch._experience_store
+        )
+        if count:
+            logger.info("reflection_complete", session_id=session_id, learnings=count)
+    except Exception:
+        logger.debug("reflection_background_failed", session_id=session_id, exc_info=True)
 
 
 def get_orchestrator() -> Orchestrator:
@@ -45,6 +73,10 @@ async def chat(
         state = orch.create_session()
         session_id = state.session_id
 
+    store = _get_session_store()
+    store.save_session(session_id, status="active")
+    store.save_event(session_id, "user_message", {"content": request.message})
+
     async def event_stream():  # type: ignore[return]
         yield {
             "event": "session_started",
@@ -53,17 +85,28 @@ async def chat(
 
         try:
             async for event in orch.handle_message(session_id, request.message):
+                store.save_event(session_id, event.event_type, event.data)
                 yield {
                     "event": event.event_type,
                     "data": json.dumps(event.data),
                 }
         except Exception as exc:
+            logger.error(
+                "chat_stream_error",
+                session_id=session_id,
+                error=str(exc),
+                exc_info=True,
+            )
             yield {
                 "event": "error_recovery",
                 "data": json.dumps({
-                    "error": f"Agent error: {type(exc).__name__}: {exc}",
+                    "error": "An internal error occurred. Please try again.",
                 }),
             }
+
+        store.save_session(session_id, status="completed")
+
+        asyncio.create_task(_run_reflection(session_id, orch, store))
 
         yield {
             "event": "done",

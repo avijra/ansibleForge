@@ -69,6 +69,7 @@ class TestToolRegistry:
             "manage_galaxy",
             "execute_playbook",
             "collect_facts",
+            "test_connectivity",
             "search_docs",
             "web_search",
             "write_file",

@@ -75,8 +75,12 @@ class FileWriter(BaseTool):
             vault = SecretVault.get_instance().for_session(session_id)
             content = vault.redact(content)
 
-        project_dir = Path(workspace_path) / "project"
-        target = project_dir / file_path
+        project_dir = (Path(workspace_path) / "project").resolve()
+        target = (project_dir / file_path).resolve()
+        if not target.is_relative_to(project_dir):
+            return ToolResult.fail(
+                f"Path escapes workspace: {file_path!r} resolves outside project directory"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 

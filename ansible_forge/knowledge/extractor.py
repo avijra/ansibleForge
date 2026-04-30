@@ -83,18 +83,20 @@ def _extract_executor(
     execution_id = uuid.uuid4().hex[:12]
 
     playbook_name = data.get("playbook", "unknown")
-    project_graph.merge_playbook(playbook_name)
-    project_graph.create_execution(
-        execution_id=execution_id,
-        session_id=session_id,
-        timestamp=now,
-        mode=mode,
-        status=summary.get("status", "unknown"),
-        rc=summary.get("rc", -1),
-    )
+    exec_kwargs = {
+        "execution_id": execution_id,
+        "session_id": session_id,
+        "timestamp": now,
+        "mode": mode,
+        "status": summary.get("status", "unknown"),
+        "rc": summary.get("rc", -1),
+    }
 
-    with contextlib.suppress(Exception):
-        project_graph.link_execution_runs(execution_id, playbook_name)
+    for graph in (project_graph, global_graph):
+        graph.merge_playbook(playbook_name)
+        graph.create_execution(**exec_kwargs)
+        with contextlib.suppress(Exception):
+            graph.link_execution_runs(execution_id, playbook_name)
 
     seen_hosts: set[str] = set()
     prev_errors: dict[str, str] = {}
@@ -111,22 +113,26 @@ def _extract_executor(
         tid = _task_id(task_name, host)
         module_fqcn = task_result.get("module_fqcn", "") or ""
 
-        project_graph.merge_host(hostname=host, last_seen=now)
-        project_graph.merge_task(task_id=tid, name=task_name, module_fqcn=module_fqcn)
+        for graph in (project_graph, global_graph):
+            graph.merge_host(hostname=host, last_seen=now)
+            graph.merge_task(task_id=tid, name=task_name, module_fqcn=module_fqcn)
 
         if host not in seen_hosts:
             seen_hosts.add(host)
-            with contextlib.suppress(Exception):
-                project_graph.link_execution_targets(execution_id, host)
+            for graph in (project_graph, global_graph):
+                with contextlib.suppress(Exception):
+                    graph.link_execution_targets(execution_id, host)
 
         outcome = event_type.replace("runner_on_", "")
-        with contextlib.suppress(Exception):
-            project_graph.link_ran_task(host, tid, outcome, now)
+        for graph in (project_graph, global_graph):
+            with contextlib.suppress(Exception):
+                graph.link_ran_task(host, tid, outcome, now)
 
         if module_fqcn:
             global_graph.merge_module(module_fqcn)
-            with contextlib.suppress(Exception):
-                project_graph.link_uses_module(tid, module_fqcn)
+            for graph in (project_graph, global_graph):
+                with contextlib.suppress(Exception):
+                    graph.link_uses_module(tid, module_fqcn)
 
         if event_type == "runner_on_failed":
             error_msg = str(task_result.get("msg", ""))

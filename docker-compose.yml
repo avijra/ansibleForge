@@ -1,0 +1,18 @@
+services:
+  ansibleforge:
+    build: .
+    ports:
+      - "8420:8420"
+    environment:
+      - ANSIBLEFORGE_API_KEY=${ANSIBLEFORGE_API_KEY:-}
+      - ANSIBLEFORGE_LLM_PROVIDER=${ANSIBLEFORGE_LLM_PROVIDER:-anthropic}
+      - ANSIBLEFORGE_LLM_MODEL=${ANSIBLEFORGE_LLM_MODEL:-anthropic/claude-sonnet-4-20250514}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANSIBLEFORGE_CORS_ORIGINS=${ANSIBLEFORGE_CORS_ORIGINS:-["http://localhost:8420"]}
+    volumes:
+      - ansibleforge-data:/root/.ansibleforge
+    restart: unless-stopped
+
+volumes:
+  ansibleforge-data:

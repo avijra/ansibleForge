@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
-import type { AgentEvent, Session } from "@/api/types";
+import { useCallback, useEffect, useState } from "react";
+import type { AgentEvent, Session, WorkspaceFile } from "@/api/types";
+import { loadActiveId, loadSessions, saveActiveId, saveSessions } from "@/lib/sessionStorage";
 
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
   for (let i = arr.length - 1; i >= 0; i--) {
@@ -17,6 +18,7 @@ function createSession(): Session {
     events: [],
     playbooks: {},
     inventory: {},
+    workspaceFiles: [],
     createdAt: Date.now(),
     title: undefined,
   };
@@ -32,8 +34,17 @@ function deriveTitle(events: AgentEvent[]): string | undefined {
 }
 
 export function useSession() {
-  const [sessions, setSessions] = useState<Session[]>(() => [createSession()]);
-  const [activeId, setActiveId] = useState<string>(sessions[0].id);
+  const [sessions, setSessions] = useState<Session[]>(() => {
+    const restored = loadSessions();
+    return restored.length > 0 ? restored : [createSession()];
+  });
+  const [activeId, setActiveId] = useState<string>(() => {
+    const restored = loadActiveId();
+    return restored && sessions.some((s) => s.id === restored) ? restored : sessions[0].id;
+  });
+
+  useEffect(() => { saveSessions(sessions); }, [sessions]);
+  useEffect(() => { saveActiveId(activeId); }, [activeId]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
 
@@ -64,6 +75,12 @@ export function useSession() {
     [activeId]
   );
 
+  const clearAllSessions = useCallback(() => {
+    const fresh = createSession();
+    setSessions([fresh]);
+    setActiveId(fresh.id);
+  }, []);
+
   const addEvent = useCallback(
     (sessionId: string, event: AgentEvent) => {
       setSessions((prev) =>
@@ -93,6 +110,15 @@ export function useSession() {
                 { ...event, event: "thinking" as const },
               ],
             };
+          }
+
+          if (event.event === "progress") {
+            const events = [...s.events];
+            const lastIdx = findLastIndex(events, (e) => e.event === "progress");
+            if (lastIdx >= 0 && lastIdx === events.length - 1) {
+              events[lastIdx] = { ...event };
+              return { ...s, events };
+            }
           }
 
           const newEvents = [...s.events, event];
@@ -141,6 +167,15 @@ export function useSession() {
     []
   );
 
+  const setWorkspaceFiles = useCallback(
+    (sessionId: string, workspaceFiles: WorkspaceFile[]) => {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, workspaceFiles } : s))
+      );
+    },
+    []
+  );
+
   return {
     sessions,
     active,
@@ -148,10 +183,12 @@ export function useSession() {
     setActiveId,
     newSession,
     deleteSession,
+    clearAllSessions,
     addEvent,
     updateStatus,
     updateSessionId,
     setPlaybooks,
     setInventory,
+    setWorkspaceFiles,
   };
 }

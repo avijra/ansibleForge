@@ -127,7 +127,7 @@ export function RunHistory({ events }: { events: AgentEvent[] }) {
                 <span className={cn(
                   "font-mono px-1 py-0.5 rounded text-[10px]",
                   run.mode === "apply"
-                    ? "bg-teal-500/15 text-teal-400"
+                    ? "bg-zinc-700/30 text-zinc-300"
                     : "bg-zinc-800 text-zinc-500"
                 )}>
                   {run.mode}

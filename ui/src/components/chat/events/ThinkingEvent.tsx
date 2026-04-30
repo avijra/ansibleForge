@@ -11,19 +11,20 @@ export function ThinkingEvent({ event }: { event: AgentEvent }) {
   if (!content) return null;
 
   return (
-    <div className="animate-slide-in rounded-lg border border-violet-800/20 bg-violet-950/10 px-3 py-2.5">
+    <div className="animate-slide-in rounded-lg border border-violet-800/30 bg-violet-950/15 shadow-[0_0_12px_-4px_rgba(139,92,246,0.12)] px-3 py-2.5">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 text-xs text-violet-300/70 hover:text-violet-200 transition-colors"
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 text-xs text-zinc-400 hover:text-zinc-300 transition-colors"
       >
-        <Brain className="h-3.5 w-3.5 text-violet-400/70" />
+        <Brain className="h-3.5 w-3.5 text-zinc-500" />
         <span className="font-medium">Thinking</span>
         {expanded ? (
           <ChevronDown className="ml-auto h-3.5 w-3.5" />
         ) : (
           <>
             <span className="ml-2 flex-1 truncate text-left text-zinc-500 font-normal">
-              {content.slice(0, 100)}...
+              {content.length > 100 ? `${content.slice(0, 100)}...` : content}
             </span>
             <ChevronRight className="ml-auto h-3.5 w-3.5" />
           </>

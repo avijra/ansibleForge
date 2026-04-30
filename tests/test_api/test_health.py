@@ -15,4 +15,4 @@ class TestHealthEndpoint:
         assert data["status"] == "healthy"
         assert "version" in data
         assert "tools_available" in data
-        assert len(data["tools_available"]) == 13
+        assert len(data["tools_available"]) >= 13

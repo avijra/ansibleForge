@@ -15,35 +15,35 @@ const quickActions: QuickAction[] = [
     label: "Deploy a service",
     description: "Install and configure on remote hosts",
     prompt: "Deploy ",
-    color: "text-teal-400 bg-teal-500/10 ring-teal-500/20",
+    color: "text-zinc-400 bg-zinc-800/50 ring-zinc-700/40",
   },
   {
     icon: Server,
     label: "Check host status",
     description: "Gather facts and verify connectivity",
     prompt: "Check the status of host ",
-    color: "text-cyan-400 bg-cyan-500/10 ring-cyan-500/20",
+    color: "text-zinc-400 bg-zinc-800/50 ring-zinc-700/40",
   },
   {
     icon: FileCode2,
     label: "Create a playbook",
     description: "Generate Ansible automation from description",
     prompt: "Create a playbook that ",
-    color: "text-blue-400 bg-blue-500/10 ring-blue-500/20",
+    color: "text-zinc-400 bg-zinc-800/50 ring-zinc-700/40",
   },
   {
     icon: Network,
     label: "Manage inventory",
     description: "Set up hosts, groups, and variables",
     prompt: "Set up an inventory for ",
-    color: "text-violet-400 bg-violet-500/10 ring-violet-500/20",
+    color: "text-zinc-400 bg-zinc-800/50 ring-zinc-700/40",
   },
   {
     icon: Shield,
     label: "Security hardening",
     description: "Apply security best practices",
     prompt: "Harden the security of ",
-    color: "text-amber-400 bg-amber-500/10 ring-amber-500/20",
+    color: "text-zinc-400 bg-zinc-800/50 ring-zinc-700/40",
   },
 ];
 
@@ -56,8 +56,8 @@ export function EmptyState({ onAction }: EmptyStateProps) {
     <div className="flex flex-1 flex-col items-center justify-center gap-8 px-6 py-12">
       {/* Logo */}
       <div className="flex flex-col items-center gap-3">
-        <div className="rounded-2xl bg-teal-500/5 p-4 ring-1 ring-teal-500/10">
-          <Terminal className="h-10 w-10 text-teal-400/70" />
+        <div className="rounded-2xl bg-zinc-800/40 p-4 ring-1 ring-zinc-700/30">
+          <Terminal className="h-10 w-10 text-zinc-500" />
         </div>
         <div className="text-center">
           <h2 className="text-base font-semibold text-zinc-200">

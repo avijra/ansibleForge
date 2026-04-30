@@ -12,9 +12,9 @@
   --color-forge-text: #fafafa;
   --color-forge-text-muted: #a1a1aa;
   --color-forge-text-dim: #71717a;
-  --color-forge-accent: #14b8a6;
-  --color-forge-accent-hover: #0d9488;
-  --color-forge-accent-subtle: rgba(20, 184, 166, 0.1);
+  --color-forge-accent: #a1a1aa;
+  --color-forge-accent-hover: #d4d4d8;
+  --color-forge-accent-subtle: rgba(161, 161, 170, 0.1);
   --color-forge-success: #34d399;
   --color-forge-warning: #fbbf24;
   --color-forge-error: #f87171;
@@ -27,7 +27,7 @@
 }
 
 ::selection {
-  background: rgba(20, 184, 166, 0.25);
+  background: rgba(161, 161, 170, 0.2);
 }
 
 body {

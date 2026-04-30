@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ class ApprovalRequest(BaseModel):
 class ExecuteRequest(BaseModel):
     playbook_content: str = Field(..., description="Full playbook YAML content")
     inventory_content: str = Field(default="", description="Inventory content (YAML or INI)")
-    mode: str = Field(default="check", description="Execution mode: 'check' or 'apply'")
+    mode: Literal["check", "apply"] = Field(default="check", description="Execution mode")
     extra_vars: dict[str, Any] = Field(default_factory=dict)
 
 

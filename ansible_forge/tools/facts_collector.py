@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import os
 import stat
 from pathlib import Path
@@ -53,7 +54,7 @@ class FactsCollector(BaseTool):
                 },
                 "gather_subset": {
                     "type": "string",
-                    "description": "Comma-separated fact subsets (e.g. 'network,hardware'). Default: 'min'",
+                    "description": "Comma-separated fact subsets (e.g. 'network,hardware'). Default: 'all'",
                 },
             },
             "required": ["workspace_path", "inventory"],
@@ -119,7 +120,7 @@ class FactsCollector(BaseTool):
         workspace_path: str = "",
         host_pattern: str = "all",
         inventory: str = "",
-        gather_subset: str = "min",
+        gather_subset: str = "all",
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not inventory:
@@ -182,6 +183,23 @@ class FactsCollector(BaseTool):
                     "interfaces": facts.get("ansible_interfaces", []),
                     "memory_mb": facts.get("ansible_memtotal_mb", 0),
                     "processor_count": facts.get("ansible_processor_count", 0),
+                    "pkg_mgr": facts.get("ansible_pkg_mgr", ""),
+                    "service_mgr": facts.get("ansible_service_mgr", ""),
+                    "python_interpreter": facts.get("ansible_python", {}).get("executable", ""),
+                    "selinux": facts.get("ansible_selinux", {}).get("status", ""),
+                    "apparmor": facts.get("ansible_apparmor", {}).get("status", ""),
+                    "default_ipv4": facts.get("ansible_default_ipv4", {}).get("address", ""),
+                    "virtualization_type": facts.get("ansible_virtualization_type", ""),
+                    "mounts": [
+                        {
+                            "mount": m.get("mount", ""),
+                            "size_total": m.get("size_total", 0),
+                            "size_available": m.get("size_available", 0),
+                            "fstype": m.get("fstype", ""),
+                        }
+                        for m in (facts.get("ansible_mounts") or [])
+                        if m.get("mount", "") in ("/", "/var", "/tmp", "/home")
+                    ],
                 }
 
         if not host_facts:
@@ -189,6 +207,11 @@ class FactsCollector(BaseTool):
                 f"No facts collected (runner status={result.status}). "
                 "Check inventory and host connectivity."
             )
+
+        facts_cache = Path(workspace_path) / "artifacts" / "host_facts.json"
+        facts_cache.parent.mkdir(parents=True, exist_ok=True)
+        facts_cache.write_text(json.dumps(host_facts, indent=2), encoding="utf-8")
+        logger.info("facts_cached", path=str(facts_cache), hosts=len(host_facts))
 
         return ToolResult.ok(
             output=f"Collected facts from {len(host_facts)} host(s).",

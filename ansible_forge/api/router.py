@@ -11,9 +11,13 @@ from ansible_forge.api.endpoints import (
     health,
     inventory,
     knowledge,
+    lint,
     playbooks,
     secrets,
+    sessions,
     settings,
+    terminal,
+    workspace_files,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -27,3 +31,7 @@ api_router.include_router(inventory.router, tags=["inventory"])
 api_router.include_router(collections.router, tags=["collections"])
 api_router.include_router(settings.router, tags=["settings"])
 api_router.include_router(knowledge.router, tags=["knowledge"])
+api_router.include_router(sessions.router, tags=["sessions"])
+api_router.include_router(workspace_files.router, tags=["workspace"])
+api_router.include_router(lint.router, tags=["lint"])
+api_router.include_router(terminal.router, tags=["terminal"])

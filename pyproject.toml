@@ -26,13 +26,13 @@ dependencies = [
     "ansible-runner>=2.4.0",
     "ansible-core>=2.17.0",
     "ansible-lint>=24.10.0",
+    "Jinja2>=3.1.0",
     "structlog>=24.4.0",
     "sse-starlette>=2.1.0",
     "pyyaml>=6.0.0",
     "httpx>=0.27.0",
     "tenacity>=9.0.0",
     "aiofiles>=24.1.0",
-    "kuzu>=0.8.0",
 ]
 
 [project.optional-dependencies]

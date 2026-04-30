@@ -42,18 +42,14 @@ class Memory:
     def messages(self) -> list[Any]:
         """Return messages for LLM consumption.
 
-        For assistant messages that have a stored raw LLM message object,
-        the raw object is returned instead of the dict so that provider-specific
-        fields (e.g. DeepSeek ``reasoning_content``) are preserved through
-        LiteLLM without being stripped during dict→object conversion.
+        Internal fields prefixed with ``_`` (like ``_raw_message``) are
+        stripped.  ``reasoning_content`` is preserved because thinking-mode
+        models (e.g. DeepSeek) require it passed back on every subsequent
+        call.
         """
         result: list[Any] = []
         for m in self._messages:
-            raw = m.get("_raw_message")
-            if raw is not None:
-                result.append(raw)
-            else:
-                result.append({k: v for k, v in m.items() if not k.startswith("_")})
+            result.append({k: v for k, v in m.items() if not k.startswith("_")})
         return result
 
     @property

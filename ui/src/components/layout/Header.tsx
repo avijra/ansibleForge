@@ -15,9 +15,12 @@ export function Header({ health, llmSettings, onSettingsClick, sessionTitle }: H
   const toolCount = health?.tools_available?.length ?? 0;
 
   return (
-    <header className="flex h-11 shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-950 px-4">
-      {/* Left — context breadcrumb */}
-      <div className="flex items-center gap-3 min-w-0">
+    <header
+      className="flex h-11 shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-950 px-4"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    >
+      {/* Left — context breadcrumb (offset for macOS traffic lights) */}
+      <div className="flex items-center gap-3 min-w-0 pl-16">
         {sessionTitle && (
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[10px] text-zinc-600">Session:</span>
@@ -34,7 +37,7 @@ export function Header({ health, llmSettings, onSettingsClick, sessionTitle }: H
       </div>
 
       {/* Right — model + health + settings */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         {toolCount > 0 && (
           <div className="hidden lg:flex items-center gap-1 text-[10px] text-zinc-600">
             <Server className="h-3 w-3" />
@@ -48,7 +51,7 @@ export function Header({ health, llmSettings, onSettingsClick, sessionTitle }: H
               {displayModel.split("/").pop()}
             </span>
             {isOverride && (
-              <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-400 font-medium">
+              <span className="rounded bg-zinc-700/50 px-1.5 py-0.5 text-[10px] text-zinc-300 font-medium">
                 override
               </span>
             )}

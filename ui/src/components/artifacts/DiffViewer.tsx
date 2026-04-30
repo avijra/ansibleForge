@@ -10,7 +10,8 @@ export function DiffViewer({ events }: DiffViewerProps) {
 
   for (const evt of events) {
     if (evt.event !== "tool_result") continue;
-    const evtEvents = (evt.data.events as Array<Record<string, unknown>>) || [];
+    const nested = (evt.data.data as Record<string, unknown>) ?? evt.data;
+    const evtEvents = (nested.events as Array<Record<string, unknown>>) || [];
     for (const e of evtEvents) {
       const result = e.result as Record<string, unknown> | undefined;
       if (result?.diff) {

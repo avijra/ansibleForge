@@ -23,10 +23,10 @@ export function ToolCallEvent({ event }: { event: AgentEvent }) {
   const args = event.data.arguments as Record<string, unknown> | undefined;
 
   return (
-    <div className="animate-slide-in rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
+    <div className="animate-slide-in rounded-lg border border-blue-800/25 bg-blue-950/15 shadow-[0_0_12px_-4px_rgba(59,130,246,0.10)] p-3 space-y-2">
       <div className="flex items-center gap-2">
-        <Wrench className="h-3.5 w-3.5 text-teal-400" />
-        <span className="text-xs font-medium text-teal-400">
+        <Wrench className="h-3.5 w-3.5 text-zinc-400" />
+        <span className="text-xs font-medium text-zinc-300">
           {toolLabels[tool] || tool}
         </span>
         <span className="ml-auto font-mono text-[10px] text-zinc-600">
