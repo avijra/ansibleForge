@@ -8,7 +8,7 @@ import {
   Cpu,
   Globe,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { HealthResponse, LLMSettings, LLMSettingsUpdate } from "@/api/types";
 import { cn } from "@/lib/utils";
 
@@ -325,8 +325,6 @@ export function SettingsModal({
   );
 }
 
-let _fieldId = 0;
-
 function Field({
   label,
   hint,
@@ -338,7 +336,7 @@ function Field({
   icon: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const id = `field-${++_fieldId}`;
+  const id = useId();
   return (
     <div>
       <label htmlFor={id} className="mb-1.5 block text-xs font-medium text-zinc-300">

@@ -151,7 +151,22 @@ export function streamChat(
   })
     .then(async (res) => {
       if (!res.ok) {
-        throw new Error(`Chat API ${res.status}`);
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detail = body.detail || body.message || detail;
+        } catch {
+          /* no parseable body */
+        }
+        const friendly: Record<number, string> = {
+          401: "Authentication failed — check your API key in Settings.",
+          403: "Access denied — your API key may lack permissions.",
+          422: `Invalid request: ${detail}`,
+          500: `Server error: ${detail}`,
+          502: "LLM provider unreachable — check your provider/model settings.",
+          503: "Service temporarily unavailable — try again shortly.",
+        };
+        throw new Error(friendly[res.status] || `Unexpected error (${detail})`);
       }
 
       const reader = res.body?.getReader();

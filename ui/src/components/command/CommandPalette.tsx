@@ -1,18 +1,11 @@
 import { Command } from "cmdk";
 import {
   FileCode2,
-  Play,
-  Search,
   Shield,
-  Server,
-  Brain,
-  ScrollText,
   Terminal,
   PanelLeft,
   Settings,
   Cpu,
-  Zap,
-  GitCompare,
 } from "lucide-react";
 import type { WorkspaceFile } from "@/api/types";
 
@@ -25,17 +18,10 @@ interface CommandPaletteProps {
 }
 
 const ACTIONS = [
-  { id: "run-playbook", label: "Run Playbook", icon: Play, shortcut: "" },
   { id: "lint-file", label: "Lint Current File", icon: Shield, shortcut: "" },
-  { id: "deploy-host", label: "Deploy to Host", icon: Zap, shortcut: "" },
-  { id: "collect-facts", label: "Collect Facts", icon: Search, shortcut: "" },
-  { id: "diff-review", label: "Review Changes", icon: GitCompare, shortcut: "" },
 ];
 
 const NAVIGATION = [
-  { id: "nav-logs", label: "Go to Logs", icon: ScrollText, shortcut: "" },
-  { id: "nav-hosts", label: "Go to Hosts", icon: Server, shortcut: "" },
-  { id: "nav-knowledge", label: "Go to Knowledge Graph", icon: Brain, shortcut: "" },
   { id: "nav-terminal", label: "Toggle Terminal", icon: Terminal, shortcut: "⌘`" },
   { id: "nav-sidebar", label: "Toggle Sidebar", icon: PanelLeft, shortcut: "⌘B" },
 ];

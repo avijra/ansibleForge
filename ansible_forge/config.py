@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import json as _json
 import threading
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _parse_model_list(raw: str) -> list[str]:
+    stripped = raw.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        return _json.loads(stripped)
+    return [m.strip() for m in stripped.split(",") if m.strip()]
 
 
 class Settings(BaseSettings):
@@ -19,9 +29,13 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ────────────────────────────────────────────────────────
-    llm_provider: str = "anthropic"
-    llm_model: str = "anthropic/claude-sonnet-4-20250514"
-    llm_fallback_models: list[str] = Field(default_factory=list)
+    llm_provider: str = "deepseek"
+    llm_model: str = "deepseek/deepseek-chat"
+    llm_fallback_models_raw: str = Field(default="", alias="ANSIBLEFORGE_LLM_FALLBACK_MODELS")
+
+    @property
+    def llm_fallback_models(self) -> list[str]:
+        return _parse_model_list(self.llm_fallback_models_raw)
     llm_temperature: float = 0.1
     llm_max_tokens: int = 16384
     ollama_base_url: str = "http://localhost:11434"

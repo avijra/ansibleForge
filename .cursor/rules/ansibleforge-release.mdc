@@ -1,0 +1,49 @@
+---
+alwaysApply: true
+---
+
+# AnsibleForge Release Parity Rule
+
+## Core Principle
+Dev and release must behave identically. The end customer downloads a packaged app with zero dev tooling — if it works in dev but breaks in release, it is a bug, not an edge case. No excuses.
+
+## What This Means in Practice
+
+### Dependencies
+- Every Python import used at runtime MUST be in `pyproject.toml` dependencies AND in `ansibleforge.spec` hidden imports if not auto-detected by PyInstaller.
+- Every npm package used by the UI at runtime MUST be in `ui/package.json` dependencies (not devDependencies).
+- Never rely on a globally installed tool (ansible, python, node) being available on the user's machine — the packaged app bundles everything.
+
+### Configuration
+- `.env.example` is the first thing a new user sees. Every value in it must parse correctly with the actual `Settings` class. Test it: `cp .env.example .env && python -m ansible_forge.main` must start cleanly.
+- Default config values in `config.py` must match `.env.example`. No mismatches (e.g. max_agent_steps=100 in code vs 15 in example).
+- Inline comments on env values (e.g. `KEY=value  # comment`) break dotenv parsing. Never use them on value lines.
+
+### Electron Packaging
+- `electron/main.ts` has two code paths: `app.isPackaged` (release) and dev. Both must be tested. A path bug (e.g. `__dirname` resolving wrong) will silently break only in one mode.
+- `extraResources` in `electron/package.json` must match what `scripts/build-backend.sh` produces. If PyInstaller output structure changes, update both.
+- The packaged app serves the UI from `ui/dist/` baked into the PyInstaller bundle. Always rebuild UI (`cd ui && npm run build`) before building the backend.
+
+### Feature Completeness
+- Never ship UI elements (buttons, menu items, nav links, command palette entries) that do nothing. If a feature isn't implemented, don't show it. A dead button is worse than no button.
+- Electron native menu items (`main.ts` menu) must be wired to the React UI via IPC. If a menu entry sends an IPC event, the renderer must listen for it.
+- Every API endpoint the UI calls must exist and return the expected schema. Test the contract, not just the happy path.
+
+### Error Handling
+- Users will see errors. Make them human-readable. Never surface raw HTTP status codes, stack traces, or internal error formats.
+- When something fails silently (file save, WebSocket connect, API call), show feedback. Silent failures are UX bugs.
+
+### Testing Before Release
+1. `cp .env.example .env` → backend starts cleanly
+2. `pytest tests/ -q` → all pass
+3. `cd ui && npx tsc --noEmit && npm test` → clean
+4. `cd electron && npx tsc --noEmit` → clean
+5. `bash scripts/build-backend.sh` → succeeds
+6. `cd electron && npm run build && npx electron-builder --mac --publish never` → DMG produced
+7. Mount DMG → `xattr -cr /Applications/AnsibleForge.app` → launch → health green, settings load, chat works
+
+### When Adding Features
+- If it touches the backend: does PyInstaller pick it up? Check for hidden imports.
+- If it touches the UI: does `npm run build` include it? No dev-only code paths.
+- If it touches Electron: test both `npm run dev` AND the packaged app.
+- If it adds a new env var: update `.env.example`, verify parsing, set a sane default in `config.py`.

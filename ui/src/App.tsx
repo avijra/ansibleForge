@@ -18,6 +18,7 @@ import { useLLMSettings } from "@/hooks/useLLMSettings";
 import { useKeyboard } from "@/hooks/useKeyboard";
 import { useAnsibleContext } from "@/hooks/useAnsibleContext";
 import { useResizable } from "@/hooks/useResizable";
+import { useElectronIPC } from "@/hooks/useElectronIPC";
 import { api } from "@/api/client";
 import type { WorkspaceFile } from "@/api/types";
 
@@ -167,11 +168,22 @@ export function App() {
     [activeFilePath]
   );
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!saveError) return;
+    const t = setTimeout(() => setSaveError(null), 4000);
+    return () => clearTimeout(t);
+  }, [saveError]);
+
   const handleEditorSave = useCallback(
     async (value: string) => {
       if (!activeFilePath || !session.active.id) return;
       const sessionId = session.active.id;
-      if (sessionId.startsWith("local-")) return;
+      if (sessionId.startsWith("local-")) {
+        setSaveError("Send a message first to create a workspace before saving.");
+        return;
+      }
 
       try {
         await api.saveFile(sessionId, activeFilePath, value);
@@ -182,8 +194,9 @@ export function App() {
               : f
           )
         );
-      } catch {
-        // save failed
+        setSaveError(null);
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : "Failed to save file.");
       }
     },
     [activeFilePath, session.active.id]
@@ -268,6 +281,18 @@ export function App() {
         },
       }),
       [activeFilePath, closeFile, isPendingApproval, chat, session.active.id]
+    )
+  );
+
+  useElectronIPC(
+    useMemo(
+      () => ({
+        onOpenSettings: () => { llm.refresh(); setSettingsOpen(true); },
+        onToggleCommandPalette: () => setCmdPaletteOpen((p) => !p),
+        onToggleSidebar: () => setSidebarOpen((p) => !p),
+        onToggleTerminal: () => setBottomTab((p) => (p === "terminal" ? null : "terminal")),
+      }),
+      [llm]
     )
   );
 
@@ -364,7 +389,7 @@ export function App() {
                   onClick={() => setContextOpen(true)}
                   className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors shrink-0"
                   aria-label="Open context panel"
-                  title="Open context panel (⌘B)"
+                  title="Open context panel"
                 >
                   <PanelRightOpen className="h-4 w-4" />
                 </button>
@@ -498,6 +523,13 @@ export function App() {
           </>
         )}
       </div>
+
+      {saveError && (
+        <div className="mx-4 mb-1 flex items-center gap-2 rounded-lg border border-amber-700/50 bg-amber-950/30 px-4 py-2 text-xs text-amber-200">
+          <span>{saveError}</span>
+          <button onClick={() => setSaveError(null)} className="ml-auto text-amber-500/60 hover:text-amber-400 text-xs">Dismiss</button>
+        </div>
+      )}
 
       {/* Status bar */}
       <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/50 px-3 py-0.5 text-[10px] text-zinc-600">

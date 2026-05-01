@@ -61,16 +61,14 @@ export function useSession() {
         const filtered = prev.filter((s) => s.id !== sessionId);
         if (filtered.length === 0) {
           const fresh = createSession();
+          setActiveId(fresh.id);
           return [fresh];
+        }
+        if (sessionId === activeId) {
+          setActiveId(filtered[0].id);
         }
         return filtered;
       });
-      if (activeId === sessionId) {
-        setSessions((prev) => {
-          setActiveId(prev[0]?.id ?? "");
-          return prev;
-        });
-      }
     },
     [activeId]
   );

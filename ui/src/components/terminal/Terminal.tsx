@@ -124,7 +124,7 @@ export function TerminalPanel({ sessionId, visible }: TerminalProps) {
     return (
       <div className="flex items-center justify-center h-full gap-2 text-xs text-zinc-600">
         <TerminalSquare className="h-4 w-4" />
-        Start a session to use the terminal
+        Send a message first — a workspace terminal will connect automatically
       </div>
     );
   }

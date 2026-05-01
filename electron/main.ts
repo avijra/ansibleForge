@@ -23,10 +23,18 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function waitForBackend(maxRetries = 30): Promise<void> {
+  const http = require("http") as typeof import("http");
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const available = await isPortAvailable(PORT);
-      if (!available) return;
+      const ok = await new Promise<boolean>((resolve) => {
+        const req = http.get(`http://127.0.0.1:${PORT}/api/v1/health`, (res) => {
+          resolve(res.statusCode === 200);
+          res.resume();
+        });
+        req.on("error", () => resolve(false));
+        req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+      });
+      if (ok) return;
     } catch {
       // not ready yet
     }
@@ -43,7 +51,8 @@ function getBackendCommand(): { cmd: string; args: string[]; cwd: string } {
     return { cmd: bin, args: [], cwd: backendDir };
   }
 
-  const projectRoot = path.resolve(__dirname, "..");
+  const electronDir = path.resolve(__dirname, "..");
+  const projectRoot = path.resolve(electronDir, "..");
   const venvPython = path.join(projectRoot, ".venv", "bin", "python");
   const pythonCmd = fs.existsSync(venvPython)
     ? venvPython

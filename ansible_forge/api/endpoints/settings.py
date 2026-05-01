@@ -47,10 +47,13 @@ async def get_llm_settings(
     rt = get_runtime_llm()
     is_overridden = bool(rt.model or rt.provider)
 
+    has_runtime_key = rt.api_key is not None
+    has_env_key = bool(settings.openai_api_key or settings.anthropic_api_key)
+
     return LLMSettingsResponse(
         provider=effective_llm_provider(),
         model=effective_llm_model(),
-        api_key_set=rt.api_key is not None,
+        api_key_set=has_runtime_key or has_env_key,
         api_base=rt.api_base,
         temperature=rt.temperature if rt.temperature is not None else settings.llm_temperature,
         max_tokens=rt.max_tokens if rt.max_tokens is not None else settings.llm_max_tokens,

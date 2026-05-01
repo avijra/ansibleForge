@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, MessageSquare, Trash2, Terminal, Server, GitBranch, Brain, Trash } from "lucide-react";
+import { Plus, Trash2, Terminal, Server, GitBranch, Brain, Trash } from "lucide-react";
 import type { Session } from "@/api/types";
 import { cn } from "@/lib/utils";
 
@@ -162,24 +162,34 @@ export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClear
         ))}
       </div>
 
-      {/* Nav links */}
+      {/* Nav links — planned features */}
       <div className="border-t border-zinc-800 p-2 space-y-0.5">
         <span className="block px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
           Views
         </span>
-        <NavLink icon={Server} label="Hosts" />
-        <NavLink icon={GitBranch} label="Runs" />
-        <NavLink icon={Brain} label="Knowledge" />
+        <NavLink icon={Server} label="Hosts" disabled />
+        <NavLink icon={GitBranch} label="Runs" disabled />
+        <NavLink icon={Brain} label="Knowledge" disabled />
       </div>
     </aside>
   );
 }
 
-function NavLink({ icon: Icon, label }: { icon: typeof Server; label: string }) {
+function NavLink({ icon: Icon, label, disabled }: { icon: typeof Server; label: string; disabled?: boolean }) {
   return (
-    <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300 transition-colors">
+    <button
+      disabled={disabled}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
+        disabled
+          ? "text-zinc-700 cursor-default"
+          : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+      )}
+      title={disabled ? `${label} — coming soon` : label}
+    >
       <Icon className="h-3.5 w-3.5" />
       {label}
+      {disabled && <span className="ml-auto text-[9px] text-zinc-800">soon</span>}
     </button>
   );
 }
