@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { app, BrowserWindow, Menu, shell, dialog } = require("electron") as typeof import("electron");
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain } = require("electron") as typeof import("electron");
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as net from "net";
@@ -71,6 +71,7 @@ function startBackend(): void {
       ...process.env,
       ANSIBLEFORGE_HOST: "127.0.0.1",
       ANSIBLEFORGE_PORT: String(PORT),
+      ANSIBLEFORGE_PARENT_PID: String(process.pid),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -118,7 +119,7 @@ function checkForUpdates(): void {
         .showMessageBox({
           type: "info",
           title: "Update Available",
-          message: `AnsibleForge v${info.version} is available.`,
+          message: `Tuyere v${info.version} is available.`,
           detail: "Would you like to download it now? It will install when you next quit the app.",
           buttons: ["Download", "Later"],
           defaultId: 0,
@@ -144,7 +145,7 @@ function checkForUpdates(): void {
 function buildMenu(): Electron.Menu {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: "AnsibleForge",
+      label: "Tuyere",
       submenu: [
         { role: "about" },
         { type: "separator" },
@@ -214,16 +215,46 @@ function buildMenu(): Electron.Menu {
   return Menu.buildFromTemplate(template);
 }
 
+ipcMain.handle("select-project-directory", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Select Project Directory",
+    properties: ["openDirectory", "createDirectory"],
+    buttonLabel: "Select",
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
+
 async function createWindow(): Promise<void> {
   if (mainWindow || creatingWindow) return;
   creatingWindow = true;
+
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "..", "Resources", "icon.icns")
+    : path.join(__dirname, "..", "build", "icon.png");
+
+  if (process.platform === "darwin" && app.dock) {
+    try {
+      const { nativeImage } = require("electron") as typeof import("electron");
+      const rawIcon = nativeImage.createFromPath(
+        path.join(__dirname, "..", "build", "icon.png")
+      );
+      if (!rawIcon.isEmpty()) {
+        const dockIcon = rawIcon.resize({ width: 128, height: 128 });
+        app.dock.setIcon(dockIcon);
+      }
+    } catch { /* icon not found in dev — acceptable */ }
+  }
 
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 960,
     minHeight: 600,
-    title: "AnsibleForge",
+    title: "Tuyere",
+    icon: iconPath,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 12, y: 12 },
     backgroundColor: "#09090b",
@@ -237,6 +268,10 @@ async function createWindow(): Promise<void> {
   Menu.setApplicationMenu(buildMenu());
 
   mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+
+  if (!app.isPackaged) {
+    mainWindow.webContents.openDevTools({ mode: "bottom" });
+  }
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -257,6 +292,8 @@ if (!gotLock) {
       mainWindow.focus();
     }
   });
+
+  app.setName("Tuyere");
 
   app.on("ready", async () => {
     const portFree = await isPortAvailable(PORT);

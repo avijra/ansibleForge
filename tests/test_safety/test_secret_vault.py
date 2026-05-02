@@ -39,6 +39,7 @@ def test_redact_skips_short_values() -> None:
 
 def test_list_names() -> None:
     v = SessionVault("sess-a")
+    v.clear()
     v.store("a", "secretone1", "first")
     v.store("b", "secrettwo2", "second")
 

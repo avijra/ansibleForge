@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("toggle-sidebar", callback),
   onToggleTerminal: (callback: () => void) =>
     ipcRenderer.on("toggle-terminal", callback),
+  selectProjectDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke("select-project-directory"),
   platform: process.platform,
 });

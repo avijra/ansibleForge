@@ -15,9 +15,16 @@ from ansible_forge.main import create_app
 
 @pytest.fixture
 def tmp_workspace(tmp_path: Path) -> Path:
-    """Create a temporary workspace with ansible-runner layout."""
-    for subdir in ("project", "inventory", "env", "artifacts"):
-        (tmp_path / subdir).mkdir()
+    """Create a temporary workspace with the new user-owned project layout.
+
+    Playbooks, inventory, and roles live at the root.
+    Runner internals live in ``.tuyere/``.
+    """
+    (tmp_path / "inventory").mkdir()
+    tuyere = tmp_path / ".tuyere"
+    tuyere.mkdir()
+    for subdir in ("env", "artifacts", "ssh_keys"):
+        (tuyere / subdir).mkdir()
     return tmp_path
 
 
@@ -64,7 +71,7 @@ def test_settings(tmp_path: Path) -> Settings:
     return Settings(
         llm_provider="openai",
         llm_model="openai/gpt-4o-mini",
-        workspace_dir=tmp_path / "workspaces",
+        default_project_dir=tmp_path / "projects",
         api_key="test-key-123",
         log_level="debug",
     )

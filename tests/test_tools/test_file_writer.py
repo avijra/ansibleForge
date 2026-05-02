@@ -25,7 +25,7 @@ class TestFileWriter:
             workspace_path=ws,
         )
         assert result.status == ToolStatus.SUCCESS
-        written = tmp_workspace / "project" / "hello.txt"
+        written = tmp_workspace / "hello.txt"
         assert written.exists()
         assert written.read_text(encoding="utf-8") == body
 
@@ -38,7 +38,7 @@ class TestFileWriter:
             workspace_path=ws,
         )
         assert result.status == ToolStatus.SUCCESS
-        written = tmp_workspace / "project" / "templates" / "nginx.conf.j2"
+        written = tmp_workspace / "templates" / "nginx.conf.j2"
         assert written.exists()
         assert written.read_text(encoding="utf-8") == body
 
@@ -99,4 +99,4 @@ class TestFileWriter:
         assert result.status == ToolStatus.SUCCESS
         path = Path(result.data["path"])
         assert path.read_text(encoding="utf-8") == body
-        assert path.is_relative_to((tmp_workspace / "project").resolve())
+        assert path.is_relative_to(tmp_workspace.resolve())

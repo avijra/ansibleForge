@@ -24,6 +24,7 @@ electron/release/
 electron/resources/backend/
 
 *.log
+*.zip
 /artifacts/
 /tmp/
 .DS_Store

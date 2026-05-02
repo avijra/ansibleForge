@@ -18,7 +18,7 @@ class TestPlaybookValidator:
     def test_valid_playbook_passes(
         self, validator: PlaybookValidator, tmp_workspace: Path, sample_playbook: str
     ) -> None:
-        (tmp_workspace / "project" / "safe.yml").write_text(sample_playbook)
+        (tmp_workspace / "safe.yml").write_text(sample_playbook)
         result = validator.validate(str(tmp_workspace), "safe.yml")
         assert result.passed
         assert len(result.errors) == 0
@@ -26,7 +26,7 @@ class TestPlaybookValidator:
     def test_dangerous_rm_rf_blocked(
         self, validator: PlaybookValidator, tmp_workspace: Path, dangerous_playbook: str
     ) -> None:
-        (tmp_workspace / "project" / "danger.yml").write_text(dangerous_playbook)
+        (tmp_workspace / "danger.yml").write_text(dangerous_playbook)
         result = validator.validate(str(tmp_workspace), "danger.yml")
         assert not result.passed
         error_rules = [i.rule for i in result.errors]
@@ -45,7 +45,7 @@ class TestPlaybookValidator:
             "      ansible.builtin.debug:\n"
             "        msg: test\n"
         )
-        (tmp_workspace / "project" / "broad.yml").write_text(playbook)
+        (tmp_workspace / "broad.yml").write_text(playbook)
         result = validator.validate(str(tmp_workspace), "broad.yml")
         warning_rules = [i.rule for i in result.warnings]
         assert "broad_privilege_escalation" in warning_rules
@@ -59,7 +59,7 @@ class TestPlaybookValidator:
     def test_invalid_yaml(
         self, validator: PlaybookValidator, tmp_workspace: Path
     ) -> None:
-        (tmp_workspace / "project" / "bad.yml").write_text("{{broken yaml")
+        (tmp_workspace / "bad.yml").write_text("{{broken yaml")
         result = validator.validate(str(tmp_workspace), "bad.yml")
         assert not result.passed
 
@@ -68,7 +68,7 @@ class TestValidationResult:
     def test_to_dict(
         self, validator: PlaybookValidator, tmp_workspace: Path, sample_playbook: str
     ) -> None:
-        (tmp_workspace / "project" / "test.yml").write_text(sample_playbook)
+        (tmp_workspace / "test.yml").write_text(sample_playbook)
         result = validator.validate(str(tmp_workspace), "test.yml")
         d = result.to_dict()
         assert "passed" in d

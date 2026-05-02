@@ -25,7 +25,7 @@ class TestRoleScaffolder:
             workspace_path=str(tmp_workspace),
         )
         assert result.status == ToolStatus.SUCCESS
-        role_path = tmp_workspace / "project" / "roles" / "nginx"
+        role_path = tmp_workspace / "roles" / "nginx"
         for subdir in ("tasks", "handlers", "defaults", "meta", "templates", "files", "vars"):
             assert (role_path / subdir).is_dir()
         assert (role_path / "tasks" / "main.yml").exists()
@@ -42,7 +42,7 @@ class TestRoleScaffolder:
             tasks_content=custom_tasks,
         )
         assert result.status == ToolStatus.SUCCESS
-        content = (tmp_workspace / "project" / "roles" / "custom" / "tasks" / "main.yml").read_text()
+        content = (tmp_workspace / "roles" / "custom" / "tasks" / "main.yml").read_text()
         assert "Custom task" in content
 
     @pytest.mark.asyncio
@@ -55,7 +55,7 @@ class TestRoleScaffolder:
             templates={"nginx.conf.j2": "server { listen 80; }"},
         )
         assert result.status == ToolStatus.SUCCESS
-        tpl = tmp_workspace / "project" / "roles" / "web" / "templates" / "nginx.conf.j2"
+        tpl = tmp_workspace / "roles" / "web" / "templates" / "nginx.conf.j2"
         assert tpl.exists()
         assert "listen 80" in tpl.read_text()
 

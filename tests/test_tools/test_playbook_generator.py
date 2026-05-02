@@ -36,7 +36,7 @@ class TestPlaybookGenerator:
             workspace_path=str(tmp_workspace),
         )
         assert result.status == ToolStatus.SUCCESS
-        assert (tmp_workspace / "project" / "install_nginx.yml").exists()
+        assert (tmp_workspace / "install_nginx.yml").exists()
 
     @pytest.mark.asyncio
     async def test_adds_yml_extension(

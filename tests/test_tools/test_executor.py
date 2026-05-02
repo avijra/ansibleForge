@@ -9,8 +9,8 @@ from ansible_forge.tools.executor import Executor
 
 class TestCleanStaleEnv:
     def test_removes_stale_cmdline(self, tmp_path: Path) -> None:
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
+        env_dir = tmp_path / ".tuyere" / "env"
+        env_dir.mkdir(parents=True)
         cmdline_file = env_dir / "cmdline"
         cmdline_file.write_text("--check --diff")
 
@@ -19,8 +19,8 @@ class TestCleanStaleEnv:
         assert not cmdline_file.exists()
 
     def test_removes_stale_extravars(self, tmp_path: Path) -> None:
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
+        env_dir = tmp_path / ".tuyere" / "env"
+        env_dir.mkdir(parents=True)
         extravars_file = env_dir / "extravars"
         extravars_file.write_text('{"ssh_password": "admin"}')
 
@@ -32,8 +32,8 @@ class TestCleanStaleEnv:
         Executor._clean_stale_env(tmp_path)
 
     def test_preserves_other_env_files(self, tmp_path: Path) -> None:
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
+        env_dir = tmp_path / ".tuyere" / "env"
+        env_dir.mkdir(parents=True)
         settings_file = env_dir / "settings"
         settings_file.write_text("{}")
         cmdline_file = env_dir / "cmdline"
@@ -45,10 +45,10 @@ class TestCleanStaleEnv:
         assert settings_file.exists()
 
     def test_stale_cmdline_causes_check_mode_regression(self, tmp_path: Path) -> None:
-        """Verify that a stale env/cmdline with --check --diff is cleaned
+        """Verify that a stale .tuyere/env/cmdline with --check --diff is cleaned
         before the runner can read it and silently switch apply to check."""
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
+        env_dir = tmp_path / ".tuyere" / "env"
+        env_dir.mkdir(parents=True)
         cmdline_file = env_dir / "cmdline"
         cmdline_file.write_text("--check --diff")
 

@@ -1,9 +1,9 @@
 {
-  "name": "ansibleforge-desktop",
-  "version": "1.0.5",
-  "description": "AnsibleForge Desktop — IDE-like experience for Ansible engineers",
+  "name": "tuyere-desktop",
+  "version": "1.0.6",
+  "description": "Tuyere — AI-powered Infrastructure as Code orchestrator",
   "author": {
-    "name": "AnsibleForge Contributors",
+    "name": "Tuyere Contributors",
     "email": "avijra@users.noreply.github.com"
   },
   "homepage": "https://github.com/avijra/ansibleForge",
@@ -17,8 +17,8 @@
     "package:all": "electron-builder --mac --linux"
   },
   "build": {
-    "appId": "com.ansibleforge.desktop",
-    "productName": "AnsibleForge",
+    "appId": "ai.tuyere.desktop",
+    "productName": "Tuyere",
     "asar": false,
     "directories": {
       "output": "release"
@@ -50,7 +50,7 @@
           "arch": ["arm64"]
         }
       ],
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
@@ -69,7 +69,8 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build/icon.png"
+      "icon": "build/icons",
+      "executableName": "tuyere"
     }
   },
   "dependencies": {

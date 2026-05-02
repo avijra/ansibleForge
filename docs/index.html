@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Tuyere — AI-Powered Infrastructure Orchestrator</title>
+<meta name="description" content="Describe your infrastructure in plain English. Tuyere provisions, configures, and manages your servers — then learns from every deployment."/>
+<meta name="theme-color" content="#09090b"/>
+<meta property="og:title" content="Tuyere — AI-Powered Infrastructure Orchestrator"/>
+<meta property="og:description" content="Describe your infrastructure in plain English. Tuyere provisions, configures, and manages your servers — then learns from every deployment."/>
+<meta property="og:type" content="website"/>
+<meta property="og:url" content="https://tuyere.ai"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='20' fill='%2318181B'/><path d='M42 44L72 38v44L42 76Z' fill='%239CA3AF'/><path d='M72 60Q90 60 108 60' stroke='%2310B981' stroke-width='3' stroke-linecap='round'/><circle cx='108' cy='60' r='4' fill='%2310B981'/></svg>"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#09090b;--bg2:#18181b;--bg3:#27272a;
+  --fg:#fafafa;--fg2:#a1a1aa;--fg3:#71717a;
+  --accent:#10b981;--accent2:#059669;
+  --stroke:#27272a;
+  --font:'Instrument Sans',-apple-system,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+html{scroll-behavior:smooth;background:var(--bg);color:var(--fg);font-family:var(--font);-webkit-font-smoothing:antialiased;line-height:1.6}
+body{overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+
+nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:0 2rem;height:64px;display:flex;align-items:center;justify-content:space-between;backdrop-filter:blur(20px) saturate(1.4);-webkit-backdrop-filter:blur(20px) saturate(1.4);background:rgba(9,9,11,.75);border-bottom:1px solid var(--stroke)}
+.nav-logo{display:flex;align-items:center;gap:.625rem}
+.nav-logo svg{width:22px;height:22px}
+.nav-wordmark{font-size:.8125rem;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--fg)}
+.nav-links{display:flex;align-items:center;gap:2rem}
+.nav-links a{font-size:.875rem;color:var(--fg2);transition:color .2s}
+.nav-links a:hover{color:var(--fg)}
+.nav-cta{display:inline-flex;align-items:center;gap:.5rem;padding:.5rem 1.25rem;border-radius:8px;background:var(--accent);color:#000;font-size:.8125rem;font-weight:600;transition:background .2s,transform .15s}
+.nav-cta:hover{background:var(--accent2);transform:translateY(-1px)}
+
+.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:8rem 2rem 4rem;position:relative}
+.hero::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:900px;height:900px;background:radial-gradient(circle,rgba(16,185,129,.05) 0%,transparent 65%);pointer-events:none}
+.hero-badge{display:inline-flex;align-items:center;gap:.5rem;padding:.375rem 1rem;border-radius:100px;border:1px solid var(--stroke);background:var(--bg2);font-size:.75rem;color:var(--fg2);margin-bottom:2rem;animation:fadeUp .8s ease both}
+.hero-badge span{color:var(--accent);font-weight:600}
+h1{font-size:clamp(2.75rem,6vw,4.5rem);font-weight:700;line-height:1.08;letter-spacing:-.035em;max-width:800px;animation:fadeUp .8s ease .1s both}
+h1 em{font-style:normal;color:var(--accent)}
+.hero-sub{font-size:clamp(1rem,1.5vw,1.25rem);color:var(--fg2);max-width:560px;margin:1.5rem auto 0;line-height:1.7;animation:fadeUp .8s ease .2s both}
+.hero-actions{display:flex;gap:1rem;margin-top:2.5rem;animation:fadeUp .8s ease .3s both;flex-wrap:wrap;justify-content:center}
+.btn-primary{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 2rem;border-radius:10px;background:var(--accent);color:#000;font-size:.9375rem;font-weight:600;transition:all .2s;border:none;cursor:pointer}
+.btn-primary:hover{background:var(--accent2);transform:translateY(-2px)}
+.btn-secondary{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 2rem;border-radius:10px;background:transparent;color:var(--fg);font-size:.9375rem;font-weight:500;border:1px solid var(--stroke);transition:all .2s;cursor:pointer}
+.btn-secondary:hover{border-color:var(--fg3);background:var(--bg2)}
+.hero-note{font-size:.75rem;color:var(--fg3);margin-top:1.25rem;animation:fadeUp .8s ease .4s both}
+
+/* hero screenshot */
+.hero-screen{max-width:1140px;margin:3rem auto 0;padding:0 2rem;animation:fadeUp 1s ease .5s both}
+.screen-frame{border-radius:14px;border:1px solid var(--stroke);overflow:hidden;background:var(--bg2)}
+.screen-frame img{width:100%;display:block}
+
+/* feature showcase */
+.feat{padding:8rem 2rem;overflow:hidden}
+.feat-inner{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
+.feat-inner.reverse{direction:rtl}
+.feat-inner.reverse>*{direction:ltr}
+.feat-text{max-width:480px}
+.feat-label{font-size:.6875rem;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin-bottom:.75rem}
+.feat-title{font-size:clamp(1.5rem,3vw,2.25rem);font-weight:700;letter-spacing:-.02em;line-height:1.15}
+.feat-desc{font-size:1rem;color:var(--fg2);margin-top:1rem;line-height:1.7}
+.feat-detail{margin-top:1.5rem;display:flex;flex-direction:column;gap:.75rem}
+.feat-detail-item{display:flex;align-items:flex-start;gap:.75rem;font-size:.875rem;color:var(--fg2);line-height:1.5}
+.feat-detail-item svg{width:18px;height:18px;color:var(--accent);flex-shrink:0;margin-top:2px}
+.feat-screen{border-radius:14px;border:1px solid var(--stroke);overflow:hidden;background:var(--bg2);transition:transform .4s ease,border-color .4s ease}
+.feat-screen:hover{transform:scale(1.015);border-color:rgba(16,185,129,.3)}
+.feat-screen img{width:100%;display:block}
+
+/* divider */
+.divider{height:1px;background:var(--stroke);max-width:1140px;margin:0 auto}
+
+/* stats bar */
+.stats{padding:4rem 2rem;background:var(--bg2);border-top:1px solid var(--stroke);border-bottom:1px solid var(--stroke)}
+.stats-inner{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:2rem;text-align:center}
+.stat-num{font-size:2.5rem;font-weight:700;color:var(--fg);letter-spacing:-.02em}
+.stat-num span{color:var(--accent)}
+.stat-label{font-size:.8125rem;color:var(--fg3);margin-top:.25rem}
+
+/* download */
+.download{padding:8rem 2rem;text-align:center;position:relative}
+.download::before{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:800px;height:400px;background:radial-gradient(ellipse,rgba(16,185,129,.04) 0%,transparent 70%);pointer-events:none}
+.download .feat-title{max-width:600px;margin:0 auto}
+.download .feat-desc{max-width:520px;margin:.75rem auto 0}
+.dl-cards{display:flex;gap:1.5rem;justify-content:center;margin-top:3rem;flex-wrap:wrap}
+.dl-card{padding:2rem 2.5rem;border-radius:14px;border:1px solid var(--stroke);background:var(--bg2);text-align:center;min-width:220px;transition:border-color .2s,transform .2s}
+.dl-card:hover{border-color:var(--accent);transform:translateY(-3px)}
+.dl-card-icon{margin-bottom:.75rem}
+.dl-card h3{font-size:1rem;font-weight:600;margin-bottom:.25rem}
+.dl-card p{font-size:.8125rem;color:var(--fg3);margin-bottom:1.25rem}
+.dl-btn{display:inline-flex;align-items:center;gap:.375rem;padding:.5rem 1.5rem;border-radius:8px;background:var(--accent);color:#000;font-size:.8125rem;font-weight:600;transition:background .2s}
+.dl-btn:hover{background:var(--accent2)}
+
+footer{border-top:1px solid var(--stroke);padding:3rem 2rem}
+.footer-inner{max-width:1140px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem}
+.footer-brand{display:flex;align-items:center;gap:.5rem}
+.footer-brand span{font-size:.75rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;color:var(--fg2)}
+.footer-links{display:flex;gap:1.5rem}
+.footer-links a{font-size:.8125rem;color:var(--fg3);transition:color .2s}
+.footer-links a:hover{color:var(--fg)}
+.footer-copy{font-size:.75rem;color:var(--fg3);width:100%;text-align:center;margin-top:1rem}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+@media(max-width:900px){
+  .feat-inner,.feat-inner.reverse{grid-template-columns:1fr;gap:2rem;direction:ltr}
+  .stats-inner{grid-template-columns:repeat(2,1fr)}
+  .nav-links{display:none}
+}
+@media(max-width:600px){
+  nav{padding:0 1rem}
+  .feat{padding:4rem 1.25rem}
+  .hero{padding:7rem 1.25rem 3rem}
+  .dl-cards{flex-direction:column;align-items:center}
+  .stats-inner{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo">
+    <svg viewBox="0 0 120 120" fill="none"><rect width="120" height="120" rx="20" fill="#18181B"/><path d="M20 52L42 46v28L20 68Z" fill="#9CA3AF" opacity=".85"/><path d="M42 44L72 38v44L42 76Z" fill="#9CA3AF"/><path d="M72 50Q85 48 98 44" stroke="#10B981" stroke-width="3" stroke-linecap="round" opacity=".8"/><path d="M72 60Q90 60 108 60" stroke="#10B981" stroke-width="3" stroke-linecap="round" opacity=".9"/><path d="M72 70Q85 72 98 76" stroke="#10B981" stroke-width="3" stroke-linecap="round" opacity=".8"/><circle cx="108" cy="60" r="4" fill="#10B981" opacity=".85"/></svg>
+    <span class="nav-wordmark">Tuyere</span>
+  </a>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/avijra/ansibleForge" target="_blank">GitHub</a>
+    <a href="#download" onclick="event.preventDefault();autoDownload()" class="nav-cta">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download
+    </a>
+  </div>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-badge"><span>v1.0</span> Now available for macOS &amp; Linux</div>
+  <h1>Your infrastructure,<br/>driven by <em>conversation</em></h1>
+  <p class="hero-sub">Describe what you need in plain English. Tuyere <span style="color:var(--fg3);font-size:.8125rem;font-style:italic">(twee-AIR)</span> provisions, configures, and manages your servers — then learns from every deployment.</p>
+  <div class="hero-actions">
+    <a href="#download" onclick="event.preventDefault();autoDownload()" class="btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download Tuyere
+    </a>
+    <a href="https://github.com/avijra/ansibleForge" target="_blank" class="btn-secondary">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+  <p class="hero-note">Free &amp; open source · macOS (Apple Silicon) · Linux (AppImage, deb)</p>
+</section>
+
+<!-- ── HERO SCREENSHOT ── -->
+<div class="hero-screen">
+  <div class="screen-frame">
+    <img src="img/hero-ui.png" alt="Tuyere deploying WildFly — chat conversation with verification evidence and execution logs" loading="eager"/>
+  </div>
+</div>
+
+<!-- ── STATS ── -->
+<section class="stats reveal">
+  <div class="stats-inner">
+    <div><div class="stat-num"><span>30</span></div><div class="stat-label">Built-in tools</div></div>
+    <div><div class="stat-num"><span>1</span> command</div><div class="stat-label">To deploy anything</div></div>
+    <div><div class="stat-num"><span>0</span></div><div class="stat-label">Dependencies to install</div></div>
+    <div><div class="stat-num"><span>∞</span></div><div class="stat-label">Knowledge that compounds</div></div>
+  </div>
+</section>
+
+<!-- ── FEATURE 1: CONVERSATION ── -->
+<section class="feat" id="features">
+  <div class="feat-inner reveal">
+    <div class="feat-text">
+      <div class="feat-label">Conversational automation</div>
+      <div class="feat-title">Say what you need. Watch it happen.</div>
+      <div class="feat-desc">Tell Tuyere to deploy a service, harden a server, or configure a cluster. It generates the automation, explains its plan, runs it, and verifies the result — all in one conversation.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Generates production-grade automation from plain English
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Runs verification checks after every deployment
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Real-time execution logs with task-level detail
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/hero-ui.png" alt="Chat conversation with deployment verification and execution logs" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── FEATURE 2: FILES ── -->
+<section class="feat">
+  <div class="feat-inner reverse reveal">
+    <div class="feat-text">
+      <div class="feat-label">Full workspace visibility</div>
+      <div class="feat-title">Every file it generates, right there.</div>
+      <div class="feat-desc">Tuyere doesn't hide its work. Browse the playbooks, inventory, templates, and roles it creates — with syntax highlighting and a full file tree. Edit anything, or let the AI refine it.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Live file tree with syntax-highlighted preview
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Inventory, templates, roles — all visible
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/chat-files.png" alt="File browser showing generated playbooks, inventory, and Jinja2 templates" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── FEATURE 3: EXECUTION ── -->
+<section class="feat">
+  <div class="feat-inner reveal">
+    <div class="feat-text">
+      <div class="feat-label">Execution intelligence</div>
+      <div class="feat-title">Track every run across every host.</div>
+      <div class="feat-desc">Full run history with status, mode, task count, and timing. See which hosts were touched, what changed, and what failed — across every session.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Run history with apply vs. check mode tracking
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Per-host task breakdown with status indicators
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/chat-runs.png" alt="Execution run history showing playbook runs with status and task counts" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── FEATURE 4: HOSTS ── -->
+<section class="feat">
+  <div class="feat-inner reverse reveal">
+    <div class="feat-text">
+      <div class="feat-label">Infrastructure at a glance</div>
+      <div class="feat-title">Your entire fleet, verified and visible.</div>
+      <div class="feat-desc">Every host Tuyere has touched — with IP, connection status, last activity, and total runs. Auto-discovered from cloud providers or added through conversation.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Real-time host status with verification badges
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Auto-discovery from AWS, Azure, GCP, VMware
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/hosts-infra.png" alt="Infrastructure view with 8 verified hosts and run history" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── FEATURE 5: KNOWLEDGE ── -->
+<section class="feat">
+  <div class="feat-inner reveal">
+    <div class="feat-text">
+      <div class="feat-label">Adaptive intelligence</div>
+      <div class="feat-title">Gets smarter with every session.</div>
+      <div class="feat-desc">Tuyere builds a knowledge graph from every deployment. Successful runs become recipes. Failures become error resolutions. Patterns become rules. The more you use it, the better it gets.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Visual experience map with 160+ connected nodes
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Recipes, error fixes, rules — all learned automatically
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Confidence scoring that rewards what works
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/knowledge-full.png" alt="Knowledge base with experience map, 62 recipes, 9 error fixes, 437 total experiences" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── FEATURE 6: HOST DETAIL ── -->
+<section class="feat">
+  <div class="feat-inner reverse reveal">
+    <div class="feat-text">
+      <div class="feat-label">Deep host intelligence</div>
+      <div class="feat-title">Know exactly what's running where.</div>
+      <div class="feat-desc">Click any host to see its full story — discovered services, open ports, task history, and connection details. Tuyere tracks every interaction so you always know the state of your fleet.</div>
+      <div class="feat-detail">
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          9 hosts discovered with per-host task breakdown
+        </div>
+        <div class="feat-detail-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Status categories: ok, changed, failed, skipped
+        </div>
+      </div>
+    </div>
+    <div class="feat-screen">
+      <img src="img/chat-hosts.png" alt="Host discovery panel showing 9 hosts with task counts and status breakdown" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<!-- ── DOWNLOAD ── -->
+<section id="download" class="download">
+  <div class="feat-label reveal">Download</div>
+  <div class="feat-title reveal">Start automating in under a minute</div>
+  <div class="feat-desc reveal">Free, open source, and self-contained. No CLI tools to install — everything is bundled.</div>
+  <div class="dl-cards reveal">
+    <div class="dl-card">
+      <div class="dl-card-icon"><svg width="36" height="36" viewBox="0 0 24 24" fill="var(--fg2)"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg></div>
+      <h3>macOS</h3>
+      <p>Apple Silicon (arm64)</p>
+      <a href="#" onclick="event.preventDefault();startDownload('mac')" class="dl-btn" id="dl-mac">Download .dmg</a>
+    </div>
+    <div class="dl-card">
+      <div class="dl-card-icon"><svg width="36" height="36" viewBox="0 0 24 24" fill="var(--fg2)"><path d="M12.504 0c-.155 0-.311.015-.466.045L3.51 1.823c-.768.153-1.352.844-1.352 1.615v16.098c0 .783.614 1.464 1.42 1.614l8.53 1.802c.155.031.31.047.465.047.155 0 .31-.016.465-.047l8.53-1.802c.806-.15 1.42-.831 1.42-1.614V3.438c0-.77-.584-1.462-1.352-1.615L13.037.045A2.488 2.488 0 0012.504 0zM12 5.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zm0 2a4.5 4.5 0 100 9 4.5 4.5 0 000-9z"/></svg></div>
+      <h3>Linux</h3>
+      <p>AppImage &amp; .deb packages</p>
+      <a href="#" onclick="event.preventDefault();startDownload('linux')" class="dl-btn" id="dl-linux">Download AppImage</a>
+    </div>
+  </div>
+  <p class="hero-note reveal" style="margin-top:2rem">Or build from source: <code style="font-family:var(--mono);color:var(--fg2);background:var(--bg2);padding:.125rem .5rem;border-radius:4px;font-size:.75rem">git clone https://github.com/avijra/ansibleForge</code></p>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <svg viewBox="0 0 120 120" fill="none" width="16" height="16"><rect width="120" height="120" rx="20" fill="#18181B"/><path d="M42 44L72 38v44L42 76Z" fill="#9CA3AF"/><path d="M72 60Q90 60 108 60" stroke="#10B981" stroke-width="3" stroke-linecap="round"/><circle cx="108" cy="60" r="4" fill="#10B981"/></svg>
+      <span>Tuyere</span>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/avijra/ansibleForge">GitHub</a>
+      <a href="https://github.com/avijra/ansibleForge/releases">Releases</a>
+      <a href="https://github.com/avijra/ansibleForge/issues">Issues</a>
+    </div>
+  </div>
+  <p class="footer-copy">&copy; 2026 Tuyere. Open source under MIT License.</p>
+</footer>
+
+<script>
+const REPO='avijra/ansibleForge',API=`https://api.github.com/repos/${REPO}/releases/latest`;
+const observer=new IntersectionObserver(e=>{e.forEach(e=>{if(e.isIntersecting){e.target.classList.add('visible');observer.unobserve(e.target)}})},{threshold:.12,rootMargin:'0px 0px -40px 0px'});
+document.querySelectorAll('.reveal').forEach(el=>observer.observe(el));
+
+function detectOS(){const u=navigator.userAgent.toLowerCase();return u.includes('linux')?'linux':'mac'}
+function matchAsset(a,os){const p={mac:['.dmg'],linux:['.AppImage']};for(const e of(p[os]||p.mac)){const f=a.find(x=>x.name.endsWith(e));if(f)return f}return null}
+let rc=null;
+async function fetchRelease(){if(rc)return rc;try{const r=await fetch(API);if(!r.ok)return null;rc=await r.json();return rc}catch{return null}}
+async function startDownload(os){const r=await fetchRelease();if(!r){window.location.href=`https://github.com/${REPO}/releases/latest`;return}const a=matchAsset(r.assets,os);a?window.location.href=a.browser_download_url:window.location.href=`https://github.com/${REPO}/releases/latest`}
+function autoDownload(){startDownload(detectOS())}
+(async()=>{const os=detectOS();if(os==='linux'){const l=document.getElementById('dl-linux');if(l)l.closest('.dl-card').style.order='-1'}const r=await fetchRelease();if(!r)return;const v=r.tag_name.replace(/^v/,'');const b=document.querySelector('.hero-badge');if(b)b.innerHTML=`<span>v${v}</span> Now available for macOS &amp; Linux`;const ma=matchAsset(r.assets,'mac'),la=matchAsset(r.assets,'linux');if(ma){const e=document.getElementById('dl-mac');if(e)e.textContent=`Download .dmg (${(ma.size/1048576).toFixed(0)} MB)`}if(la){const e=document.getElementById('dl-linux');if(e)e.textContent=`Download AppImage (${(la.size/1048576).toFixed(0)} MB)`}})();
+</script>
+</body>
+</html>
