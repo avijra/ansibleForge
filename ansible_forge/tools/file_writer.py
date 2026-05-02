@@ -31,7 +31,7 @@ class FileWriter(BaseTool):
             "an Ansible playbook. Unlike generate_playbook, this tool does NOT validate YAML "
             "structure, so it can write Jinja2 templates with {{ variables }}, raw config files, "
             "INI files, shell scripts, etc. "
-            "The file is written relative to the workspace's project/ directory."
+            "The file is written relative to the project directory."
         )
 
     @property
@@ -75,7 +75,7 @@ class FileWriter(BaseTool):
             vault = SecretVault.get_instance().for_session(session_id)
             content = vault.redact(content)
 
-        project_dir = (Path(workspace_path) / "project").resolve()
+        project_dir = Path(workspace_path).resolve()
         target = (project_dir / file_path).resolve()
         if not target.is_relative_to(project_dir):
             return ToolResult.fail(

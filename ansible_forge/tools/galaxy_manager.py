@@ -107,7 +107,7 @@ class GalaxyManager(BaseTool):
                 pass
 
         return ToolResult.ok(
-            output=f"Found {len(results)} installed collection(s) matching '{query}'.",
+            output=f"Found {len(results)} installed package(s) matching '{query}'.",
             collections=results,
         )
 
@@ -121,10 +121,10 @@ class GalaxyManager(BaseTool):
         )
 
         if rc != 0:
-            return ToolResult.fail(f"Galaxy install failed: {stderr or stdout}")
+            return ToolResult.fail(f"Package install failed: {stderr or stdout}")
 
         return ToolResult.ok(
-            output=f"Collection '{target}' installed successfully.\n{stdout}",
+            output=f"Package '{target}' installed successfully.",
         )
 
     async def _list_installed(self) -> ToolResult:
@@ -138,7 +138,7 @@ class GalaxyManager(BaseTool):
                 "collection", "list",
             )
             if rc != 0:
-                return ToolResult.fail(f"Galaxy list failed: {stderr}")
+                return ToolResult.fail(f"Could not list installed packages: {stderr}")
 
         try:
             data = json.loads(stdout)
@@ -150,7 +150,7 @@ class GalaxyManager(BaseTool):
                         "version": info.get("version", "unknown"),
                     })
             return ToolResult.ok(
-                output=f"{len(collections)} collection(s) installed.",
+                output=f"{len(collections)} package(s) installed.",
                 collections=collections,
             )
         except (json.JSONDecodeError, AttributeError):

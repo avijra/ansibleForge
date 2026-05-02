@@ -52,3 +52,6 @@ class HealthResponse(BaseModel):
     llm_provider: str
     llm_model: str
     tools_available: list[str] = Field(default_factory=list)
+    llm_status: str = "unknown"
+    llm_status_detail: str = ""
+    external_tools: dict[str, str] = Field(default_factory=dict)

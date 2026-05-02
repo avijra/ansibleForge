@@ -6,13 +6,18 @@ from fastapi import APIRouter
 
 from ansible_forge.api.endpoints import (
     chat,
+    checkpoints,
     collections,
     execute,
     health,
+    infrastructure,
     inventory,
+    inventory_sources,
     knowledge,
     lint,
     playbooks,
+    plugins,
+    rules,
     secrets,
     sessions,
     settings,
@@ -35,3 +40,8 @@ api_router.include_router(sessions.router, tags=["sessions"])
 api_router.include_router(workspace_files.router, tags=["workspace"])
 api_router.include_router(lint.router, tags=["lint"])
 api_router.include_router(terminal.router, tags=["terminal"])
+api_router.include_router(infrastructure.router, tags=["infrastructure"])
+api_router.include_router(inventory_sources.router, tags=["inventory-sources"])
+api_router.include_router(checkpoints.router, tags=["checkpoints"])
+api_router.include_router(rules.router, tags=["rules"])
+api_router.include_router(plugins.router, tags=["plugins"])

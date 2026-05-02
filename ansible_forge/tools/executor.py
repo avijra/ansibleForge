@@ -14,6 +14,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
+from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
 
@@ -42,11 +43,11 @@ class Executor(BaseTool):
             "properties": {
                 "workspace_path": {
                     "type": "string",
-                    "description": "Absolute path to the ansible-runner workspace directory",
+                    "description": "Absolute path to the project directory",
                 },
                 "playbook": {
                     "type": "string",
-                    "description": "Playbook filename (relative to workspace/project/)",
+                    "description": "Playbook filename (relative to project directory)",
                 },
                 "mode": {
                     "type": "string",
@@ -55,7 +56,7 @@ class Executor(BaseTool):
                 },
                 "inventory": {
                     "type": "string",
-                    "description": "Path to inventory file (relative to workspace/inventory/)",
+                    "description": "Path to inventory file (relative to project's inventory/ directory)",
                 },
                 "extra_vars": {
                     "type": "object",
@@ -92,7 +93,7 @@ class Executor(BaseTool):
         Returns the list of files created (for optional cleanup).
         """
         files: list[Path] = []
-        keys_dir = ws / "ssh_keys"
+        keys_dir = ws / ".tuyere" / "ssh_keys"
         for var_name in list(merged_vars):
             value = merged_vars[var_name]
             if not isinstance(value, str):
@@ -131,7 +132,7 @@ class Executor(BaseTool):
         previous dry-run.  Cleaning these files before every run ensures
         the correct flags are always used.
         """
-        env_dir = ws / "env"
+        env_dir = ws / ".tuyere" / "env"
         if not env_dir.exists():
             return
         for artifact in ("cmdline", "extravars"):
@@ -169,8 +170,8 @@ class Executor(BaseTool):
             return ToolResult.fail("workspace_path and playbook are required")
 
         ws = Path(workspace_path)
-        if not (ws / "project" / playbook).exists():
-            return ToolResult.fail(f"Playbook not found: {ws / 'project' / playbook}")
+        if not (ws / playbook).exists():
+            return ToolResult.fail(f"Playbook not found: {ws / playbook}")
 
         cmdline_args: list[str] = []
         if mode == "check":
@@ -193,7 +194,8 @@ class Executor(BaseTool):
         self._clean_stale_env(ws)
 
         runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws),
+            "private_data_dir": str(ws / ".tuyere"),
+            "project_dir": str(ws),
             "playbook": playbook,
             "verbosity": verbosity,
         }
@@ -205,6 +207,12 @@ class Executor(BaseTool):
             inv_path = self._resolve_inventory(ws, inventory)
             if inv_path.exists():
                 runner_kwargs["inventory"] = str(inv_path)
+                missing = find_missing_secrets(inv_path, merged_vars)
+                if missing:
+                    return ToolResult.fail(
+                        f"Inventory references secrets not in the vault: {', '.join(missing)}. "
+                        f"Use request_secret to collect them from the user before retrying."
+                    )
 
         loop = asyncio.get_event_loop()
         try:
@@ -216,8 +224,8 @@ class Executor(BaseTool):
             )
         except TimeoutError:
             return ToolResult.fail(
-                "Playbook execution timed out after 5 minutes. "
-                "Check host connectivity and SSH configuration."
+                "Deployment timed out after 5 minutes. "
+                "This usually means a host is unreachable or SSH is misconfigured."
             )
 
         captured_events = (
@@ -255,21 +263,21 @@ class Executor(BaseTool):
             if result.status == "successful":
                 return ToolResult(
                     status=ToolStatus.NEEDS_APPROVAL,
-                    output=f"Dry-run completed successfully. {len(events)} task event(s).",
+                    output=f"Preview completed — {len(events)} step(s) would run. No changes were made.",
                     data=result_data,
                 )
             return ToolResult.fail(
-                f"Dry-run failed (status={result.status}, rc={result.rc})",
+                "Preview failed — check the execution log below for details.",
                 **result_data,
             )
 
         if result.status == "successful":
             return ToolResult.ok(
-                output=f"Playbook executed successfully. {len(events)} task event(s).",
+                output=f"Deployment completed successfully ({len(events)} steps ran).",
                 **result_data,
             )
         return ToolResult.fail(
-            f"Playbook execution failed (status={result.status}, rc={result.rc})",
+            "Deployment failed — check the execution log below for details.",
             **result_data,
         )
 

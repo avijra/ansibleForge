@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ────────────────────────────────────────────────────────
-    llm_provider: str = "deepseek"
-    llm_model: str = "deepseek/deepseek-chat"
+    llm_provider: str = ""
+    llm_model: str = ""
     llm_fallback_models_raw: str = Field(default="", alias="ANSIBLEFORGE_LLM_FALLBACK_MODELS")
 
     @property
@@ -45,9 +45,18 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # ── Agent ──────────────────────────────────────────────────────
-    max_agent_steps: int = 100
-    workspace_dir: Path = Path.home() / ".ansibleforge" / "workspaces"
-    workspace_ttl_seconds: int = 604800  # 7 days
+    max_agent_steps: int = 200
+    default_project_dir: Path = Path.home() / "tuyere-projects"
+
+    @field_validator("default_project_dir", mode="before")
+    @classmethod
+    def _expand_default_project_dir(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return Path.home() / "tuyere-projects"
+            return Path(v).expanduser()
+        return v
 
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None

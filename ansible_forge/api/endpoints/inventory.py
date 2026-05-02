@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ansible_forge.api.middleware.auth import verify_api_key
-from ansible_forge.workspace.manager import WorkspaceManager
+from ansible_forge.workspace.resolver import resolve_workspace
 
 router = APIRouter()
 
@@ -18,8 +18,7 @@ async def get_inventory(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     """Retrieve inventory files for a session."""
-    ws_mgr = WorkspaceManager()
-    ws = ws_mgr.get(session_id)
+    ws = resolve_workspace(session_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Session workspace not found")
 

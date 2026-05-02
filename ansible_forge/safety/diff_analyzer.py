@@ -18,6 +18,7 @@ class DiffAnalyzer:
 
             if ev_type == "runner_on_changed":
                 diff = result.get("diff", {})
+                before_raw, after_raw = self._extract_before_after(diff)
                 changes.append(
                     ChangeItem(
                         host=host,
@@ -25,6 +26,8 @@ class DiffAnalyzer:
                         action="changed",
                         diff=self._format_diff(diff),
                         detail=result.get("msg", ""),
+                        before=before_raw,
+                        after=after_raw,
                     )
                 )
             elif ev_type == "runner_on_ok" and result.get("changed"):
@@ -51,6 +54,12 @@ class DiffAnalyzer:
         return DiffReport(changes=changes)
 
     @staticmethod
+    def _extract_before_after(diff: Any) -> tuple[str, str]:
+        if isinstance(diff, dict):
+            return str(diff.get("before", "")), str(diff.get("after", ""))
+        return "", ""
+
+    @staticmethod
     def _format_diff(diff: Any) -> str:
         if isinstance(diff, dict):
             before = diff.get("before", "")
@@ -70,13 +79,16 @@ class DiffAnalyzer:
 
 class ChangeItem:
     def __init__(
-        self, host: str, task: str, action: str, diff: str, detail: str
+        self, host: str, task: str, action: str, diff: str, detail: str,
+        before: str = "", after: str = "",
     ) -> None:
         self.host = host
         self.task = task
         self.action = action
         self.diff = diff
         self.detail = detail
+        self.before = before
+        self.after = after
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -85,6 +97,8 @@ class ChangeItem:
             "action": self.action,
             "diff": self.diff,
             "detail": self.detail,
+            "before": self.before,
+            "after": self.after,
         }
 
 

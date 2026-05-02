@@ -41,8 +41,9 @@ class SecretRequester(BaseTool):
                     "description": (
                         "Variable name for the secret (snake_case, no spaces). "
                         "This is the Ansible variable name you will reference in "
-                        "playbooks/templates. Examples: 'pull_secret', 'ssh_private_key', "
-                        "'api_token', 'db_password'"
+                        "playbooks/templates. For per-host credentials, prefix with "
+                        "the host name: e.g. 'fedora_vm_ssh_password', 'ubuntu_vm_ssh_key'. "
+                        "For shared credentials: 'ssh_private_key', 'api_token', 'db_password'."
                     ),
                 },
                 "description": {
@@ -58,6 +59,15 @@ class SecretRequester(BaseTool):
                     "enum": ["password", "token", "key", "certificate", "json", "other"],
                     "description": "Category of secret — helps the UI choose the right input mode",
                 },
+                "for_host": {
+                    "type": "string",
+                    "description": (
+                        "Host or group this credential applies to. When set, the UI shows "
+                        "which host the user is providing credentials for. Examples: "
+                        "'fedora-vm', '192.168.64.3', 'aws_hosts'. Leave empty for "
+                        "shared/global credentials."
+                    ),
+                },
             },
             "required": ["name", "description"],
         }
@@ -67,6 +77,7 @@ class SecretRequester(BaseTool):
         name: str = "",
         description: str = "",
         sensitive_type: str = "other",
+        for_host: str = "",
         **kwargs: Any,
     ) -> ToolResult:
         if not name or not description:
@@ -77,13 +88,18 @@ class SecretRequester(BaseTool):
                 f"Secret name must be alphanumeric with underscores: got '{name}'"
             )
 
+        display_desc = description
+        if for_host:
+            display_desc = f"[{for_host}] {description}"
+
         return ToolResult(
             status=ToolStatus.NEEDS_APPROVAL,
-            output=f"Requesting secret '{name}' from user: {description}",
+            output=f"Requesting secret '{name}' from user: {display_desc}",
             data={
                 "secret_request": True,
                 "secret_name": name,
-                "secret_description": description,
+                "secret_description": display_desc,
                 "sensitive_type": sensitive_type,
+                "for_host": for_host,
             },
         )

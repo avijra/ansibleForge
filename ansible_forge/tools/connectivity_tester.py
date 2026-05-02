@@ -14,6 +14,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ class ConnectivityTester(BaseTool):
     @staticmethod
     def _materialize_ssh_keys(ws: Path, merged_vars: dict[str, Any]) -> list[Path]:
         files: list[Path] = []
-        keys_dir = ws / "ssh_keys"
+        keys_dir = ws / ".tuyere" / "ssh_keys"
         for var_name in list(merged_vars):
             value = merged_vars[var_name]
             if not isinstance(value, str):
@@ -94,7 +95,7 @@ class ConnectivityTester(BaseTool):
 
     @staticmethod
     def _clean_stale_env(ws: Path) -> None:
-        env_dir = ws / "env"
+        env_dir = ws / ".tuyere" / "env"
         if not env_dir.exists():
             return
         for artifact in ("cmdline", "extravars"):
@@ -125,8 +126,15 @@ class ConnectivityTester(BaseTool):
         self._materialize_ssh_keys(ws, extravars)
         self._clean_stale_env(ws)
 
+        missing = find_missing_secrets(inv_path, extravars)
+        if missing:
+            return ToolResult.fail(
+                f"Inventory references secrets that are not in the vault: {', '.join(missing)}. "
+                f"Use request_secret to collect them from the user before retrying."
+            )
+
         runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws),
+            "private_data_dir": str(ws / ".tuyere"),
             "module": "ansible.builtin.ping",
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
@@ -144,8 +152,8 @@ class ConnectivityTester(BaseTool):
             )
         except TimeoutError:
             return ToolResult.fail(
-                "Connectivity test timed out after 60 seconds. "
-                "Check host reachability, SSH configuration, and firewall rules."
+                "Connection test timed out after 60 seconds. "
+                "Hosts may be behind a firewall or SSH is not configured."
             )
 
         passed: list[str] = []
@@ -162,7 +170,7 @@ class ConnectivityTester(BaseTool):
                 stderr = event.get("event_data", {}).get("res", {}).get("stderr", "")
                 failed.append({
                     "host": host,
-                    "error": msg or stderr or f"event={event_type}",
+                    "error": msg or stderr or "host unreachable",
                 })
 
         if failed and not passed:

@@ -10,7 +10,7 @@ import yaml
 
 def ensure_ansible_cfg(workspace_path: Path) -> Path:
     """Write a minimal ansible.cfg to the project directory if absent."""
-    cfg_path = workspace_path / "project" / "ansible.cfg"
+    cfg_path = workspace_path / "ansible.cfg"
     if not cfg_path.exists():
         cfg_path.write_text(
             "[defaults]\n"
@@ -26,8 +26,8 @@ def ensure_ansible_cfg(workspace_path: Path) -> Path:
 
 
 def write_extravars(workspace_path: Path, extra_vars: dict[str, Any]) -> Path:
-    """Write extra variables to the env/ directory."""
-    env_dir = workspace_path / "env"
+    """Write extra variables to the .tuyere/env/ directory."""
+    env_dir = workspace_path / ".tuyere" / "env"
     env_dir.mkdir(parents=True, exist_ok=True)
     extravars_path = env_dir / "extravars"
     extravars_path.write_text(
@@ -38,11 +38,10 @@ def write_extravars(workspace_path: Path, extra_vars: dict[str, Any]) -> Path:
 
 def list_playbooks(workspace_path: Path) -> list[str]:
     """List all playbook YAML files in the project directory."""
-    project = workspace_path / "project"
-    if not project.exists():
+    if not workspace_path.exists():
         return []
     return [
         f.name
-        for f in project.iterdir()
+        for f in workspace_path.iterdir()
         if f.is_file() and f.suffix in (".yml", ".yaml") and not f.name.startswith(".")
     ]

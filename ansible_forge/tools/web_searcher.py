@@ -129,7 +129,7 @@ class WebSearcher(BaseTool):
         async with httpx.AsyncClient(
             timeout=15,
             follow_redirects=True,
-            headers={"User-Agent": "AnsibleForge/1.0 (Ansible automation agent)"},
+            headers={"User-Agent": "Tuyere/1.0 (Infrastructure automation agent)"},
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
@@ -142,7 +142,7 @@ class WebSearcher(BaseTool):
         async with httpx.AsyncClient(
             timeout=10,
             follow_redirects=True,
-            headers={"User-Agent": "AnsibleForge/1.0 (Ansible automation agent)"},
+            headers={"User-Agent": "Tuyere/1.0 (Infrastructure automation agent)"},
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()

@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ansible_forge.logging import get_logger
-from ansible_forge.workspace.manager import WorkspaceManager
+from ansible_forge.workspace.resolver import resolve_workspace
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -23,8 +23,7 @@ router = APIRouter()
 
 @router.websocket("/terminal/{session_id}")
 async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
-    ws_mgr = WorkspaceManager()
-    ws = ws_mgr.get(session_id)
+    ws = resolve_workspace(session_id)
 
     await websocket.accept()
 

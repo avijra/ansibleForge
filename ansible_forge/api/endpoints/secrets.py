@@ -81,6 +81,31 @@ async def list_secrets(
     )
 
 
+@router.post(
+    "/chat/{session_id}/secrets/cancel",
+    response_model=SecretResponse,
+)
+async def cancel_secret(
+    session_id: str,
+    _: Any = Depends(verify_api_key),
+) -> SecretResponse:
+    """Cancel all pending secret requests for a session, unblocking the agent."""
+    orch = get_orchestrator()
+    session_vault = orch._secret_vault.for_session(session_id)
+    session_vault.cancel_all_pending()
+
+    state = orch.get_session(session_id)
+    if state and state.status == "awaiting_secret":
+        state.status = "active"
+
+    return SecretResponse(
+        session_id=session_id,
+        name="*",
+        status="cancelled",
+        message="Pending secret requests cancelled.",
+    )
+
+
 @router.delete(
     "/chat/{session_id}/secrets/{secret_name}",
     response_model=SecretResponse,

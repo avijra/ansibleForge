@@ -33,6 +33,13 @@ class ToolRegistry:
     def tool_names(self) -> list[str]:
         return list(self._tools.keys())
 
+    @property
+    def tool_summaries(self) -> list[dict[str, str]]:
+        return [
+            {"name": t.name, "description": t.description}
+            for t in self._tools.values()
+        ]
+
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """Return all tools as OpenAI-compatible function definitions."""
         return [tool.to_openai_tool() for tool in self._tools.values()]
@@ -49,19 +56,37 @@ class ToolRegistry:
 
 def create_default_registry() -> ToolRegistry:
     """Instantiate a registry with all built-in tools."""
+    from ansible_forge.tools.adhoc_runner import AdhocRunner
+    from ansible_forge.tools.compliance_scanner import ComplianceScanner
+    from ansible_forge.tools.config_comparator import ConfigComparator
     from ansible_forge.tools.connectivity_tester import ConnectivityTester
+    from ansible_forge.tools.terraform_executor import TerraformExecutor
+    from ansible_forge.tools.terraform_generator import TerraformGenerator
+    from ansible_forge.tools.terraform_inventory import TerraformInventoryBridge
     from ansible_forge.tools.doc_searcher import DocSearcher
+    from ansible_forge.tools.drift_detector import DriftDetector
     from ansible_forge.tools.executor import Executor
     from ansible_forge.tools.facts_collector import FactsCollector
+    from ansible_forge.tools.file_reader import FileReader
     from ansible_forge.tools.file_writer import FileWriter
     from ansible_forge.tools.galaxy_manager import GalaxyManager
+    from ansible_forge.tools.git_manager import GitManager
+    from ansible_forge.tools.inventory_discovery import InventoryDiscoveryTool
     from ansible_forge.tools.inventory_manager import InventoryManager
     from ansible_forge.tools.lint_runner import LintRunner
+    from ansible_forge.tools.local_exec import LocalExec
+    from ansible_forge.tools.log_analyzer import LogAnalyzer
     from ansible_forge.tools.molecule_runner import MoleculeRunner
     from ansible_forge.tools.playbook_generator import PlaybookGenerator
+    from ansible_forge.tools.project_importer import ProjectImporter
     from ansible_forge.tools.role_scaffolder import RoleScaffolder
+    from ansible_forge.tools.rollback_tool import RollbackTool
+    from ansible_forge.tools.schedule_manager import ScheduleManager
     from ansible_forge.tools.secret_requester import SecretRequester
+    from ansible_forge.tools.template_renderer import TemplateRenderer
+    from ansible_forge.tools.variable_inspector import VariableInspector
     from ansible_forge.tools.vault_manager import VaultManager
+    from ansible_forge.tools.verifier import Verifier
     from ansible_forge.tools.web_searcher import WebSearcher
 
     registry = ToolRegistry()
@@ -74,12 +99,39 @@ def create_default_registry() -> ToolRegistry:
         MoleculeRunner,
         GalaxyManager,
         Executor,
+        AdhocRunner,
         FactsCollector,
         ConnectivityTester,
         DocSearcher,
         WebSearcher,
+        FileReader,
         FileWriter,
         SecretRequester,
+        RollbackTool,
+        Verifier,
+        InventoryDiscoveryTool,
+        TemplateRenderer,
+        GitManager,
+        DriftDetector,
+        ComplianceScanner,
+        VariableInspector,
+        ConfigComparator,
+        ScheduleManager,
+        ProjectImporter,
+        LocalExec,
+        LogAnalyzer,
+        TerraformGenerator,
+        TerraformExecutor,
+        TerraformInventoryBridge,
     ):
         registry.register(tool_cls())
+
+    try:
+        from ansible_forge.plugins.loader import load_plugins
+        loaded = load_plugins(registry)
+        if loaded:
+            logger.info("plugins_loaded", count=len(loaded), names=[p["name"] for p in loaded])
+    except Exception:
+        logger.debug("plugin_loading_failed", exc_info=True)
+
     return registry

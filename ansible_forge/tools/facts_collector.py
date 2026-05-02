@@ -67,7 +67,7 @@ class FactsCollector(BaseTool):
         Replaces key content in ``merged_vars`` with the file path.
         """
         files: list[Path] = []
-        keys_dir = ws / "ssh_keys"
+        keys_dir = ws / ".tuyere" / "ssh_keys"
         for var_name in list(merged_vars):
             value = merged_vars[var_name]
             if not isinstance(value, str):
@@ -92,7 +92,7 @@ class FactsCollector(BaseTool):
     @staticmethod
     def _clean_stale_env(ws: Path) -> None:
         """Remove env artifacts left by prior ansible-runner invocations."""
-        env_dir = ws / "env"
+        env_dir = ws / ".tuyere" / "env"
         if not env_dir.exists():
             return
         for artifact in ("cmdline", "extravars"):
@@ -143,7 +143,7 @@ class FactsCollector(BaseTool):
         self._clean_stale_env(ws)
 
         runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws),
+            "private_data_dir": str(ws / ".tuyere"),
             "module": "ansible.builtin.setup",
             "module_args": f"gather_subset={gather_subset}",
             "host_pattern": host_pattern,
@@ -162,8 +162,8 @@ class FactsCollector(BaseTool):
             )
         except TimeoutError:
             return ToolResult.fail(
-                "Fact collection timed out after 2 minutes. "
-                "Check host connectivity and SSH configuration."
+                "Could not gather system information within 2 minutes. "
+                "Check that hosts are reachable and credentials are correct."
             )
 
         host_facts: dict[str, Any] = {}
@@ -204,16 +204,16 @@ class FactsCollector(BaseTool):
 
         if not host_facts:
             return ToolResult.fail(
-                f"No facts collected (runner status={result.status}). "
-                "Check inventory and host connectivity."
+                "Could not gather system information. "
+                "Check that hosts are reachable and credentials are correct."
             )
 
-        facts_cache = Path(workspace_path) / "artifacts" / "host_facts.json"
+        facts_cache = Path(workspace_path) / ".tuyere" / "artifacts" / "host_facts.json"
         facts_cache.parent.mkdir(parents=True, exist_ok=True)
         facts_cache.write_text(json.dumps(host_facts, indent=2), encoding="utf-8")
         logger.info("facts_cached", path=str(facts_cache), hosts=len(host_facts))
 
         return ToolResult.ok(
-            output=f"Collected facts from {len(host_facts)} host(s).",
+            output=f"Gathered system information from {len(host_facts)} host(s) (OS, memory, network, etc.).",
             host_facts=host_facts,
         )

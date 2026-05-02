@@ -31,7 +31,7 @@ class RollbackPlanner:
     """Analyzes a playbook and generates a best-effort rollback playbook."""
 
     def generate(self, workspace_path: str, playbook_name: str) -> ToolResult:
-        playbook_path = Path(workspace_path) / "project" / playbook_name
+        playbook_path = Path(workspace_path) / playbook_name
         if not playbook_path.exists():
             return ToolResult.fail(f"Playbook not found: {playbook_path}")
 
@@ -61,7 +61,7 @@ class RollbackPlanner:
             )
 
         rollback_name = f"rollback_{playbook_name}"
-        rollback_path = Path(workspace_path) / "project" / rollback_name
+        rollback_path = Path(workspace_path) / rollback_name
         rollback_path.write_text(
             yaml.dump(rollback_plays, default_flow_style=False, sort_keys=False),
             encoding="utf-8",

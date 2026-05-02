@@ -1,4 +1,4 @@
-"""AnsibleForge application entry point."""
+"""Tuyere application entry point."""
 
 from __future__ import annotations
 
@@ -20,21 +20,26 @@ from ansible_forge.api.middleware.logging import RequestLoggingMiddleware
 from ansible_forge.api.router import api_router
 from ansible_forge.config import get_settings
 from ansible_forge.logging import get_logger, setup_logging
-from ansible_forge.workspace.manager import WorkspaceManager
-
 logger = get_logger(__name__)
 
 
 def _setup_frozen_env() -> None:
-    """When running as a PyInstaller bundle, prepend the bundle directory to
-    PATH so that companion CLI executables (ansible-playbook, ansible-galaxy,
-    etc.) are found by ansible-runner and subprocess calls."""
-    if not getattr(sys, "frozen", False):
-        return
-    bundle_dir = Path(sys.executable).resolve().parent
+    """Prepend tool directories to PATH so subprocess calls find companion
+    binaries (ansible-playbook, ansible-galaxy, tofu, etc.)."""
+    extra_dirs: list[str] = []
+
+    managed_bin = str(Path.home() / ".ansibleforge" / "bin")
+    extra_dirs.append(managed_bin)
+
+    if getattr(sys, "frozen", False):
+        bundle_dir = str(Path(sys.executable).resolve().parent)
+        extra_dirs.append(bundle_dir)
+
     current_path = os.environ.get("PATH", "")
-    if str(bundle_dir) not in current_path.split(os.pathsep):
-        os.environ["PATH"] = str(bundle_dir) + os.pathsep + current_path
+    path_parts = current_path.split(os.pathsep)
+    prepend = [d for d in extra_dirs if d not in path_parts]
+    if prepend:
+        os.environ["PATH"] = os.pathsep.join(prepend) + os.pathsep + current_path
 
 
 _setup_frozen_env()
@@ -42,19 +47,24 @@ _setup_frozen_env()
 UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
-async def _periodic_cleanup(interval: int = 300) -> None:
-    """Remove expired workspaces every *interval* seconds."""
-    mgr = WorkspaceManager()
+async def _parent_watchdog(check_interval: int = 5) -> None:
+    """Shut down if parent Electron process dies (prevents zombie backends)."""
+    parent_pid_str = os.environ.get("ANSIBLEFORGE_PARENT_PID")
+    if not parent_pid_str:
+        return
+    parent_pid = int(parent_pid_str)
+    logger.info("parent_watchdog_started", parent_pid=parent_pid)
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(check_interval)
         try:
-            mgr.cleanup_expired()
-        except Exception:
-            logger.warning("workspace_cleanup_error", exc_info=True)
+            os.kill(parent_pid, 0)
+        except (OSError, ProcessLookupError):
+            logger.info("parent_died_shutting_down", parent_pid=parent_pid)
+            os._exit(0)
 
 
 async def _periodic_consolidation(interval: int = 3600) -> None:
-    """Consolidate repeated experiences into generalized rules."""
+    """Consolidate repeated experiences into generalized rules and prune stale ones."""
     await asyncio.sleep(30)
     while True:
         try:
@@ -62,6 +72,9 @@ async def _periodic_consolidation(interval: int = 3600) -> None:
             from ansible_forge.knowledge.consolidation import consolidate_experiences
 
             orch = get_orchestrator()
+            pruned = orch._experience_store.prune_stale(max_age_days=30, min_confidence=0.3)
+            if pruned:
+                logger.info("periodic_prune_done", pruned=pruned)
             count = await consolidate_experiences(orch._experience_store, orch._llm)
             if count:
                 logger.info("periodic_consolidation_done", rules_created=count)
@@ -80,12 +93,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_provider=settings.llm_provider,
         llm_model=settings.llm_model,
     )
-    cleanup_task = asyncio.create_task(_periodic_cleanup())
     consolidation_task = asyncio.create_task(_periodic_consolidation())
+    watchdog_task = asyncio.create_task(_parent_watchdog())
     try:
         yield
     finally:
-        cleanup_task.cancel()
+        watchdog_task.cancel()
         consolidation_task.cancel()
         logger.info("ansibleforge_shutdown")
 
@@ -94,7 +107,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="AnsibleForge",
+        title="Tuyere",
         description=(
             "The definitive AI agent harness for Ansible. "
             "Generate, validate, execute, and manage any Ansible workflow "

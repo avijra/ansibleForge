@@ -20,7 +20,7 @@ ROLE_DIRS = [
 DEFAULT_META = """\
 ---
 galaxy_info:
-  author: AnsibleForge
+  author: Tuyere
   description: "{description}"
   license: MIT
   min_ansible_version: "2.17"
@@ -110,7 +110,7 @@ class RoleScaffolder(BaseTool):
         if not role_name or not workspace_path:
             return ToolResult.fail("role_name and workspace_path are required")
 
-        roles_dir = Path(workspace_path) / "project" / "roles" / role_name
+        roles_dir = Path(workspace_path) / "roles" / role_name
         created_dirs: list[str] = []
 
         for d in ROLE_DIRS:

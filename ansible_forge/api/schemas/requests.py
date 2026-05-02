@@ -12,6 +12,9 @@ class ChatRequest(BaseModel):
     session_id: str | None = Field(
         default=None, description="Existing session ID to continue a conversation"
     )
+    project_path: str | None = Field(
+        default=None, description="Project directory path to associate with this session"
+    )
     model: str | None = Field(
         default=None, description="Override the default LLM model for this request"
     )

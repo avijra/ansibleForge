@@ -86,7 +86,7 @@ class PlaybookValidator:
 
     def validate(self, workspace_path: str, playbook_name: str) -> ValidationResult:
         issues: list[ValidationIssue] = []
-        playbook_path = Path(workspace_path) / "project" / playbook_name
+        playbook_path = Path(workspace_path) / playbook_name
 
         if not playbook_path.exists():
             return ValidationResult(

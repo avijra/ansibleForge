@@ -78,7 +78,7 @@ class PlaybookGenerator(BaseTool):
         if not isinstance(parsed, list):
             return ToolResult.fail("Playbook must be a YAML list of plays")
 
-        project_dir = Path(workspace_path) / "project"
+        project_dir = Path(workspace_path)
         project_dir.mkdir(parents=True, exist_ok=True)
 
         playbook_path = project_dir / playbook_name

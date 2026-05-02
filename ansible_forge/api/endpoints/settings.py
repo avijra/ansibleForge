@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ansible_forge.api.middleware.auth import verify_api_key
+from ansible_forge.api.endpoints.health import reset_llm_status_cache
 from ansible_forge.config import (
     clear_runtime_llm,
     effective_llm_model,
@@ -68,6 +69,7 @@ async def update_llm_settings(
 ) -> LLMSettingsResponse:
     patch = body.model_dump(exclude_none=True)
     update_runtime_llm(patch)
+    reset_llm_status_cache()
     return await get_llm_settings()
 
 
@@ -76,4 +78,5 @@ async def reset_llm_settings(
     _: Any = Depends(verify_api_key),
 ) -> LLMSettingsResponse:
     clear_runtime_llm()
+    reset_llm_status_cache()
     return await get_llm_settings()

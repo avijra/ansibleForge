@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ansible_forge.api.middleware.auth import verify_api_key
-from ansible_forge.workspace.manager import WorkspaceManager
+from ansible_forge.workspace.resolver import resolve_workspace
 
 router = APIRouter()
 
@@ -17,7 +17,7 @@ _TEXT_SUFFIXES = frozenset({
     ".yml", ".yaml", ".j2", ".cfg", ".ini", ".conf", ".txt",
     ".json", ".sh", ".bash", ".py", ".md", ".toml",
 })
-_SKIP_DIRS = frozenset({"__pycache__", ".git", "artifacts"})
+_SKIP_DIRS = frozenset({"__pycache__", ".git", ".tuyere", "artifacts"})
 _MAX_FILE_SIZE = 512_000
 
 
@@ -61,8 +61,7 @@ async def get_workspace_files(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     """Return all text files in the session workspace."""
-    ws_mgr = WorkspaceManager()
-    ws = ws_mgr.get(session_id)
+    ws = resolve_workspace(session_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Session workspace not found")
 
@@ -87,8 +86,7 @@ async def save_workspace_file(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     """Write content to a file inside the session workspace."""
-    ws_mgr = WorkspaceManager()
-    ws = ws_mgr.get(session_id)
+    ws = resolve_workspace(session_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Session workspace not found")
 
@@ -100,3 +98,19 @@ async def save_workspace_file(
     target.write_text(body.content, encoding="utf-8")
 
     return {"path": body.path, "size": len(body.content), "ok": True}
+
+
+@router.get("/workspace/{session_id}/search")
+async def search_workspace(
+    session_id: str,
+    q: str = "",
+    _: Any = Depends(verify_api_key),
+) -> dict[str, Any]:
+    from ansible_forge.workspace.context import search_workspace_files
+
+    ws = resolve_workspace(session_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Session workspace not found")
+
+    results = search_workspace_files(ws.path, query=q, limit=20)
+    return {"session_id": session_id, "results": results}
