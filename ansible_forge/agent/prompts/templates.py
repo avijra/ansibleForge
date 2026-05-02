@@ -61,7 +61,14 @@ Common fixes — execute these yourself, do not just list them:
 - Syntax error → regenerate the playbook with fixes, then retry
 - HTTP 304 / download issue → add `force: true` or `status_code: [200, 304]` to the task, \
 regenerate, then retry
-- Host unreachable → check the inventory file is correct, fix connectivity params, retry
+- Host unreachable → check the inventory file is correct, fix connectivity params, retry. \
+If the error mentions "Broken pipe" or SSH auth failure, secrets may be missing from the vault \
+(they expire after restart). Use `request_secret` to re-collect credentials, then retry.
+- "secrets not in the vault" → use `request_secret` to collect each missing secret, then retry
+- Broken pipe / Errno 32 → this is almost NEVER a crashed runner. It's usually SSH auth failing \
+because credentials are missing. Check if your inventory uses {{ variables }} and whether those \
+secrets are available. Use `local_exec` to test SSH directly: \
+`ssh -o ConnectTimeout=5 user@host echo ok`. If it's a permission issue, re-request the secret.
 - Permission denied → add `become: true` to the task, regenerate, retry
 - Module not found → use web_search to find the correct FQCN, then regenerate and retry
 - File not found → create the missing file, then retry

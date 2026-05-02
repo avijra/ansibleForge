@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -28,77 +29,91 @@ from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.safety.validators import PlaybookValidator
 from ansible_forge.tools.base import ToolResult, ToolStatus
 from ansible_forge.tools.registry import ToolRegistry, create_default_registry
+from ansible_forge.workspace.checkpoints import create_checkpoint, is_file_writing_tool
+from ansible_forge.workspace.context import build_mention_context
 from ansible_forge.workspace.manager import Workspace, WorkspaceManager
 
 logger = get_logger(__name__)
 
 
 PROGRESS_CHECK_PROMPT = (
-    "You have been running for {step_count} steps. You MUST now do ONE of the "
-    "following:\n"
-    "1. If the task is complete — stop calling tools and give your final answer.\n"
-    "2. If you are close to finishing — make at most 5 more tool calls, then "
-    "present your final answer.\n"
-    "3. If you are stuck — stop immediately and explain what is blocking you.\n\n"
-    "Do NOT continue indefinitely. Summarise progress so far and wrap up."
+    "Status check — you have been running for {step_count} steps.\n"
+    "If the task is complete, stop and give your final answer.\n"
+    "If you are stuck in a loop, stop and explain what is blocking you.\n"
+    "Otherwise, continue working — you have plenty of steps remaining."
 )
 
 LOOP_BREAK_PROMPT = (
-    "STOP. You are stuck in a loop — you have been repeating the same actions. "
-    "Do NOT call any more tools. Instead, respond with a final summary of:\n"
-    "- What you accomplished\n"
-    "- What you were unable to complete and why\n"
-    "- What the user should do next\n\n"
-    "Respond NOW with your final answer."
+    "Caution: you may be in a loop — the same tool has been called many times. "
+    "Before your next action, briefly assess:\n"
+    "1. Are you making real progress with distinct arguments each call? If YES, continue.\n"
+    "2. Are you retrying the exact same call hoping for a different result? If YES, stop "
+    "and explain what is blocking you.\n"
+    "3. Is there a different tool or approach that would be more efficient?\n\n"
+    "If you are genuinely iterating over multiple hosts/VMs/resources, that is FINE — "
+    "continue your work. Only stop if you are truly stuck."
 )
 
 _PROGRESS_INTERVAL = 5
 
+_PARALLELIZABLE_TOOLS = frozenset({
+    "collect_facts", "test_connectivity", "search_docs", "web_search",
+    "run_lint", "inspect_variables", "compare_configs", "detect_drift",
+    "scan_compliance", "analyze_logs", "verify_state", "discover_inventory",
+    "run_adhoc",
+})
+
 _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
     "execute_playbook": [
-        "Your playbook is running. Yes, I checked it first. You're welcome.",
-        "Still running. Complex tasks take time — shocking, I know.",
-        "This is taking a while. I'd blame the playbook but I wrote it, so it's the hosts.",
-        "Still going. Go get coffee or something — I'll handle this.",
+        "Playbook is running — watching for task output...",
+        "Playbook still executing. Complex deployments can take several minutes.",
+        "Playbook continues running. Will report results when it finishes.",
+        "Playbook in progress. Long-running tasks (installs, cluster ops) are expected to take time.",
     ],
     "collect_facts": [
-        "Gathering facts. Someone has to know what OS we're deploying to.",
-        "Still waiting. Hosts aren't exactly sprinting to share their life stories.",
-        "Facts are still trickling in. Patience — I'm learning more about your hosts than you know.",
+        "Gathering host facts (OS, packages, network, services)...",
+        "Still collecting facts — some hosts take longer to respond.",
+        "Facts collection in progress. Waiting on remaining hosts.",
     ],
     "test_connectivity": [
-        "Checking if your hosts are even alive. Fingers crossed.",
-        "Still trying. Maybe double-check that these hosts actually exist?",
-        "SSH is thinking about it. I've seen faster handshakes at awkward parties.",
+        "Testing SSH connectivity to your hosts...",
+        "Still checking connectivity — some hosts may be slow to respond.",
+        "Connectivity check in progress. Will report which hosts are reachable.",
     ],
     "install_collection": [
-        "Installing from Galaxy. Because reinventing the wheel is for amateurs.",
-        "Still downloading. Galaxy isn't exactly a CDN, is it.",
+        "Installing Ansible collection from Galaxy...",
+        "Still downloading collection. Large collections take a moment.",
     ],
     "run_molecule_test": [
-        "Running tests. Because I believe in verification, even if nobody asked.",
-        "Tests are still going. Good code takes time to prove it's good.",
-        "Still testing. Quality assurance — look it up.",
+        "Running Molecule tests to validate the role...",
+        "Tests still running — waiting for all scenarios to complete.",
+        "Test execution in progress. Will report pass/fail results.",
     ],
     "search_web": [
-        "Looking this up. Yes, I could do it from memory, but let's be thorough.",
-        "Still fetching results. The internet is not as fast as my opinions.",
+        "Searching for relevant documentation and examples...",
+        "Still fetching search results.",
+    ],
+    "run_adhoc": [
+        "Running command on target host(s)...",
+        "Command still executing. Waiting for output.",
+        "Command in progress. Some operations take time to complete.",
+        "Still running. Will report results when the command finishes.",
     ],
 }
 
 _DEFAULT_PROGRESS_MESSAGES = [
-    "Working. Patience is a virtue you should practice.",
-    "Still at it. I don't rush my work.",
-    "Taking a moment. Quality over speed — write that down.",
-    "Still here, still working. Miss me?",
+    "Working on this — will update you shortly.",
+    "Still processing. Will report what I find.",
+    "Operation in progress.",
+    "Still running. Will share results when done.",
 ]
 
 _LLM_THINKING_MESSAGES = [
-    "Hold on. I'm thinking. Don't rush me.",
-    "Analyzing your request. Yes, it needs analyzing.",
-    "Planning the right approach. Unlike some people, I plan first.",
-    "Still thinking. Good answers take time — write that down.",
-    "Almost there. Brilliance can't be hurried.",
+    "Analyzing the situation and deciding next steps...",
+    "Reviewing results and planning the right approach...",
+    "Thinking through the best course of action...",
+    "Evaluating options — will explain my reasoning shortly.",
+    "Almost ready with my assessment.",
 ]
 
 
@@ -118,45 +133,50 @@ class SessionState:
         self._consecutive_errors = 0
         self._max_error_retries = 3
         self._generation = 0
-        self._last_error_by_tool: dict[str, str] = {}
+        self._last_error_by_tool: dict[str, dict[str, Any]] = {}
         self._rejected_output: str | None = None
         self._rejected_feedback: str | None = None
         self._rejected_tool: str | None = None
+        self._approved_playbooks: set[str] = set()
+        self.plan: dict[str, Any] | None = None
+        self._used_experience_ids: list[str] = []
 
     def record_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         sig = f"{name}:{json.dumps(arguments, sort_keys=True)}"
         self._recent_tool_calls.append(sig)
-        if len(self._recent_tool_calls) > 20:
+        if len(self._recent_tool_calls) > 30:
             self._recent_tool_calls.pop(0)
 
     @property
     def loop_pattern(self) -> str | None:
-        """Detect multiple loop patterns, not just exact repeats.
+        """Detect loop patterns that indicate the agent is stuck.
 
         Catches:
-        - Same tool+args repeated 3+ times
-        - Alternating A-B-A-B pattern over 6 calls
-        - Same tool name (any args) called 6+ times in a row
+        - Exact same tool+args repeated 4+ times in a row (genuinely stuck)
+        - Alternating A-B-A-B pattern with identical args over 8 calls
+        - Same tool name with IDENTICAL args 6+ times (retrying same failing call)
+
+        Does NOT flag:
+        - Same tool called many times with different args (legitimate multi-host work)
         """
         calls = self._recent_tool_calls
-        if len(calls) < 3:
+        if len(calls) < 4:
             return None
 
-        # Pattern 1: exact same call 3+ times in a row
-        if len(calls) >= 3 and len(set(calls[-3:])) == 1:
+        if len(set(calls[-4:])) == 1:
             return "exact_repeat"
 
-        # Pattern 2: A-B-A-B alternation over last 6 calls
-        if len(calls) >= 6:
-            last6 = calls[-6:]
-            if last6[0] == last6[2] == last6[4] and last6[1] == last6[3] == last6[5]:
+        if len(calls) >= 8:
+            last8 = calls[-8:]
+            if (last8[0] == last8[2] == last8[4] == last8[6]
+                    and last8[1] == last8[3] == last8[5] == last8[7]):
                 return "alternating"
 
-        # Pattern 3: same tool name (ignoring args) 12+ times in a row
-        # Threshold is high because scaffolding tasks legitimately write many files.
-        if len(calls) >= 12:
-            names = [c.split(":", 1)[0] for c in calls[-12:]]
-            if len(set(names)) == 1:
+        if len(calls) >= 20:
+            recent = calls[-20:]
+            names = [c.split(":", 1)[0] for c in recent]
+            args = [c.split(":", 1)[1] if ":" in c else "" for c in recent]
+            if len(set(names)) == 1 and len(set(args)) <= 3:
                 return "same_tool_drift"
 
         return None
@@ -198,18 +218,57 @@ class Orchestrator:
         self._session_store = SessionStore()
         self._experience_store = ExperienceStore()
 
-    def create_session(self, session_id: str | None = None) -> SessionState:
+    @staticmethod
+    def _load_user_rules(workspace: Workspace) -> str | None:
+        rules_file = workspace.runner_dir / "rules.md"
+        if not rules_file.is_file():
+            return None
+        try:
+            content = rules_file.read_text().strip()
+            return content if content else None
+        except Exception:
+            return None
+
+    def _build_system_prompt(self, workspace: Workspace) -> str:
+        rules = self._load_user_rules(workspace)
+        if not rules:
+            return SYSTEM_PROMPT
+        return (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"## User Rules (from .tuyere/rules.md — ALWAYS follow these)\n\n"
+            f"{rules}"
+        )
+
+    def create_session(
+        self,
+        session_id: str | None = None,
+        project_path: str | None = None,
+    ) -> SessionState:
         sid = session_id or uuid.uuid4().hex[:12]
-        workspace = self._workspace_mgr.create(sid)
+        workspace = self._workspace_mgr.create(sid, project_path=project_path)
         state = SessionState(session_id=sid, workspace=workspace)
         state.memory.attach_vault(self._secret_vault.for_session(sid))
-        state.memory.add_system(SYSTEM_PROMPT)
+        state.memory.add_system(self._build_system_prompt(workspace))
         self._sessions[sid] = state
-        logger.info("session_created", session_id=sid)
+        self._session_store.save_session(sid, project_path=str(workspace.path))
+        logger.info("session_created", session_id=sid, project_path=str(workspace.path))
         return state
 
     def get_session(self, session_id: str) -> SessionState | None:
         return self._sessions.get(session_id)
+
+    def update_plan(self, session_id: str, steps: list[dict[str, Any]]) -> bool:
+        state = self._sessions.get(session_id)
+        if state is None or state.plan is None:
+            return False
+        state.plan["steps"] = steps
+        return True
+
+    def get_plan(self, session_id: str) -> dict[str, Any] | None:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return None
+        return state.plan
 
     def _restore_session(self, session_id: str) -> SessionState | None:
         """Restore a session from the workspace on disk.
@@ -219,7 +278,14 @@ class Orchestrator:
         the agent receives a workspace summary and a digest of recent user
         requests.  This is model-agnostic and keeps context small.
         """
-        workspace = self._workspace_mgr.get(session_id)
+        session_meta = self._session_store.get_session(session_id)
+        project_path = session_meta.get("project_path") if session_meta else None
+
+        workspace = None
+        if project_path:
+            workspace = self._workspace_mgr.get_by_path(project_path)
+        if workspace is None:
+            workspace = self._workspace_mgr.get(session_id)
         if workspace is None:
             return None
 
@@ -229,18 +295,18 @@ class Orchestrator:
 
         state = SessionState(session_id=session_id, workspace=workspace)
         state.memory.attach_vault(self._secret_vault.for_session(session_id))
-        state.memory.add_system(SYSTEM_PROMPT)
+        state.memory.add_system(self._build_system_prompt(workspace))
 
         ws_summary = self._build_workspace_summary(workspace)
         recent_requests = [
             e["data"].get("content", "")
             for e in all_events
-            if e["event"] == "user_message" and e["data"].get("content")
+            if e.get("event_type") == "user_message" and e["data"].get("content")
         ][-5:]
         recent_responses = [
             e["data"].get("content", "")
             for e in all_events
-            if e["event"] == "message" and e["data"].get("content")
+            if e.get("event_type") == "message" and e["data"].get("content")
         ][-3:]
 
         restore_ctx_parts = [
@@ -332,16 +398,38 @@ class Orchestrator:
         exp_context = ""
         try:
             ws_modules = extract_modules_from_workspace(state.workspace)
-            exp_context = build_experience_context(
+            exp_context, used_exp_ids = build_experience_context(
                 self._experience_store, user_message, ws_modules
             )
+            state._used_experience_ids.extend(used_exp_ids)
         except Exception:
             logger.debug("experience_context_build_failed", exc_info=True)
 
+        mention_context = ""
+        try:
+            mention_context = build_mention_context(state.workspace.path, user_message)
+        except Exception:
+            logger.debug("mention_context_failed", exc_info=True)
+
+        infra_context = ""
+        try:
+            from ansible_forge.persistence.infrastructure_store import InfrastructureStore
+            infra_context = InfrastructureStore.get_instance().build_infrastructure_context()
+        except Exception:
+            logger.debug("infrastructure_context_build_failed", exc_info=True)
+
         full_context = f"{user_message}\n\n---\nWorkspace context:\n{context}"
+        if mention_context:
+            full_context += f"\n{mention_context}"
+        if infra_context:
+            full_context += f"\n---\nFleet memory:\n{infra_context}"
         if exp_context:
             full_context += f"\n{exp_context}"
         state.memory.add_user(full_context)
+
+        plan = await self._generate_plan(state, user_message)
+        if plan:
+            yield AgentEvent("plan", plan)
 
         async for event in self._react_loop(state):
             yield event
@@ -349,7 +437,7 @@ class Orchestrator:
     async def _react_loop(self, state: SessionState) -> AsyncIterator[AgentEvent]:
         """Core ReAct loop: Reason → Act → Observe, repeat."""
         max_steps = self._settings.max_agent_steps
-        progress_check_interval = max(max_steps // 5, 8)
+        progress_check_interval = max(max_steps // 3, 15)
         llm_timeout = 120
         my_generation = state._generation
 
@@ -390,8 +478,8 @@ class Orchestrator:
                     step=state.step_count,
                 )
 
-            # ── Loop detection: hard stop after 2 loop-break attempts ──
-            if state._loop_break_count >= 2:
+            # ── Loop detection: hard stop after 6 loop-break attempts ──
+            if state._loop_break_count >= 6:
                 logger.warning(
                     "force_stop_after_loops",
                     session_id=state.session_id,
@@ -414,6 +502,7 @@ class Orchestrator:
                     raw_message=fs_response.raw_message if fs_response else None,
                 )
                 state.status = "completed"
+                self._score_used_experiences(state, success=False)
                 yield AgentEvent("message", {"content": content, "usage": usage})
                 return
 
@@ -476,7 +565,7 @@ class Orchestrator:
                 )
                 yield AgentEvent("error_recovery", {
                     "tool": "llm",
-                    "error": "LLM call timed out — context may be too large.",
+                    "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
                 })
                 continue
             except Exception as stream_exc:
@@ -500,14 +589,28 @@ class Orchestrator:
                     )
                     yield AgentEvent("error_recovery", {
                         "tool": "llm",
-                        "error": "LLM call timed out — context may be too large.",
+                        "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
                     })
                     continue
+                except Exception as fallback_exc:
+                    logger.error(
+                        "llm_fallback_failed",
+                        session_id=state.session_id,
+                        error=str(fallback_exc),
+                    )
+                    yield AgentEvent("error_recovery", {
+                        "tool": "llm",
+                        "error": str(fallback_exc),
+                        "cause": "LLM rejected the request after both stream and non-stream attempts.",
+                        "hint": "Check your API key and model settings. If using DeepSeek or OpenAI, verify your key is valid. If using Ollama, ensure it is running locally.",
+                    })
+                    state.status = "error"
+                    return
 
             if response is None:
                 yield AgentEvent("error_recovery", {
                     "tool": "llm",
-                    "error": "LLM returned an empty response.",
+                    "error": "The AI model returned no response. Retrying with a simpler approach.",
                 })
                 continue
 
@@ -534,6 +637,8 @@ class Orchestrator:
                     raw_message=response.raw_message,
                 )
                 state.status = "completed"
+                had_errors = state._consecutive_errors > 0 or state._loop_break_count > 0
+                self._score_used_experiences(state, success=not had_errors)
                 yield AgentEvent("message", {
                     "content": response.content or "",
                     "usage": response.usage,
@@ -562,6 +667,81 @@ class Orchestrator:
                     yield AgentEvent("thinking", {"content": response.content})
 
             loop_broken = False
+            deferred_user_msgs: list[str] = []
+            deferred_events: list[AgentEvent] = []
+            early_return = False
+
+            # ── Parallel fast-path for independent read-only tools ────
+            can_parallel = (
+                len(response.tool_calls) > 1
+                and all(tc.name in _PARALLELIZABLE_TOOLS for tc in response.tool_calls)
+                and not any(self._requires_unapproved_apply_gate(tc, state) for tc in response.tool_calls)
+            )
+            if can_parallel:
+                session_vault = self._secret_vault.for_session(state.session_id)
+                parallel_tasks: dict[str, asyncio.Task[ToolResult]] = {}
+                for tc in response.tool_calls:
+                    state.record_tool_call(tc.name, tc.arguments)
+                    logger.info(
+                        "tool_call_parallel",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                        tool=tc.name,
+                        tool_call_id=tc.id,
+                    )
+                    yield AgentEvent("tool_call", session_vault.redact_dict({
+                        "tool": tc.name,
+                        "arguments": tc.arguments,
+                        "tool_call_id": tc.id,
+                    }))
+                    parallel_tasks[tc.id] = asyncio.create_task(
+                        self._execute_tool(state, tc.name, tc.arguments)
+                    )
+
+                progress_tick = 0
+                pending = set(parallel_tasks.values())
+                tool_names = ", ".join(tc.name for tc in response.tool_calls)
+                while pending:
+                    done_set, pending = await asyncio.wait(pending, timeout=_PROGRESS_INTERVAL)
+                    if not done_set:
+                        progress_tick += 1
+                        elapsed = progress_tick * _PROGRESS_INTERVAL
+                        elapsed_str = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+                        yield AgentEvent("progress", {
+                            "tool": "parallel",
+                            "elapsed_seconds": elapsed,
+                            "message": f"[{elapsed_str}] Running {len(pending)} tools in parallel ({tool_names})...",
+                        })
+
+                for tc in response.tool_calls:
+                    result = parallel_tasks[tc.id].result()
+                    state.memory.add_tool_result(tc.id, result.model_dump_json())
+                    clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
+                    self._capture_experience(tc.name, result, state, clean_args)
+                    tool_result_payload: dict[str, Any] = {
+                        "tool": tc.name,
+                        "tool_call_id": tc.id,
+                        "status": result.status.value,
+                        "output": result.output[:2000],
+                    }
+                    if result.data:
+                        tool_result_payload["data"] = result.data
+                    yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
+                    if result.status == ToolStatus.ERROR:
+                        state._consecutive_errors += 1
+                        state.last_error = result.error
+                    else:
+                        state._consecutive_errors = 0
+
+                logger.info(
+                    "parallel_tools_complete",
+                    session_id=state.session_id,
+                    tool_count=len(response.tool_calls),
+                    step=state.step_count,
+                )
+                continue
+
+            # ── Sequential path (approval gates, secrets, side effects) ──
             for tc in response.tool_calls:
                 state.record_tool_call(tc.name, tc.arguments)
 
@@ -576,21 +756,26 @@ class Orchestrator:
                         step=state.step_count,
                         break_count=state._loop_break_count,
                     )
-                    # Add tool results for ALL remaining tool calls
-                    # (current tc and any after it) to keep message integrity.
-                    remaining_idx = response.tool_calls.index(tc)
-                    for remaining_tc in response.tool_calls[remaining_idx:]:
-                        state.memory.add_tool_result(
-                            remaining_tc.id,
-                            '{"status":"error","output":"Tool call skipped — loop detected."}',
-                        )
-                    state.memory.add_user(LOOP_BREAK_PROMPT)
-                    yield AgentEvent("error_recovery", {
+                    is_hard_loop = pattern in ("exact_repeat", "alternating")
+                    if is_hard_loop:
+                        remaining_idx = response.tool_calls.index(tc)
+                        for remaining_tc in response.tool_calls[remaining_idx:]:
+                            state.memory.add_tool_result(
+                                remaining_tc.id,
+                                '{"status":"error","output":"Tool call skipped — identical call loop detected."}',
+                            )
+                        deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                        deferred_events.append(AgentEvent("error_recovery", {
+                            "tool": tc.name,
+                            "error": "The agent appears to be stuck repeating the same action. Pausing to reassess.",
+                        }))
+                        loop_broken = True
+                        break
+                    deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                    deferred_events.append(AgentEvent("error_recovery", {
                         "tool": tc.name,
-                        "error": f"Loop detected ({pattern}) — forcing agent to wrap up.",
-                    })
-                    loop_broken = True
-                    break
+                        "error": "The agent has been running the same type of action many times — checking if this is intentional.",
+                    }))
 
                 session_vault = self._secret_vault.for_session(state.session_id)
 
@@ -609,6 +794,55 @@ class Orchestrator:
                     "tool_call_id": tc.id,
                 }))
 
+                if self._requires_unapproved_apply_gate(tc, state):
+                    playbook_name = tc.arguments.get("playbook", "unknown")
+                    state.status = "awaiting_approval"
+                    gate_msg = (
+                        f"Apply mode requested for '{playbook_name}' without a prior "
+                        f"dry-run approval. Approval is required before live execution."
+                    )
+                    yield AgentEvent("approval_required", {
+                        "session_id": state.session_id,
+                        "output": gate_msg,
+                        "data": {"playbook": playbook_name, "mode": "apply"},
+                    })
+                    approval = self._approval_gate.create_request(
+                        session_id=state.session_id,
+                        description=f"Apply {playbook_name} (no prior dry-run)",
+                        diff_summary=gate_msg,
+                        metadata={"playbook": playbook_name, "mode": "apply"},
+                    )
+                    gate_status = await approval.wait(timeout=600)
+                    if state._generation != my_generation:
+                        return
+                    if gate_status == ApprovalStatus.APPROVED:
+                        state.status = "active"
+                        state._approved_playbooks.add(playbook_name)
+                        yield AgentEvent("approval_granted", {
+                            "session_id": state.session_id,
+                        })
+                    else:
+                        state.status = "rejected"
+                        feedback = approval.feedback or "User rejected apply without dry-run."
+                        state.memory.add_tool_result(
+                            tc.id,
+                            f'{{"status":"error","output":"Rejected: {feedback}"}}',
+                        )
+                        state.memory.add_user(f"User rejected: {feedback}")
+                        yield AgentEvent("approval_rejected", {
+                            "session_id": state.session_id,
+                            "feedback": feedback,
+                        })
+                        early_return = True
+                        break
+
+                if is_file_writing_tool(tc.name):
+                    await create_checkpoint(
+                        state.workspace.path,
+                        f"before {tc.name}",
+                        step=state.step_count,
+                    )
+
                 task = asyncio.create_task(
                     self._execute_tool(state, tc.name, tc.arguments)
                 )
@@ -621,13 +855,31 @@ class Orchestrator:
                     progress_tick += 1
                     elapsed = progress_tick * _PROGRESS_INTERVAL
                     hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
+                    elapsed_str = (
+                        f"{elapsed // 60}m {elapsed % 60}s"
+                        if elapsed >= 60
+                        else f"{elapsed}s"
+                    )
                     yield AgentEvent("progress", {
                         "tool": tc.name,
                         "elapsed_seconds": elapsed,
-                        "message": hint,
+                        "message": f"[{elapsed_str}] {hint}",
                     })
 
                 result = task.result()
+
+                if is_file_writing_tool(tc.name) and result.status != ToolStatus.ERROR:
+                    cp_hash = await create_checkpoint(
+                        state.workspace.path,
+                        f"after {tc.name}: {tc.arguments.get('playbook', tc.arguments.get('path', tc.name))}",
+                        step=state.step_count,
+                    )
+                    if cp_hash:
+                        yield AgentEvent("checkpoint", {
+                            "hash": cp_hash,
+                            "tool": tc.name,
+                            "step": state.step_count,
+                        })
 
                 if state._generation != my_generation:
                     return
@@ -642,8 +894,6 @@ class Orchestrator:
                     output_preview=result.output[:500] if result.output else "",
                 )
 
-                # For secret requests, defer adding tool result until
-                # the secret is provided (avoids duplicate tool_call_id).
                 if (
                     result.status == ToolStatus.NEEDS_APPROVAL
                     and result.data.get("secret_request")
@@ -717,7 +967,8 @@ class Orchestrator:
                     continue
 
                 state.memory.add_tool_result(tc.id, result.model_dump_json())
-                self._capture_experience(tc.name, result, state)
+                clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
+                self._capture_experience(tc.name, result, state, clean_args)
 
                 tool_result_payload: dict[str, Any] = {
                     "tool": tc.name,
@@ -751,6 +1002,10 @@ class Orchestrator:
                         return
                     if status == ApprovalStatus.APPROVED:
                         state.status = "active"
+                        if tc.name == "execute_playbook":
+                            pb = tc.arguments.get("playbook", "")
+                            if pb:
+                                state._approved_playbooks.add(pb)
                         yield AgentEvent("approval_granted", {"session_id": state.session_id})
                         if state._rejected_output and state._rejected_tool == tc.name:
                             self._capture_correction(state, tc.name, result)
@@ -760,39 +1015,84 @@ class Orchestrator:
                         state._rejected_output = result.output[:2000]
                         state._rejected_feedback = feedback
                         state._rejected_tool = tc.name
+                        remaining_idx = response.tool_calls.index(tc) + 1
+                        for remaining_tc in response.tool_calls[remaining_idx:]:
+                            state.memory.add_tool_result(
+                                remaining_tc.id,
+                                '{"status":"error","output":"Skipped — prior tool was rejected."}',
+                            )
                         state.memory.add_user(f"User rejected: {feedback}")
                         yield AgentEvent("approval_rejected", {
                             "session_id": state.session_id,
                             "feedback": feedback,
                         })
-                        return
+                        early_return = True
+                        break
 
                 if result.status == ToolStatus.ERROR:
                     state._consecutive_errors += 1
                     state.last_error = result.error
-                    state._last_error_by_tool[tc.name] = result.error or "Unknown error"
+                    state._last_error_by_tool[tc.name] = {
+                        "error": result.error or "Unknown error",
+                        "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
+                    }
                     remaining = max(state._max_error_retries - state._consecutive_errors, 0)
                     error_ctx = ERROR_RECOVERY_PROMPT.format(
                         tool_name=tc.name,
                         error_message=result.error or "Unknown error",
                         remaining_retries=remaining,
                     )
-                    state.memory.add_user(error_ctx)
-                    yield AgentEvent("error_recovery", {
+                    knowledge_hint = self._build_error_knowledge(
+                        state, tc.name, result.error or "Unknown error",
+                    )
+                    if knowledge_hint:
+                        error_ctx += knowledge_hint
+                    deferred_user_msgs.append(error_ctx)
+                    deferred_events.append(AgentEvent("error_recovery", {
                         "tool": tc.name,
                         "error": result.error,
                         "retries_remaining": remaining,
-                    })
+                    }))
                 else:
                     state._consecutive_errors = 0
+
+                if (
+                    tc.name == "execute_playbook"
+                    and result.status == ToolStatus.SUCCESS
+                    and result.data.get("mode") == "apply"
+                ):
+                    deferred_user_msgs.append(
+                        "The playbook was applied successfully. Now VERIFY the changes "
+                        "actually took effect. Use the `verify_state` tool to check that "
+                        "services are running, ports are listening, or endpoints are reachable. "
+                        "Do NOT just report success — prove it with evidence."
+                    )
+
+                if tc.name == "verify_state" and result.status == ToolStatus.ERROR:
+                    failed_checks = result.data.get("failed", 0)
+                    deferred_user_msgs.append(
+                        f"Verification FAILED ({failed_checks} checks). "
+                        "Consider generating a rollback playbook with `generate_rollback` "
+                        "for the most recently applied playbook, then present the rollback "
+                        "plan to the user for approval before executing it."
+                    )
+
+            if early_return:
+                return
+
+            for msg in deferred_user_msgs:
+                state.memory.add_user(msg)
+            for evt in deferred_events:
+                yield evt
 
             if loop_broken:
                 continue
 
         state.status = "max_steps_reached"
+        self._score_used_experiences(state, success=False)
         yield AgentEvent("max_steps", {
             "step_count": state.step_count,
-            "message": f"Agent reached the maximum of {max_steps} steps.",
+            "message": f"The agent has completed {max_steps} steps — the maximum allowed. You can continue the conversation to pick up where it left off.",
         })
 
     async def _stream_llm_call(
@@ -800,30 +1100,25 @@ class Orchestrator:
         state: SessionState,
         tools: list[dict[str, Any]] | None,
     ) -> AsyncIterator[AgentEvent | LLMResponse]:
-        """Stream an LLM call, yielding ``thinking_delta`` events for each token.
+        """Stream an LLM call, yielding delta events for each token.
 
-        The **last** item yielded is always the accumulated ``LLMResponse``.
-        All preceding items are ``AgentEvent`` instances with content deltas.
+        Emits ``thinking_delta`` for reasoning tokens and tool-call preamble,
+        ``message_delta`` for final-answer content (when no tool calls are
+        being built).  The **last** item yielded is the accumulated ``LLMResponse``.
         """
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tc_accum: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage: dict[str, int] = {}
+        saw_tool_call = False
 
         async for chunk in self._llm.complete_stream(
             messages=state.memory.messages,
             tools=tools,
         ):
-            if chunk.get("content"):
-                content_parts.append(chunk["content"])
-                yield AgentEvent("thinking_delta", {"content": chunk["content"]})
-
-            if chunk.get("reasoning_content"):
-                reasoning_parts.append(chunk["reasoning_content"])
-                yield AgentEvent("thinking_delta", {"content": chunk["reasoning_content"]})
-
             if chunk.get("tool_calls"):
+                saw_tool_call = True
                 for tc_delta in chunk["tool_calls"]:
                     idx = tc_delta.get("index", 0)
                     if idx not in tc_accum:
@@ -835,6 +1130,15 @@ class Orchestrator:
                         tc_accum[idx]["name"] = fn["name"]
                     if fn.get("arguments"):
                         tc_accum[idx]["arguments"] += fn["arguments"]
+
+            if chunk.get("reasoning_content"):
+                reasoning_parts.append(chunk["reasoning_content"])
+                yield AgentEvent("thinking_delta", {"content": chunk["reasoning_content"]})
+
+            if chunk.get("content"):
+                content_parts.append(chunk["content"])
+                event_type = "thinking_delta" if saw_tool_call else "message_delta"
+                yield AgentEvent(event_type, {"content": chunk["content"]})
 
             if chunk.get("finish_reason"):
                 finish_reason = chunk["finish_reason"]
@@ -860,16 +1164,125 @@ class Orchestrator:
         )
 
     def _capture_experience(
-        self, tool_name: str, result: ToolResult, state: SessionState
+        self, tool_name: str, result: ToolResult, state: SessionState,
+        current_args: dict[str, Any] | None = None,
     ) -> None:
         try:
             if tool_name == "execute_playbook" and result.status == ToolStatus.SUCCESS:
                 self._capture_recipe(state, result)
             if result.status != ToolStatus.ERROR and tool_name in state._last_error_by_tool:
-                prev_error = state._last_error_by_tool.pop(tool_name)
-                self._capture_error_resolution(state, tool_name, prev_error, result)
+                prev_info = state._last_error_by_tool.pop(tool_name)
+                self._capture_error_resolution(
+                    state, tool_name, prev_info, result, current_args or {},
+                )
+            self._update_infrastructure(tool_name, result, state)
         except Exception:
             logger.debug("experience_capture_failed", tool=tool_name, exc_info=True)
+
+    def _update_infrastructure(
+        self, tool_name: str, result: ToolResult, state: SessionState
+    ) -> None:
+        try:
+            from ansible_forge.persistence.infrastructure_store import InfrastructureStore
+            store = InfrastructureStore.get_instance()
+
+            if tool_name == "collect_facts" and result.status == ToolStatus.SUCCESS:
+                host_facts = result.data.get("host_facts", {})
+                for hostname, facts in host_facts.items():
+                    host_id = store.upsert_host(
+                        hostname=hostname,
+                        ip_address=facts.get("default_ipv4", ""),
+                        status="reachable",
+                    )
+                    drifts = store.detect_drift(host_id, facts)
+                    if drifts:
+                        logger.info(
+                            "drift_detected",
+                            host=hostname,
+                            drifts=drifts,
+                            session_id=state.session_id,
+                        )
+                    store.save_facts(host_id, facts)
+
+            elif tool_name == "test_connectivity" and result.status == ToolStatus.SUCCESS:
+                events = result.data.get("events", [])
+                for event in events:
+                    host = event.get("host", "")
+                    if host:
+                        status = "reachable" if event.get("event") == "runner_on_ok" else "unreachable"
+                        store.upsert_host(hostname=host, status=status)
+
+            elif tool_name == "execute_playbook":
+                data = result.data
+                playbook = data.get("playbook", "unknown")
+                mode = data.get("mode", "unknown")
+                events = data.get("events", [])
+                hosts = list({e.get("host", "") for e in events if e.get("host")})
+                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
+
+                store.record_run(
+                    session_id=state.session_id,
+                    playbook=playbook,
+                    mode=mode,
+                    hosts=hosts,
+                    status=status,
+                    event_count=len(events),
+                    summary=data.get("summary"),
+                )
+
+                if result.status == ToolStatus.SUCCESS and mode == "apply":
+                    for host in hosts:
+                        store.update_host_status(
+                            host.replace(".", "_").replace(":", "_"),
+                            "configured",
+                        )
+
+            elif tool_name == "run_adhoc":
+                data = result.data
+                host_results = data.get("host_results", {})
+                module = data.get("module", "shell")
+                module_args = data.get("module_args", "")
+                hosts = list(host_results.keys())
+                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
+                label = module_args[:80] if module_args else module
+
+                store.record_run(
+                    session_id=state.session_id,
+                    playbook=f"adhoc: {label}",
+                    mode="adhoc",
+                    hosts=hosts,
+                    status=status,
+                    event_count=1,
+                    summary={"module": module},
+                )
+
+            elif tool_name == "terraform_exec":
+                data = result.data
+                action = data.get("action", "unknown")
+                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
+
+                store.record_run(
+                    session_id=state.session_id,
+                    playbook=f"terraform {action}",
+                    mode=action,
+                    hosts=["localhost"],
+                    status=status,
+                    event_count=1,
+                    summary=data.get("output_summary", {}),
+                )
+
+            elif tool_name == "verify_state":
+                results = result.data.get("results", [])
+                for check in results:
+                    host = check.get("host", "")
+                    if host and check.get("status") == "PASS":
+                        store.update_host_status(
+                            host.replace(".", "_").replace(":", "_"),
+                            "verified",
+                        )
+
+        except Exception:
+            logger.debug("infrastructure_update_failed", tool=tool_name, exc_info=True)
 
     def _capture_recipe(self, state: SessionState, result: ToolResult) -> None:
         data = result.data
@@ -897,18 +1310,62 @@ class Orchestrator:
         logger.info("experience_recipe_captured", playbook=playbook_name, session_id=state.session_id)
 
     def _capture_error_resolution(
-        self, state: SessionState, tool_name: str, error_msg: str, result: ToolResult
+        self, state: SessionState, tool_name: str,
+        prev_info: dict[str, Any], result: ToolResult,
+        success_args: dict[str, Any],
     ) -> None:
+        error_msg = prev_info.get("error", "Unknown error")
+        failed_args = prev_info.get("args", {})
+
+        trigger_parts = [tool_name]
+        playbook = failed_args.get("playbook") or success_args.get("playbook")
+        if playbook:
+            trigger_parts.append(playbook)
+        module = failed_args.get("module") or success_args.get("module")
+        if module:
+            trigger_parts.append(module)
+        hosts = failed_args.get("hosts") or success_args.get("hosts")
+        if hosts:
+            trigger_parts.append(f"hosts:{hosts}")
+        trigger_parts.append(error_msg[:300])
+        user_goal = self._extract_user_goal(state)
+        if user_goal and len(user_goal) > 5:
+            trigger_parts.append(user_goal[:150])
+        trigger = " | ".join(trigger_parts)
+
+        changed_keys: list[str] = []
+        for key in set(list(failed_args.keys()) + list(success_args.keys())):
+            old_val = failed_args.get(key)
+            new_val = success_args.get(key)
+            if old_val != new_val:
+                changed_keys.append(key)
+
+        if changed_keys:
+            diffs = []
+            for key in changed_keys[:5]:
+                old_v = str(failed_args.get(key, "(missing)"))[:100]
+                new_v = str(success_args.get(key, "(missing)"))[:100]
+                diffs.append(f"  {key}: '{old_v}' -> '{new_v}'")
+            solution = "Fixed by changing:\n" + "\n".join(diffs)
+        else:
+            solution = f"Same arguments succeeded on retry (transient failure). Output: {result.output[:300]}"
+
         self._experience_store.save(Experience(
             type="error_resolution",
-            trigger=error_msg[:500],
-            context={"tool": tool_name, "modules": [], "hosts": []},
-            solution=f"Tool '{tool_name}' succeeded after prior failure. Output: {result.output[:500]}",
-            outcome="resolved",
-            confidence=0.5,
+            trigger=trigger[:500],
+            context={"tool": tool_name, "changed_args": changed_keys[:5]},
+            solution=solution[:1000],
+            outcome="resolved" if changed_keys else "transient",
+            confidence=0.7 if changed_keys else 0.3,
             session_id=state.session_id,
         ))
-        logger.info("experience_error_resolution_captured", tool=tool_name, session_id=state.session_id)
+        logger.info(
+            "experience_error_resolution_captured",
+            tool=tool_name,
+            changed_args=changed_keys,
+            transient=not changed_keys,
+            session_id=state.session_id,
+        )
 
     def _capture_correction(
         self, state: SessionState, tool_name: str, result: ToolResult
@@ -931,15 +1388,145 @@ class Orchestrator:
             state._rejected_feedback = None
             state._rejected_tool = None
 
+    def _score_used_experiences(self, state: SessionState, success: bool) -> None:
+        if not state._used_experience_ids:
+            return
+        unique_ids = list(dict.fromkeys(state._used_experience_ids))
+        for exp_id in unique_ids:
+            with contextlib.suppress(Exception):
+                self._experience_store.reward(exp_id, success)
+        logger.info(
+            "experiences_scored",
+            session_id=state.session_id,
+            count=len(unique_ids),
+            success=success,
+        )
+
+    def _build_error_knowledge(
+        self, state: SessionState, tool_name: str, error_message: str
+    ) -> str:
+        """Query the experience store for fixes matching this error and return
+        a text block to inject alongside ERROR_RECOVERY_PROMPT."""
+        try:
+            query = f"{tool_name} {error_message}"
+            matches = self._experience_store.search(query, limit=3, min_confidence=0.4)
+            module_matches: list[Experience] = []
+            module_ctx = (state._last_error_by_tool.get(tool_name) or {}).get("args", {})
+            module_name = module_ctx.get("module") or module_ctx.get("playbook") or ""
+            if module_name:
+                module_matches = self._experience_store.query_by_context(
+                    exp_type="error_resolution", module=module_name, limit=2,
+                )
+                module_matches = [e for e in module_matches if e.confidence >= 0.5]
+
+            seen_ids: set[str] = set()
+            all_matches: list[Experience] = []
+            for exp in [*matches, *module_matches]:
+                if exp.id not in seen_ids:
+                    seen_ids.add(exp.id)
+                    all_matches.append(exp)
+
+            if not all_matches:
+                return ""
+
+            for exp in all_matches:
+                self._experience_store.record_use(exp.id)
+                state._used_experience_ids.append(exp.id)
+
+            lines = []
+            for exp in all_matches:
+                conf = int(exp.confidence * 100)
+                lines.append(f"  [{exp.type}] (confidence: {conf}%) {exp.solution}")
+
+            logger.info(
+                "error_knowledge_injected",
+                tool=tool_name,
+                match_count=len(all_matches),
+                session_id=state.session_id,
+            )
+            return (
+                "\n\nKnown fixes from past sessions (APPLY THESE FIRST before web-searching):\n"
+                + "\n".join(lines)
+            )
+        except Exception:
+            logger.debug("error_knowledge_lookup_failed", exc_info=True)
+            return ""
+
+    _PLAN_PROMPT = (
+        "Before executing, create a brief plan. Respond ONLY with a JSON object:\n"
+        '{"steps": [{"step": 1, "action": "...", "tool": "tool_name"}, ...]}\n'
+        "Keep it to 3-8 steps. If the request is simple (e.g. a question, "
+        "explanation, or single tool call), respond with: {\"steps\": []}\n"
+        "Do NOT call any tools. Just output the JSON plan."
+    )
+
+    async def _generate_plan(
+        self, state: SessionState, user_message: str
+    ) -> dict[str, Any] | None:
+        if state.step_count > 0:
+            return None
+
+        try:
+            context_parts = [user_message[:1000]]
+            ws_context = build_context(state.workspace)
+            if ws_context:
+                context_parts.append(f"\nWorkspace:\n{ws_context[:500]}")
+            try:
+                ws_modules = extract_modules_from_workspace(state.workspace)
+                exp_text, _ = build_experience_context(
+                    self._experience_store, user_message, ws_modules,
+                    record_usage=False,
+                )
+                if exp_text:
+                    context_parts.append(exp_text[:500])
+            except Exception:
+                pass
+            plan_input = "\n".join(context_parts)
+
+            response = await asyncio.wait_for(
+                self._llm.complete(
+                    messages=[
+                        {"role": "system", "content": self._PLAN_PROMPT},
+                        {"role": "user", "content": plan_input},
+                    ],
+                    tools=None,
+                    max_tokens=500,
+                ),
+                timeout=15,
+            )
+            if not response.content:
+                return None
+
+            text = response.content.strip()
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                plan_data = json.loads(text[start:end])
+                steps = plan_data.get("steps", [])
+                if steps:
+                    logger.info(
+                        "plan_generated",
+                        session_id=state.session_id,
+                        step_count=len(steps),
+                    )
+                    plan_data_full = {"steps": steps, "status": "planned"}
+                    state.plan = plan_data_full
+                    return plan_data_full
+        except (TimeoutError, json.JSONDecodeError, Exception):
+            logger.debug("plan_generation_skipped", exc_info=True)
+        return None
+
     @staticmethod
     def _extract_user_goal(state: SessionState) -> str:
+        latest = ""
         for msg in state.memory.messages:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content:
                     text = content.split("---")[0].strip()
-                    return text[:300] if text else "Unknown goal"
-        return "Unknown goal"
+                    if text:
+                        latest = text
+        return latest[:300] if latest else "Unknown goal"
 
     async def _execute_tool(
         self, state: SessionState, tool_name: str, arguments: dict[str, Any]
@@ -954,6 +1541,7 @@ class Orchestrator:
             arguments["workspace_path"] = str(state.workspace.path)
 
         arguments["_session_id"] = state.session_id
+        arguments["_workspace_path"] = str(state.workspace.path)
 
         if tool_name == "execute_playbook":
             result = self._pre_validate_playbook(arguments)
@@ -1012,11 +1600,48 @@ class Orchestrator:
     def delete_secret(self, session_id: str, name: str) -> bool:
         return self._secret_vault.for_session(session_id).delete(name)
 
+    @staticmethod
+    def _requires_unapproved_apply_gate(tc: Any, state: SessionState) -> bool:
+        """Return True if this tool call is an apply-mode execution that hasn't
+        been through a prior check-mode approval in this session."""
+        if tc.name != "execute_playbook":
+            return False
+        if tc.arguments.get("mode") != "apply":
+            return False
+        playbook = tc.arguments.get("playbook", "")
+        return playbook not in state._approved_playbooks
+
     def approve_session(self, session_id: str) -> bool:
         return self._approval_gate.approve(session_id)
 
     def reject_session(self, session_id: str, feedback: str = "") -> bool:
         return self._approval_gate.reject(session_id, feedback)
+
+    def reset_session(self, session_id: str) -> None:
+        """Clear in-memory agent state for a session while keeping its workspace."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            return
+        state.memory = Memory()
+        state.memory.attach_vault(self._secret_vault.for_session(session_id))
+        state.memory.add_system(self._build_system_prompt(state.workspace))
+        state.step_count = 0
+        state.status = "active"
+        state.last_error = None
+        state._recent_tool_calls.clear()
+        state._progress_warned = False
+        state._loop_break_count = 0
+        state._consecutive_errors = 0
+        state._generation += 1
+        state._last_error_by_tool.clear()
+        state._rejected_output = None
+        state._rejected_feedback = None
+        state._rejected_tool = None
+        state._approved_playbooks.clear()
+        state.plan = None
+        state._used_experience_ids.clear()
+        self._approval_gate.cleanup(session_id)
+        logger.info("session_reset", session_id=session_id)
 
     def destroy_session(self, session_id: str) -> None:
         self._approval_gate.cleanup(session_id)

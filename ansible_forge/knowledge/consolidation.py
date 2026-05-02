@@ -127,22 +127,38 @@ async def consolidate_experiences(
 
     rules = _parse_consolidation(response.content or "")
     saved = 0
+    skipped = 0
     for rule_data in rules:
         ctx = rule_data.get("context", {})
         if not isinstance(ctx, dict):
             ctx = {}
+        trigger = str(rule_data["trigger"])[:500]
+        solution = str(rule_data["rule"])[:1000]
         supporting = rule_data.get("supporting_count", 2)
         confidence = min(0.5 + (supporting * 0.1), 0.95)
+
+        existing = store.find_similar("rule", trigger, solution, threshold=0.5)
+        if existing:
+            if confidence > existing.confidence:
+                existing.solution = solution
+                existing.confidence = confidence
+                existing.trigger = trigger
+                store.save(existing)
+                saved += 1
+            else:
+                skipped += 1
+            continue
+
         store.save(Experience(
             type="rule",
-            trigger=str(rule_data["trigger"])[:500],
+            trigger=trigger,
             context=ctx,
-            solution=str(rule_data["rule"])[:1000],
+            solution=solution,
             outcome=f"Consolidated from {supporting} experiences",
             confidence=confidence,
         ))
         saved += 1
 
-    if saved:
-        logger.info("consolidation_complete", rules_created=saved)
+    if saved or skipped:
+        logger.info("consolidation_complete", rules_created=saved, duplicates_skipped=skipped)
     return saved

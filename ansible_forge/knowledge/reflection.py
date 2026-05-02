@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ansible_forge.knowledge.experience_store import Experience, ExperienceStore
 from ansible_forge.logging import get_logger
 
 logger = get_logger(__name__)
+
+_TOXIC_PATTERNS = [
+    re.compile(r"cannot be (fixed|resolved|repaired) from (here|within|inside)", re.I),
+    re.compile(r"runner.*(crashed|broken|dead|down)", re.I),
+    re.compile(r"(unfixable|unrecoverable|permanently).*(error|failure|broken)", re.I),
+    re.compile(r"platform.*(issue|problem|bug).*cannot", re.I),
+    re.compile(r"restart the (app|application|runner|platform|service)", re.I),
+    re.compile(r"tell the user to.*(restart|run|execute)", re.I),
+    re.compile(r"Broken pipe.*cannot", re.I),
+]
+
+
+def _is_toxic_reflection(trigger: str, insight: str) -> bool:
+    combined = f"{trigger} {insight}"
+    return any(p.search(combined) for p in _TOXIC_PATTERNS)
 
 REFLECTION_PROMPT = """\
 You are reviewing an Ansible automation session. Analyze what happened and extract reusable learnings.
@@ -50,46 +66,78 @@ def _summarize_session_events(events: list[dict[str, Any]]) -> str:
     user_messages = [
         e["data"].get("content", "")[:200]
         for e in events
-        if e["event"] == "user_message" and e["data"].get("content")
+        if e.get("event_type") == "user_message" and e["data"].get("content")
     ]
     if user_messages:
         parts.append("User requests:\n" + "\n".join(f"- {m}" for m in user_messages[-5:]))
 
     tool_calls = []
     for e in events:
-        if e["event"] == "tool_call":
+        if e.get("event_type") == "tool_call":
             tool = e["data"].get("tool", "?")
             tool_calls.append(tool)
     if tool_calls:
         parts.append(f"Tools used: {', '.join(dict.fromkeys(tool_calls))}")
 
+    error_fix_sequences = _extract_error_fix_sequences(events)
+    if error_fix_sequences:
+        parts.append("Error→Fix sequences:\n" + "\n".join(error_fix_sequences))
+
     tool_results = []
     for e in events:
-        if e["event"] == "tool_result":
+        if e.get("event_type") == "tool_result":
             tool = e["data"].get("tool", "?")
             status = e["data"].get("status", "?")
             output = e["data"].get("output", "")[:150]
             tool_results.append(f"- {tool}: {status} — {output}")
     if tool_results:
-        parts.append("Tool outcomes:\n" + "\n".join(tool_results[-10:]))
-
-    errors = [
-        e["data"].get("error", "")[:200]
-        for e in events
-        if e["event"] == "error_recovery" and e["data"].get("error")
-    ]
-    if errors:
-        parts.append("Errors encountered:\n" + "\n".join(f"- {err}" for err in errors))
+        parts.append("Tool outcomes (last 10):\n" + "\n".join(tool_results[-10:]))
 
     agent_messages = [
         e["data"].get("content", "")[:300]
         for e in events
-        if e["event"] == "message" and e["data"].get("content")
+        if e.get("event_type") == "message" and e["data"].get("content")
     ]
     if agent_messages:
         parts.append(f"Final agent response:\n{agent_messages[-1]}")
 
     return "\n\n".join(parts) if parts else "No significant events recorded."
+
+
+def _extract_error_fix_sequences(events: list[dict[str, Any]]) -> list[str]:
+    """Find tool failures followed by successes on the same tool — the actual learning moments."""
+    last_failure: dict[str, dict[str, Any]] = {}
+    sequences: list[str] = []
+
+    for e in events:
+        if e.get("event_type") == "tool_call":
+            tool = e["data"].get("tool", "")
+            args = e["data"].get("arguments", {})
+            if tool in last_failure:
+                last_failure[tool]["next_args"] = args
+
+        if e.get("event_type") != "tool_result":
+            continue
+        tool = e["data"].get("tool", "")
+        status = e["data"].get("status", "")
+        output = e["data"].get("output", "")[:200]
+
+        if status == "error":
+            last_failure[tool] = {"error": output, "next_args": None}
+        elif status == "success" and tool in last_failure:
+            fail_info = last_failure.pop(tool)
+            next_args = fail_info.get("next_args")
+            args_hint = ""
+            if isinstance(next_args, dict):
+                changed = {k: v for k, v in next_args.items() if k != "_session_id"}
+                if changed:
+                    args_hint = f" Args on success: {json.dumps(changed)[:200]}"
+            sequences.append(
+                f"- {tool} FAILED: {fail_info['error'][:150]}\n"
+                f"  FIXED → {tool} SUCCESS: {output[:150]}{args_hint}"
+            )
+
+    return sequences[:5]
 
 
 def _parse_reflection(content: str) -> list[dict[str, Any]]:
@@ -136,7 +184,7 @@ async def reflect_on_session(
     if len(events) < 3:
         return 0
 
-    has_tool_use = any(e["event"] in ("tool_call", "tool_result") for e in events)
+    has_tool_use = any(e.get("event_type") in ("tool_call", "tool_result") for e in events)
     if not has_tool_use:
         return 0
 
@@ -159,21 +207,43 @@ async def reflect_on_session(
 
     learnings = _parse_reflection(response.content or "")
     saved = 0
+    skipped = 0
     for learning in learnings:
         ctx = learning.get("context", {})
         if not isinstance(ctx, dict):
             ctx = {}
+        trigger = str(learning["trigger"])[:500]
+        insight = str(learning["insight"])[:1000]
+
+        if _is_toxic_reflection(trigger, insight):
+            logger.info("reflection_filtered_toxic", trigger=trigger[:100])
+            skipped += 1
+            continue
+
+        existing = store.find_similar("reflection", trigger, insight, threshold=0.4)
+        if existing:
+            if existing.confidence < 0.8:
+                existing.confidence = min(existing.confidence + 0.05, 0.8)
+                store.save(existing)
+            skipped += 1
+            continue
+
         store.save(Experience(
             type="reflection",
-            trigger=str(learning["trigger"])[:500],
+            trigger=trigger,
             context=ctx,
-            solution=str(learning["insight"])[:1000],
+            solution=insight,
             outcome=f"Reflected from session {session_id}",
             confidence=0.4,
             session_id=session_id,
         ))
         saved += 1
 
-    if saved:
-        logger.info("reflection_captured", session_id=session_id, count=saved)
+    if saved or skipped:
+        logger.info(
+            "reflection_captured",
+            session_id=session_id,
+            new=saved,
+            duplicates_skipped=skipped,
+        )
     return saved

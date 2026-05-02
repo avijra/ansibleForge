@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 
 
 def build_context(workspace: Workspace) -> str:
-    """Build a context string describing the current workspace state."""
+    """Build a context string describing the current workspace state and known infrastructure."""
     inv_files = _list_dir(workspace.inventory_dir)
     playbooks = list_playbooks(workspace.path)
     roles = _list_roles(workspace.project_dir / "roles")
@@ -26,15 +26,30 @@ def build_context(workspace: Workspace) -> str:
         role_names=", ".join(roles) or "(none)",
     )
 
-    facts_summary = _load_cached_facts(workspace.path)
+    facts_summary = _load_cached_facts(workspace.artifacts_dir)
     if facts_summary:
         ctx += f"\n{facts_summary}"
+
+    infra_ctx = _load_infrastructure_context()
+    if infra_ctx:
+        ctx += f"\n{infra_ctx}"
+
     return ctx
 
 
-def _load_cached_facts(workspace_root: Path) -> str:
+def _load_infrastructure_context() -> str:
+    try:
+        from ansible_forge.persistence.infrastructure_store import InfrastructureStore
+        store = InfrastructureStore.get_instance()
+        return store.build_infrastructure_context()
+    except Exception:
+        logger.debug("infrastructure_context_unavailable", exc_info=True)
+        return ""
+
+
+def _load_cached_facts(artifacts_dir: Path) -> str:
     """Read host_facts.json and return a compact one-line-per-host summary."""
-    facts_path = workspace_root / "artifacts" / "host_facts.json"
+    facts_path = artifacts_dir / "host_facts.json"
     if not facts_path.exists():
         return ""
     try:

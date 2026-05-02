@@ -127,9 +127,14 @@ class Memory:
     def ensure_integrity(self) -> int:
         """Ensure all assistant tool_calls have matching tool result messages.
 
-        If any tool_call_id is orphaned (no matching tool message follows),
-        a synthetic error tool result is inserted.  Returns the number of
-        repairs made.  Call this before sending messages to the LLM.
+        Performs two repairs:
+        1. Moves non-tool messages that are wedged between an assistant
+           tool_calls message and its tool results to after the tool results.
+           Many LLM providers (e.g. DeepSeek) require tool results to be
+           contiguous immediately after the assistant message.
+        2. Inserts synthetic error tool results for any orphaned tool_call_ids.
+
+        Returns the number of repairs made.  Call before sending to the LLM.
         """
         repairs = 0
         i = 0
@@ -141,27 +146,51 @@ class Memory:
 
             expected_ids = {tc["id"] for tc in msg["tool_calls"]}
 
-            found_ids: set[str] = set()
+            tool_msgs: list[dict[str, Any]] = []
+            displaced_msgs: list[dict[str, Any]] = []
             j = i + 1
             while j < len(self._messages):
                 nxt = self._messages[j]
                 if nxt.get("role") == "tool" and nxt.get("tool_call_id") in expected_ids:
-                    found_ids.add(nxt["tool_call_id"])
+                    tool_msgs.append(nxt)
                 elif nxt.get("role") == "assistant":
                     break
+                else:
+                    displaced_msgs.append(nxt)
                 j += 1
 
+            found_ids = {m["tool_call_id"] for m in tool_msgs}
             missing = expected_ids - found_ids
-            if missing:
-                insert_at = min(j, len(self._messages))
-                for tc in reversed(msg["tool_calls"]):
+
+            needs_reorder = bool(displaced_msgs and tool_msgs)
+            needs_synthetic = bool(missing)
+
+            if needs_reorder or needs_synthetic:
+                end = j
+                self._messages[i + 1:end] = []
+
+                insert_at = i + 1
+                for tm in tool_msgs:
+                    self._messages.insert(insert_at, tm)
+                    insert_at += 1
+
+                for tc in msg["tool_calls"]:
                     if tc["id"] in missing:
                         self._messages.insert(insert_at, {
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "content": '{"status":"error","output":"Tool call was not executed (loop break or timeout)."}',
                         })
+                        insert_at += 1
                         repairs += 1
+
+                for dm in displaced_msgs:
+                    self._messages.insert(insert_at, dm)
+                    insert_at += 1
+
+                if needs_reorder:
+                    repairs += 1
+
             i += 1
         return repairs
 

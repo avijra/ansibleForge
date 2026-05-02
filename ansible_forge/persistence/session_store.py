@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     title TEXT,
     status TEXT NOT NULL DEFAULT 'active',
+    project_path TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -31,6 +32,10 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, id);
 """
+
+_MIGRATE_PROJECT_PATH = (
+    "ALTER TABLE sessions ADD COLUMN project_path TEXT"
+)
 
 
 class SessionStore:
@@ -54,18 +59,33 @@ class SessionStore:
         with self._lock:
             conn = self._connect()
             conn.executescript(_CREATE_SQL)
+            self._migrate(conn)
             conn.close()
         logger.info("session_store_initialized", path=str(self._db_path))
 
-    def save_session(self, session_id: str, title: str | None = None, status: str = "active") -> None:
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "project_path" not in cols:
+            conn.execute(_MIGRATE_PROJECT_PATH)
+            conn.commit()
+
+    def save_session(
+        self,
+        session_id: str,
+        title: str | None = None,
+        status: str = "active",
+        project_path: str | None = None,
+    ) -> None:
         now = time.time()
         with self._lock:
             conn = self._connect()
             conn.execute(
-                "INSERT INTO sessions (session_id, title, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(session_id) DO UPDATE SET title=?, status=?, updated_at=?",
-                (session_id, title, status, now, now, title, status, now),
+                "INSERT INTO sessions (session_id, title, status, project_path, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "title=COALESCE(?, title), status=?, project_path=COALESCE(?, project_path), updated_at=?",
+                (session_id, title, status, project_path, now, now, title, status, project_path, now),
             )
             conn.commit()
             conn.close()
@@ -89,7 +109,7 @@ class SessionStore:
         with self._lock:
             conn = self._connect()
             rows = conn.execute(
-                "SELECT session_id, title, status, created_at, updated_at "
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
                 "FROM sessions ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -101,6 +121,7 @@ class SessionStore:
                 "status": r[2],
                 "created_at": r[3],
                 "updated_at": r[4],
+                "project_path": r[5],
             }
             for r in rows
         ]
@@ -116,12 +137,32 @@ class SessionStore:
             conn.close()
         return [
             {
-                "event": r[0],
+                "event_type": r[0],
                 "data": json.loads(r[1]),
                 "timestamp": r[2],
             }
             for r in rows
         ]
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
+                "FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "session_id": row[0],
+            "title": row[1],
+            "status": row[2],
+            "created_at": row[3],
+            "updated_at": row[4],
+            "project_path": row[5],
+        }
 
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
@@ -130,3 +171,39 @@ class SessionStore:
             conn.commit()
             conn.close()
             return cur.rowcount > 0
+
+    def reset_session(self, session_id: str) -> bool:
+        """Delete all events for a session but keep the session row itself."""
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
+            cur = conn.execute(
+                "UPDATE sessions SET status='active', updated_at=? WHERE session_id=?",
+                (now, session_id),
+            )
+            conn.commit()
+            conn.close()
+            return cur.rowcount > 0
+
+    def list_by_project_path(self, project_path: str) -> list[dict[str, Any]]:
+        """Return all sessions associated with a specific project directory."""
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
+                "FROM sessions WHERE project_path=? ORDER BY updated_at DESC",
+                (project_path,),
+            ).fetchall()
+            conn.close()
+        return [
+            {
+                "session_id": r[0],
+                "title": r[1],
+                "status": r[2],
+                "created_at": r[3],
+                "updated_at": r[4],
+                "project_path": r[5],
+            }
+            for r in rows
+        ]
