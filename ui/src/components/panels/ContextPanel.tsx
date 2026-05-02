@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { ScrollText, Server, GitBranch, Brain, PanelRightClose, FolderTree } from "lucide-react";
+import { ScrollText, Server, GitBranch, Brain, PanelRightClose, FolderTree, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ExecutionTimeline } from "./ExecutionTimeline";
 import { HostInventory } from "./HostInventory";
 import { RunHistory } from "./RunHistory";
 import { KnowledgeExplorer } from "./KnowledgeExplorer";
 import { WorkspaceExplorer } from "./WorkspaceExplorer";
+import { RulesEditor } from "./RulesEditor";
 import type { AgentEvent, WorkspaceFile } from "@/api/types";
 
-export type ContextTab = "logs" | "files" | "hosts" | "runs" | "knowledge";
+export type ContextTab = "logs" | "files" | "hosts" | "runs" | "knowledge" | "rules";
 
 const tabs: { id: ContextTab; label: string; icon: typeof ScrollText }[] = [
   { id: "logs", label: "Logs", icon: ScrollText },
@@ -16,6 +17,7 @@ const tabs: { id: ContextTab; label: string; icon: typeof ScrollText }[] = [
   { id: "hosts", label: "Hosts", icon: Server },
   { id: "runs", label: "Runs", icon: GitBranch },
   { id: "knowledge", label: "Knowledge", icon: Brain },
+  { id: "rules", label: "Rules", icon: BookOpen },
 ];
 
 interface ContextPanelProps {
@@ -26,6 +28,7 @@ interface ContextPanelProps {
   inventory: Record<string, string>;
   workspaceFiles: WorkspaceFile[];
   onOpenFile?: (file: WorkspaceFile) => void;
+  sessionId?: string;
 }
 
 export function ContextPanel({
@@ -36,6 +39,7 @@ export function ContextPanel({
   inventory,
   workspaceFiles,
   onOpenFile,
+  sessionId,
 }: ContextPanelProps) {
   const [activeTab, setActiveTab] = useState<ContextTab>("logs");
 
@@ -103,6 +107,11 @@ export function ContextPanel({
         {activeTab === "knowledge" && (
           <div className="h-full overflow-y-auto overflow-x-hidden">
             <KnowledgeExplorer />
+          </div>
+        )}
+        {activeTab === "rules" && (
+          <div className="h-full overflow-y-auto overflow-x-hidden">
+            <RulesEditor sessionId={sessionId} />
           </div>
         )}
       </div>

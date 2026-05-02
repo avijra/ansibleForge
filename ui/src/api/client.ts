@@ -12,6 +12,7 @@ import type {
   LLMSettings,
   LLMSettingsUpdate,
   PlaybooksResponse,
+  SessionListItem,
   SessionStatusResponse,
   WorkspaceFilesResponse,
 } from "./types";
@@ -29,7 +30,7 @@ export function authHeaders(): Record<string, string> {
   return headers;
 }
 
-async function request<T>(
+export async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
@@ -46,6 +47,7 @@ async function request<T>(
 
 export const api = {
   health: () => request<HealthResponse>("/health"),
+  tools: () => request<{ name: string; description: string }[]>("/tools"),
 
   sessionStatus: (id: string) =>
     request<SessionStatusResponse>(`/chat/${id}/status`),
@@ -108,6 +110,47 @@ export const api = {
       request<LLMSettings>("/settings/llm", { method: "DELETE" }),
   },
 
+  sessions: {
+    list: (projectPath?: string) => {
+      const qs = projectPath
+        ? `?project_path=${encodeURIComponent(projectPath)}`
+        : "";
+      return request<{ sessions: SessionListItem[] }>(`/sessions${qs}`);
+    },
+    reset: (sessionId: string) =>
+      request<{ session_id: string; status: string }>(`/sessions/${sessionId}/reset`, {
+        method: "POST",
+      }),
+    delete: (sessionId: string) =>
+      request<{ session_id: string; deleted: boolean }>(`/sessions/${sessionId}`, {
+        method: "DELETE",
+      }),
+  },
+
+  rules: {
+    get: (sessionId: string) =>
+      request<{ session_id: string; content: string; exists: boolean; path: string }>(
+        `/rules/${sessionId}`
+      ),
+    update: (sessionId: string, content: string) =>
+      request<{ session_id: string; status: string }>(
+        `/rules/${sessionId}`,
+        { method: "PUT", body: JSON.stringify({ content }) }
+      ),
+  },
+
+  checkpoints: {
+    list: (sessionId: string) =>
+      request<{ session_id: string; checkpoints: { hash: string; short_hash: string; label: string; timestamp: number }[] }>(
+        `/checkpoints/${sessionId}`
+      ),
+    revert: (sessionId: string, hash: string) =>
+      request<{ session_id: string; success: boolean; reverted_to: string; files_changed: number }>(
+        `/checkpoints/${sessionId}/revert`,
+        { method: "POST", body: JSON.stringify({ hash }) }
+      ),
+  },
+
   secrets: {
     submit: (sessionId: string, name: string, value: string, description = "") =>
       request<{ session_id: string; name: string; status: string; message: string }>(
@@ -126,17 +169,84 @@ export const api = {
         `/chat/${sessionId}/secrets/${name}`,
         { method: "DELETE" }
       ),
+    cancel: (sessionId: string) =>
+      request<{ session_id: string; name: string; status: string; message: string }>(
+        `/chat/${sessionId}/secrets/cancel`,
+        { method: "POST" }
+      ),
   },
 };
 
 let eventCounter = 0;
+
+export function reconnectStream(
+  sessionId: string,
+  fromSeq: number,
+  onEvent: (event: AgentEvent) => void,
+  onDone: () => void,
+): AbortController {
+  const controller = new AbortController();
+
+  fetch(`${BASE}/chat/${sessionId}/stream?from_seq=${fromSeq}`, {
+    headers: authHeaders(),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        onDone();
+        return;
+      }
+      const reader = res.body?.getReader();
+      if (!reader) { onDone(); return; }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent: AgentEventType | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim() as AgentEventType;
+          } else if (line.startsWith("data: ") && currentEvent) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (currentEvent === "done") {
+                onDone();
+              } else {
+                onEvent({
+                  id: `evt-${++eventCounter}`,
+                  event: currentEvent,
+                  data,
+                  timestamp: Date.now(),
+                });
+              }
+            } catch { /* skip */ }
+            currentEvent = null;
+          }
+        }
+      }
+      onDone();
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") onDone();
+    });
+
+  return controller;
+}
 
 export function streamChat(
   message: string,
   sessionId: string | null,
   onEvent: (event: AgentEvent) => void,
   onError: (error: Error) => void,
-  onDone: (sessionId: string) => void
+  onDone: (sessionId: string) => void,
+  projectPath?: string,
 ): AbortController {
   const controller = new AbortController();
 
@@ -146,6 +256,7 @@ export function streamChat(
     body: JSON.stringify({
       message,
       session_id: sessionId,
+      project_path: projectPath || undefined,
     }),
     signal: controller.signal,
   })
@@ -176,6 +287,9 @@ export function streamChat(
       let buffer = "";
       let currentEvent: AgentEventType | null = null;
 
+      let receivedDone = false;
+      let lastSessionId: string | null = sessionId;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -191,7 +305,12 @@ export function streamChat(
             try {
               const data = JSON.parse(line.slice(6));
 
+              if (currentEvent === "session_started" && data.session_id) {
+                lastSessionId = data.session_id;
+              }
+
               if (currentEvent === "done") {
+                receivedDone = true;
                 onDone(data.session_id);
               } else {
                 onEvent({
@@ -209,6 +328,10 @@ export function streamChat(
             currentEvent = null;
           }
         }
+      }
+
+      if (!receivedDone && lastSessionId) {
+        onDone(lastSessionId);
       }
     })
     .catch((err) => {

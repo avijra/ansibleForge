@@ -1,6 +1,7 @@
 export interface ChatRequest {
   message: string;
   session_id?: string;
+  project_path?: string;
   model?: string;
 }
 
@@ -27,6 +28,9 @@ export interface HealthResponse {
   llm_provider: string;
   llm_model: string;
   tools_available: string[];
+  llm_status?: string;
+  llm_status_detail?: string;
+  external_tools?: Record<string, string>;
 }
 
 export interface SessionStatusResponse {
@@ -110,7 +114,10 @@ export type AgentEventType =
   | "approval_rejected"
   | "secret_request"
   | "message"
+  | "message_delta"
+  | "checkpoint"
   | "user_message"
+  | "plan"
   | "progress"
   | "error_recovery"
   | "max_steps"
@@ -123,15 +130,25 @@ export interface AgentEvent {
   timestamp: number;
 }
 
+export interface SessionListItem {
+  session_id: string;
+  title: string | null;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  project_path: string | null;
+}
+
 export interface Session {
   id: string;
-  status: "active" | "completed" | "awaiting_approval" | "rejected" | "error";
+  status: "active" | "completed" | "awaiting_approval" | "awaiting_secret" | "rejected" | "error";
   events: AgentEvent[];
   playbooks: Record<string, string>;
   inventory: Record<string, string>;
   workspaceFiles: WorkspaceFile[];
   createdAt: number;
   title?: string;
+  projectPath?: string;
 }
 
 export interface LLMSettings {

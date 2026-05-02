@@ -367,7 +367,7 @@ export function KnowledgeExplorer() {
         <div>
           <p className="text-xs text-zinc-500">Experience store is building</p>
           <p className="mt-1 text-[11px] text-zinc-600">
-            As you run playbooks, fix errors, and refine outputs, AnsibleForge learns
+            As you run playbooks, fix errors, and refine outputs, Tuyere learns
             from every interaction automatically
           </p>
         </div>

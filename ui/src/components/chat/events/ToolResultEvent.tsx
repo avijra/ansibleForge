@@ -5,6 +5,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { TerminalOutput } from "@/components/common/TerminalOutput";
 import { DiffView } from "@/components/common/DiffView";
 import { cn } from "@/lib/utils";
+import { friendlyToolName } from "@/lib/tool-labels";
 
 interface AnsibleTaskEvent {
   event: string;
@@ -23,28 +24,39 @@ interface AnsibleSummary {
 function taskIcon(eventType: string) {
   switch (eventType) {
     case "runner_on_ok":
-      return <CheckCircle2 className="h-3 w-3 text-zinc-500 shrink-0" />;
+      return <CheckCircle2 className="h-3 w-3 text-emerald-500/70 shrink-0" />;
     case "runner_on_changed":
-      return <CheckCircle2 className="h-3 w-3 text-zinc-400 shrink-0" />;
+      return <CheckCircle2 className="h-3 w-3 text-amber-400/70 shrink-0" />;
     case "runner_on_failed":
-      return <XCircle className="h-3 w-3 text-zinc-400 shrink-0" />;
+      return <XCircle className="h-3 w-3 text-red-400/70 shrink-0" />;
     case "runner_on_skipped":
       return <Clock className="h-3 w-3 text-zinc-600 shrink-0" />;
     case "runner_on_unreachable":
-      return <WifiOff className="h-3 w-3 text-zinc-400 shrink-0" />;
+      return <WifiOff className="h-3 w-3 text-red-400/70 shrink-0" />;
     default:
       return <CheckCircle2 className="h-3 w-3 text-zinc-600 shrink-0" />;
   }
 }
 
-function taskLabel(eventType: string) {
+function taskLabel(eventType: string): string {
   switch (eventType) {
-    case "runner_on_ok": return "ok";
+    case "runner_on_ok": return "done";
     case "runner_on_changed": return "changed";
-    case "runner_on_failed": return "FAILED";
+    case "runner_on_failed": return "failed";
     case "runner_on_skipped": return "skipped";
-    case "runner_on_unreachable": return "UNREACHABLE";
+    case "runner_on_unreachable": return "unreachable";
     default: return eventType.replace("runner_on_", "");
+  }
+}
+
+function taskLabelColor(eventType: string): string {
+  switch (eventType) {
+    case "runner_on_ok": return "text-emerald-400/80 bg-emerald-950/30";
+    case "runner_on_changed": return "text-amber-400/80 bg-amber-950/30";
+    case "runner_on_failed": return "text-red-400/80 bg-red-950/30";
+    case "runner_on_skipped": return "text-zinc-600 bg-zinc-800/30";
+    case "runner_on_unreachable": return "text-red-400/80 bg-red-950/30";
+    default: return "text-zinc-500 bg-zinc-800/30";
   }
 }
 
@@ -88,16 +100,7 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
         {taskIcon(task.event)}
         <span className="text-xs text-zinc-300 truncate flex-1">{task.task || "unknown"}</span>
         <span className="text-[10px] text-zinc-500 font-mono">{task.host}</span>
-        <span
-          className={cn(
-            "text-[10px] font-mono px-1.5 py-0.5 rounded",
-            task.event === "runner_on_ok" && "text-zinc-400 bg-zinc-700/20",
-            task.event === "runner_on_changed" && "text-zinc-300 bg-zinc-700/30",
-            task.event === "runner_on_failed" && "text-zinc-300 bg-zinc-700/30",
-            task.event === "runner_on_skipped" && "text-zinc-600 bg-zinc-800/30",
-            task.event === "runner_on_unreachable" && "text-zinc-300 bg-zinc-700/30"
-          )}
-        >
+        <span className={cn("text-[10px] px-1.5 py-0.5 rounded", taskLabelColor(task.event))}>
           {taskLabel(task.event)}
         </span>
         {hasDetail && (
@@ -116,13 +119,13 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
           )}
           {!!stdout && (
             <div>
-              <div className="text-[10px] text-zinc-500 mb-0.5 font-medium">stdout</div>
+              <div className="text-[10px] text-zinc-500 mb-0.5 font-medium">Output</div>
               <TerminalOutput content={String(stdout)} maxHeight="max-h-40" />
             </div>
           )}
           {!!stderr && (
             <div>
-              <div className="text-[10px] text-red-400/70 mb-0.5 font-medium">stderr</div>
+              <div className="text-[10px] text-red-400/70 mb-0.5 font-medium">Errors</div>
               <TerminalOutput
                 content={String(stderr)}
                 maxHeight="max-h-40"
@@ -132,14 +135,14 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
           )}
           {!!diffText && (
             <div>
-              <div className="text-[10px] text-zinc-400 mb-0.5 font-medium">diff</div>
+              <div className="text-[10px] text-zinc-400 mb-0.5 font-medium">Changes</div>
               <DiffView content={diffText} maxHeight="max-h-48" />
             </div>
           )}
           {!!warnings?.length && (
             <div className="rounded bg-amber-950/10 border border-amber-900/20 px-2.5 py-1.5">
               <div className="text-[10px] text-amber-400/70 font-medium mb-1">
-                warnings ({warnings.length})
+                Warnings ({warnings.length})
               </div>
               <pre className="text-[11px] font-mono text-amber-300/80 whitespace-pre-wrap">
                 {warnings.map(String).join("\n")}
@@ -152,6 +155,25 @@ function TaskDetail({ task }: { task: AnsibleTaskEvent }) {
   );
 }
 
+function explainConcept(text: string): string | null {
+  const lower = text.toLowerCase();
+  if (lower.includes("check mode") || lower.includes("dry-run") || lower.includes("dry run") || lower.includes("preview"))
+    return "Preview only — no changes were made to any servers.";
+  if (lower.includes("become") && (lower.includes("true") || lower.includes("elevated")))
+    return "Running with elevated (admin/root) privileges.";
+  if (lower.includes("gathering facts") || lower.includes("collect_facts") || lower.includes("setup module"))
+    return "Collecting system details like OS version, memory, and network configuration.";
+  if (lower.includes("inventory") && (lower.includes("created") || lower.includes("writing") || lower.includes("managing")))
+    return "The server list that defines which machines to manage.";
+  if (lower.includes("playbook") && (lower.includes("generat") || lower.includes("writing")))
+    return "An automated script that defines what to configure on your servers.";
+  if (lower.includes("role") && lower.includes("scaffold"))
+    return "A reusable package of automation tasks, files, and templates.";
+  if (lower.includes("vault") && (lower.includes("encrypt") || lower.includes("decrypt")))
+    return "Securely storing sensitive data like passwords and keys.";
+  return null;
+}
+
 function hasNonZeroStats(stats: Record<string, Record<string, number>>): boolean {
   return Object.values(stats).some((counts) =>
     Object.values(counts).some((v) => v > 0)
@@ -161,23 +183,41 @@ function hasNonZeroStats(stats: Record<string, Record<string, number>>): boolean
 function RecapBar({ stats }: { stats: Record<string, Record<string, number>> }) {
   if (!hasNonZeroStats(stats)) return null;
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono">
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
       {Object.entries(stats).map(([host, counts]) => {
         const hasValues = Object.values(counts).some((v) => v > 0);
         if (!hasValues) return null;
+        const parts: string[] = [];
+        if (counts.ok > 0) parts.push(`${counts.ok} completed`);
+        if (counts.changed > 0) parts.push(`${counts.changed} changed`);
+        if (counts.failures > 0) parts.push(`${counts.failures} failed`);
+        if (counts.unreachable > 0) parts.push(`${counts.unreachable} unreachable`);
+        if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
         return (
-          <div key={host} className="flex items-center gap-2">
-            <span className="text-zinc-400">{host}:</span>
-            {counts.ok > 0 && <span className="text-zinc-400">ok={counts.ok}</span>}
-            {counts.changed > 0 && <span className="text-zinc-300">changed={counts.changed}</span>}
-            {counts.failures > 0 && <span className="text-zinc-300">failed={counts.failures}</span>}
-            {counts.unreachable > 0 && <span className="text-zinc-400">unreachable={counts.unreachable}</span>}
-            {counts.skipped > 0 && <span className="text-zinc-600">skipped={counts.skipped}</span>}
+          <div key={host} className="flex items-center gap-1.5">
+            <span className="text-zinc-400 font-medium">{host}:</span>
+            <span className="text-zinc-500">{parts.join(", ")}</span>
           </div>
         );
       })}
     </div>
   );
+}
+
+function extractAdhocOutput(data: Record<string, unknown> | undefined): string | null {
+  if (!data) return null;
+  const hostResults = data.host_results as Record<string, Record<string, unknown>> | undefined;
+  if (!hostResults) return null;
+  const parts: string[] = [];
+  for (const [host, result] of Object.entries(hostResults)) {
+    const stdout = (result.stdout || result.module_stdout) as string | undefined;
+    const stderr = (result.stderr || result.module_stderr) as string | undefined;
+    if (!stdout && !stderr) continue;
+    const prefix = Object.keys(hostResults).length > 1 ? `[${host}] ` : "";
+    if (stdout?.trim()) parts.push(`${prefix}${stdout.trim()}`);
+    if (stderr?.trim() && result.rc !== 0) parts.push(`${prefix}⚠ ${stderr.trim()}`);
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 export function ToolResultEvent({ event }: { event: AgentEvent }) {
@@ -189,6 +229,7 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
   const ansibleEvents = (data?.events as AnsibleTaskEvent[] | undefined) || [];
   const summary = data?.summary as AnsibleSummary | undefined;
   const hasAnsibleLogs = ansibleEvents.length > 0;
+  const adhocOutput = tool === "run_adhoc" ? extractAdhocOutput(data) : null;
 
   const [logsOpen, setLogsOpen] = useState(hasAnsibleLogs);
 
@@ -215,14 +256,25 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
     >
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 text-zinc-500" />
-        <span className="text-xs font-mono text-zinc-400">{tool}</span>
+        <span className="text-xs text-zinc-400">{friendlyToolName(tool)}</span>
         <StatusBadge status={status} className="ml-auto" />
       </div>
 
-      {output && (() => {
+      {adhocOutput ? (
+        <TerminalOutput content={adhocOutput} maxHeight="max-h-48" />
+      ) : output ? (() => {
         const cleaned = output.replace(/\nPLAY RECAP[\s\S]*$/, "").trim();
-        return cleaned ? <TerminalOutput content={cleaned} maxHeight="max-h-48" /> : null;
-      })()}
+        if (!cleaned) return null;
+        const hint = explainConcept(cleaned);
+        return (
+          <>
+            <TerminalOutput content={cleaned} maxHeight="max-h-48" />
+            {hint && (
+              <p className="text-[11px] text-zinc-600 italic px-0.5">{hint}</p>
+            )}
+          </>
+        );
+      })() : null}
 
       {hasAnsibleLogs && (
         <div className="space-y-2">
@@ -235,7 +287,7 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
               : <ChevronRight className="h-3.5 w-3.5" />
             }
             <span className="font-medium">
-              Ansible Log ({ansibleEvents.length} task{ansibleEvents.length !== 1 ? "s" : ""})
+              Execution Log ({ansibleEvents.length} step{ansibleEvents.length !== 1 ? "s" : ""})
             </span>
           </button>
 
@@ -249,7 +301,7 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
 
           {summary?.stats && logsOpen && hasNonZeroStats(summary.stats) && (
             <div className="rounded-md bg-zinc-950/40 border border-zinc-800 px-3 py-2">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Play Recap</div>
+              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Results Summary</div>
               <RecapBar stats={summary.stats} />
             </div>
           )}

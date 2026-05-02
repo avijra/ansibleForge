@@ -47,10 +47,11 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
   }, []);
 
   const send = useCallback(
-    (message: string, sessionId: string) => {
+    (message: string, sessionId: string, projectPath?: string) => {
       const ss = getSessionState(sessionId);
       if (ss.streaming) return;
       markStreaming(sessionId, true);
+      opts.updateStatus(sessionId, "active");
 
       opts.addEvent(sessionId, {
         id: `usr-${Date.now()}`,
@@ -75,9 +76,11 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
           if (event.event === "approval_required") {
             opts.updateStatus(sessionId, "awaiting_approval");
+            markStreaming(sessionId, false);
           }
           if (event.event === "secret_request") {
-            opts.updateStatus(sessionId, "awaiting_approval");
+            opts.updateStatus(sessionId, "awaiting_secret");
+            markStreaming(sessionId, false);
           }
         },
         (error) => {
@@ -98,6 +101,11 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
           newSs.serverSid = returnedSessionId;
           newSs.controller = ss.controller;
 
+          markStreaming(sessionId, false);
+          markStreaming(returnedSessionId, false);
+          opts.updateStatus(sessionId, "completed");
+          opts.updateStatus(returnedSessionId, "completed");
+
           try {
             const pb = await api.playbooks(returnedSessionId);
             opts.setPlaybooks(returnedSessionId, pb.playbooks);
@@ -112,10 +120,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
             const ws = await api.workspaceFiles(returnedSessionId);
             opts.setWorkspaceFiles(returnedSessionId, ws.files);
           } catch { /* ignore */ }
-
-          markStreaming(sessionId, false);
-          markStreaming(returnedSessionId, false);
-        }
+        },
+        projectPath,
       );
 
       ss.controller = controller;
@@ -132,12 +138,15 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
         opts.updateStatus(sessionId, "active");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        opts.addEvent(sessionId, {
-          id: `err-${Date.now()}`,
-          event: "error_recovery",
-          data: { error: `Approval failed: ${msg}` },
-          timestamp: Date.now(),
-        });
+        const is404 = msg.includes("404");
+        if (!is404) {
+          opts.addEvent(sessionId, {
+            id: `err-${Date.now()}`,
+            event: "error_recovery",
+            data: { error: `Approval failed: ${msg}` },
+            timestamp: Date.now(),
+          });
+        }
       }
     },
     [opts]

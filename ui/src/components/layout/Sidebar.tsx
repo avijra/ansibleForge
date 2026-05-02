@@ -1,15 +1,20 @@
 import { useState } from "react";
-import { Plus, Trash2, Terminal, Server, GitBranch, Brain, Trash } from "lucide-react";
+import { Trash2, Server, GitBranch, Brain, Trash, FolderOpen, RotateCcw } from "lucide-react";
 import type { Session } from "@/api/types";
 import { cn } from "@/lib/utils";
 
+export type SidebarView = "chat" | "hosts" | "runs" | "knowledge";
+
 interface SidebarProps {
   sessions: Session[];
-  activeId: string;
+  activeId: string | null;
+  activeView: SidebarView;
   onSelect: (id: string) => void;
-  onNew: () => void;
+  onOpenFolder: () => void;
   onDelete: (id: string) => void;
+  onReset: (id: string) => void;
   onClearAll?: () => void;
+  onViewChange: (view: SidebarView) => void;
 }
 
 function timeAgo(ts: number): string {
@@ -28,6 +33,7 @@ function statusDot(status: Session["status"]): string {
     case "active": return "bg-emerald-400";
     case "completed": return "bg-zinc-500";
     case "awaiting_approval": return "bg-amber-400 animate-pulse-dot";
+    case "awaiting_secret": return "bg-amber-400 animate-pulse-dot";
     case "error": return "bg-red-400";
     case "rejected": return "bg-zinc-600";
     default: return "bg-zinc-600";
@@ -39,20 +45,23 @@ function SessionRow({
   isActive,
   onSelect,
   onDelete,
+  onReset,
 }: {
   session: Session;
   isActive: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  onReset: () => void;
 }) {
-  const [showDelete, setShowDelete] = useState(false);
-  const label = session.title || session.id.slice(0, 12);
+  const [showActions, setShowActions] = useState(false);
+  const projectName = session.projectPath?.split("/").pop();
+  const label = session.title || projectName || session.id.slice(0, 12);
 
   return (
     <div
       className="relative group"
-      onMouseEnter={() => setShowDelete(true)}
-      onMouseLeave={() => setShowDelete(false)}
+      onMouseEnter={() => setShowActions(true)}
+      onMouseLeave={() => setShowActions(false)}
     >
       <button
         onClick={onSelect}
@@ -65,32 +74,48 @@ function SessionRow({
       >
         <span className={cn("h-2 w-2 rounded-full shrink-0", statusDot(session.status))} />
         <div className="flex-1 min-w-0">
-          <span className={cn("block truncate", session.title ? "font-medium" : "font-mono")}>
+          <span className={cn("block truncate", (session.title || projectName) ? "font-medium" : "font-mono")}>
             {label}
           </span>
           <span className="block text-[10px] text-zinc-600 mt-0.5">
             {timeAgo(session.createdAt)}
+            {projectName && (
+              <span className="ml-1 text-zinc-700">· {projectName}</span>
+            )}
           </span>
         </div>
       </button>
-      {showDelete && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-colors"
-          aria-label="Delete session"
-          title="Delete session"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
+      {showActions && (
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onReset();
+            }}
+            className="rounded p-1 text-zinc-600 hover:text-amber-400 hover:bg-zinc-800 transition-colors"
+            aria-label="Reset session"
+            title="Reset session"
+          >
+            <RotateCcw className="h-3 w-3" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="rounded p-1 text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-colors"
+            aria-label="Delete session"
+            title="Delete session"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
       )}
     </div>
   );
 }
 
-export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClearAll }: SidebarProps) {
+export function Sidebar({ sessions, activeId, activeView, onSelect, onOpenFolder, onDelete, onReset, onClearAll, onViewChange }: SidebarProps) {
   const [confirmClear, setConfirmClear] = useState(false);
 
   return (
@@ -98,9 +123,16 @@ export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClear
       {/* Logo area */}
       <div className="px-3 py-3 border-b border-zinc-800/50">
         <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-zinc-400" />
-          <span className="text-xs font-semibold tracking-tight text-zinc-200">
-            AnsibleForge
+          <svg width="18" height="18" viewBox="0 0 120 120" fill="none" className="shrink-0">
+            <path d="M20 52 L42 46 L42 74 L20 68 Z" fill="#9CA3AF" opacity="0.85"/>
+            <path d="M42 44 L72 38 L72 82 L42 76 Z" fill="#9CA3AF"/>
+            <path d="M72 50 Q85 48 98 44" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.8"/>
+            <path d="M72 60 Q90 60 108 60" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.9"/>
+            <path d="M72 70 Q85 72 98 76" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.8"/>
+            <circle cx="108" cy="60" r="4" fill="#10B981" opacity="0.85"/>
+          </svg>
+          <span className="text-xs font-semibold tracking-widest uppercase text-zinc-200">
+            Tuyere
           </span>
         </div>
       </div>
@@ -139,57 +171,69 @@ export function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClear
             )
           )}
           <button
-            onClick={onNew}
+            onClick={onOpenFolder}
             className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
-            title="New session"
-            aria-label="New session"
+            title="Open project folder"
+            aria-label="Open project folder"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <FolderOpen className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
       {/* Session list */}
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5">
-        {sessions.map((s) => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            isActive={s.id === activeId}
-            onSelect={() => onSelect(s.id)}
-            onDelete={() => onDelete(s.id)}
-          />
-        ))}
+        {sessions.length === 0 ? (
+          <div className="px-2 py-6 text-center">
+            <p className="text-[11px] text-zinc-600">No sessions yet</p>
+            <button
+              onClick={onOpenFolder}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-900 hover:bg-zinc-800 transition-colors"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Open Folder
+            </button>
+          </div>
+        ) : (
+          sessions.map((s) => (
+            <SessionRow
+              key={s.id}
+              session={s}
+              isActive={s.id === activeId}
+              onSelect={() => onSelect(s.id)}
+              onDelete={() => onDelete(s.id)}
+              onReset={() => onReset(s.id)}
+            />
+          ))
+        )}
       </div>
 
-      {/* Nav links — planned features */}
       <div className="border-t border-zinc-800 p-2 space-y-0.5">
         <span className="block px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
           Views
         </span>
-        <NavLink icon={Server} label="Hosts" disabled />
-        <NavLink icon={GitBranch} label="Runs" disabled />
-        <NavLink icon={Brain} label="Knowledge" disabled />
+        <NavLink icon={Server} label="Hosts" active={activeView === "hosts"} onClick={() => onViewChange("hosts")} />
+        <NavLink icon={GitBranch} label="Runs" active={activeView === "runs"} onClick={() => onViewChange("runs")} />
+        <NavLink icon={Brain} label="Knowledge" active={activeView === "knowledge"} onClick={() => onViewChange("knowledge")} />
       </div>
     </aside>
   );
 }
 
-function NavLink({ icon: Icon, label, disabled }: { icon: typeof Server; label: string; disabled?: boolean }) {
+function NavLink({ icon: Icon, label, active, onClick }: { icon: typeof Server; label: string; active?: boolean; onClick?: () => void }) {
   return (
     <button
-      disabled={disabled}
+      onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
-        disabled
-          ? "text-zinc-700 cursor-default"
+        active
+          ? "bg-zinc-800/80 text-zinc-100"
           : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
       )}
-      title={disabled ? `${label} — coming soon` : label}
+      title={label}
     >
       <Icon className="h-3.5 w-3.5" />
       {label}
-      {disabled && <span className="ml-auto text-[9px] text-zinc-800">soon</span>}
     </button>
   );
 }

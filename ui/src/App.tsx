@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Settings as SettingsIcon, PanelRightOpen } from "lucide-react";
+import { Settings as SettingsIcon, PanelRightOpen, FolderOpen } from "lucide-react";
 import { Header } from "@/components/layout/Header";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar, type SidebarView } from "@/components/layout/Sidebar";
+import { HostsView } from "@/components/views/HostsView";
+import { KnowledgeView } from "@/components/views/KnowledgeView";
+import { RunsView } from "@/components/views/RunsView";
 import { ActivityFeed } from "@/components/chat/ActivityFeed";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ContextPanel } from "@/components/panels/ContextPanel";
 import { SettingsModal } from "@/components/SettingsModal";
+import { ProjectSessionPicker } from "@/components/ProjectSessionPicker";
 import { CodeEditor } from "@/components/editor/CodeEditor";
 import { FileTabs } from "@/components/editor/FileTabs";
 import { CommandPalette } from "@/components/command/CommandPalette";
@@ -19,8 +23,8 @@ import { useKeyboard } from "@/hooks/useKeyboard";
 import { useAnsibleContext } from "@/hooks/useAnsibleContext";
 import { useResizable } from "@/hooks/useResizable";
 import { useElectronIPC } from "@/hooks/useElectronIPC";
-import { api } from "@/api/client";
-import type { WorkspaceFile } from "@/api/types";
+import { api, request } from "@/api/client";
+import type { AgentEvent, SessionListItem, WorkspaceFile } from "@/api/types";
 
 type BottomTab = "terminal" | "problems";
 
@@ -33,10 +37,23 @@ interface OpenFile {
   originalContent: string;
 }
 
+interface PickerState {
+  projectPath: string;
+  sessions: SessionListItem[];
+}
+
 function detectLanguage(path: string): string {
   if (path.endsWith(".yml") || path.endsWith(".yaml")) return "yaml";
   if (path.endsWith(".json")) return "json";
   return "plaintext";
+}
+
+async function pickDirectory(): Promise<string | null> {
+  const electronAPI = window.electronAPI;
+  if (electronAPI) {
+    return electronAPI.selectProjectDirectory();
+  }
+  return prompt("Enter project directory path:");
 }
 
 export function App() {
@@ -54,6 +71,8 @@ export function App() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [bottomTab, setBottomTab] = useState<BottomTab | null>(null);
+  const [activeView, setActiveView] = useState<SidebarView>("chat");
+  const [pickerState, setPickerState] = useState<PickerState | null>(null);
 
   const rightPanel = useResizable({
     direction: "horizontal",
@@ -89,7 +108,7 @@ export function App() {
       setPlaybooks: session.setPlaybooks,
       setInventory: session.setInventory,
       setWorkspaceFiles: session.setWorkspaceFiles,
-      activeSessionId: session.activeId,
+      activeSessionId: session.activeId ?? undefined,
     }),
     [
       session.addEvent,
@@ -103,13 +122,50 @@ export function App() {
   );
   const chat = useChat(chatOpts);
 
+  useEffect(() => {
+    const sid = session.active?.id;
+    if (!sid || sid.startsWith("local-")) return;
+
+    if (session.active && session.active.workspaceFiles.length === 0) {
+      api.workspaceFiles(sid)
+        .then((ws) => session.setWorkspaceFiles(sid, ws.files))
+        .catch(() => {});
+    }
+
+    const toolEvents = session.active?.events.filter(
+      (e) => e.event === "tool_result" || e.event === "tool_call"
+    ) ?? [];
+    if (toolEvents.length === 0) {
+      request<{ events: Array<{ event_type: string; data: Record<string, unknown>; timestamp: number }> }>(
+        `/sessions/${sid}/events`
+      )
+        .then((res) => {
+          if (!res.events || res.events.length === 0) return;
+          const TRANSIENT = new Set(["progress", "thinking_delta", "message_delta"]);
+          const mapped: AgentEvent[] = res.events
+            .filter((e) => e.event_type && !TRANSIENT.has(e.event_type))
+            .map((e, i) => ({
+              id: `restored-${i}`,
+              event: e.event_type as AgentEvent["event"],
+              data: e.data,
+              timestamp: e.timestamp * 1000,
+            }));
+          if (mapped.length > (session.active?.events.length ?? 0)) {
+            session.setEvents(sid, mapped);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [session.active?.id]);
+
   const ansibleCtx = useAnsibleContext(
-    session.active.events,
-    session.active.workspaceFiles
+    session.active?.events ?? [],
+    session.active?.workspaceFiles ?? []
   );
 
   const handleSend = (message: string) => {
-    chat.send(message, session.active.id);
+    if (!session.active) return;
+    chat.send(message, session.active.id, session.active.projectPath);
   };
 
   const handleLLMUpdate = async (patch: Parameters<typeof llm.update>[0]) => {
@@ -121,6 +177,85 @@ export function App() {
     await llm.reset();
     refreshHealth();
   };
+
+  const handleOpenFolder = useCallback(async () => {
+    const dir = await pickDirectory();
+    if (!dir) return;
+
+    const localMatches = session.sessions.filter((s) => s.projectPath === dir);
+
+    let serverSessions: SessionListItem[] = [];
+    try {
+      const res = await api.sessions.list(dir);
+      serverSessions = res.sessions;
+    } catch {
+      // backend may be down; fall through to local-only logic
+    }
+
+    const allIds = new Set([
+      ...localMatches.map((s) => s.id),
+      ...serverSessions.map((s) => s.session_id),
+    ]);
+
+    if (allIds.size === 0) {
+      session.newSession(dir);
+      setActiveView("chat");
+      return;
+    }
+
+    if (allIds.size === 1 && localMatches.length === 1) {
+      session.setActiveId(localMatches[0].id);
+      setActiveView("chat");
+      return;
+    }
+
+    const pickerSessions: SessionListItem[] = serverSessions.length > 0
+      ? serverSessions
+      : localMatches.map((s) => ({
+          session_id: s.id,
+          title: s.title ?? null,
+          status: s.status,
+          created_at: s.createdAt / 1000,
+          updated_at: s.createdAt / 1000,
+          project_path: s.projectPath ?? null,
+        }));
+
+    setPickerState({ projectPath: dir, sessions: pickerSessions });
+  }, [session]);
+
+  const handlePickerResume = useCallback(
+    (sessionId: string) => {
+      if (!pickerState) return;
+      const existing = session.sessions.find((s) => s.id === sessionId);
+      if (existing) {
+        session.setActiveId(sessionId);
+      } else {
+        const serverEntry = pickerState.sessions.find((s) => s.session_id === sessionId);
+        session.restoreRemoteSession(
+          sessionId,
+          pickerState.projectPath,
+          serverEntry?.title ?? undefined
+        );
+      }
+      setPickerState(null);
+      setActiveView("chat");
+    },
+    [pickerState, session]
+  );
+
+  const handlePickerNew = useCallback(() => {
+    if (!pickerState) return;
+    session.newSession(pickerState.projectPath);
+    setPickerState(null);
+    setActiveView("chat");
+  }, [pickerState, session]);
+
+  const handleResetSession = useCallback(
+    async (sessionId: string) => {
+      await session.resetSession(sessionId);
+    },
+    [session]
+  );
 
   const openFileInEditor = useCallback((file: WorkspaceFile) => {
     setOpenFiles((prev) => {
@@ -178,7 +313,7 @@ export function App() {
 
   const handleEditorSave = useCallback(
     async (value: string) => {
-      if (!activeFilePath || !session.active.id) return;
+      if (!activeFilePath || !session.active?.id) return;
       const sessionId = session.active.id;
       if (sessionId.startsWith("local-")) {
         setSaveError("Send a message first to create a workspace before saving.");
@@ -199,17 +334,17 @@ export function App() {
         setSaveError(err instanceof Error ? err.message : "Failed to save file.");
       }
     },
-    [activeFilePath, session.active.id]
+    [activeFilePath, session.active?.id]
   );
 
   const handleOpenFileFromLint = useCallback(
     (path: string, _line: number) => {
-      const wsFile = session.active.workspaceFiles.find(
+      const wsFile = (session.active?.workspaceFiles ?? []).find(
         (f) => f.path === path || f.path.endsWith(path)
       );
       if (wsFile) openFileInEditor(wsFile);
     },
-    [session.active.workspaceFiles, openFileInEditor]
+    [session.active?.workspaceFiles, openFileInEditor]
   );
 
   const handleCommandAction = useCallback(
@@ -236,7 +371,8 @@ export function App() {
     [llm]
   );
 
-  const isPendingApproval = session.active.status === "awaiting_approval";
+  const isPendingApproval = session.active?.status === "awaiting_approval";
+  const activeSessionId = session.active?.id ?? null;
 
   useKeyboard(
     useMemo(
@@ -265,7 +401,7 @@ export function App() {
         },
         "meta+shift+a": {
           handler: () => {
-            if (isPendingApproval) chat.approve(session.active.id);
+            if (isPendingApproval && activeSessionId) chat.approve(activeSessionId);
           },
           description: "Approve Execution",
         },
@@ -280,7 +416,7 @@ export function App() {
           description: "Close Palette",
         },
       }),
-      [activeFilePath, closeFile, isPendingApproval, chat, session.active.id]
+      [activeFilePath, closeFile, isPendingApproval, chat, activeSessionId]
     )
   );
 
@@ -296,6 +432,8 @@ export function App() {
     )
   );
 
+  const hasActiveSession = session.active != null;
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <Header
@@ -305,7 +443,7 @@ export function App() {
           llm.refresh();
           setSettingsOpen(true);
         }}
-        sessionTitle={session.active.title}
+        sessionTitle={session.active?.title}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -313,14 +451,16 @@ export function App() {
           <Sidebar
             sessions={session.sessions}
             activeId={session.activeId}
-            onSelect={session.setActiveId}
-            onNew={session.newSession}
+            activeView={activeView}
+            onSelect={(id) => { session.setActiveId(id); setActiveView("chat"); }}
+            onOpenFolder={handleOpenFolder}
             onDelete={session.deleteSession}
+            onReset={handleResetSession}
             onClearAll={session.clearAllSessions}
+            onViewChange={setActiveView}
           />
         )}
 
-        {/* Chat pane — fills remaining space */}
         <main className="flex flex-1 min-w-0 flex-col overflow-hidden">
           {healthError && (
             <div className="mx-4 mt-3 flex items-center gap-3 rounded-lg border border-red-700/50 bg-red-950/30 px-4 py-2">
@@ -362,46 +502,62 @@ export function App() {
             </div>
           )}
 
-          <ActivityFeed
-            events={session.active.events}
-            isStreaming={chat.isStreaming}
-            isPendingApproval={isPendingApproval}
-            onApprove={() => chat.approve(session.active.id)}
-            onReject={() => chat.reject(session.active.id)}
-            onQuickAction={(prompt) => setDraftPrompt(prompt)}
-          />
+          {!hasActiveSession ? (
+            <WelcomeScreen onOpenFolder={handleOpenFolder} />
+          ) : activeView === "hosts" ? (
+            <HostsView />
+          ) : activeView === "runs" ? (
+            <RunsView />
+          ) : activeView === "knowledge" ? (
+            <KnowledgeView />
+          ) : (
+            <>
+              <ActivityFeed
+                events={session.active!.events}
+                isStreaming={chat.isStreaming}
+                isPendingApproval={isPendingApproval ?? false}
+                onApprove={() => chat.approve(session.active!.id)}
+                onReject={() => chat.reject(session.active!.id)}
+                onQuickAction={(prompt) => setDraftPrompt(prompt)}
+                onCancelSecret={() => {
+                  const sid = session.active?.id;
+                  if (!sid) return;
+                  api.secrets.cancel(sid).catch(() => {});
+                  session.updateStatus(sid, "active");
+                }}
+              />
 
-          <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <ChatInput
-                  onSend={handleSend}
-                  onCancel={chat.cancel}
-                  isStreaming={chat.isStreaming}
-                  draft={draftPrompt}
-                  onDraftConsumed={() => setDraftPrompt("")}
-                  suggestions={ansibleCtx.suggestions}
-                  getFiltered={ansibleCtx.getFiltered}
-                />
+              <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <ChatInput
+                      onSend={handleSend}
+                      onCancel={chat.cancel}
+                      isStreaming={chat.isStreaming}
+                      draft={draftPrompt}
+                      onDraftConsumed={() => setDraftPrompt("")}
+                      suggestions={ansibleCtx.suggestions}
+                      getFiltered={ansibleCtx.getFiltered}
+                    />
+                  </div>
+                  {!contextOpen && (
+                    <button
+                      onClick={() => setContextOpen(true)}
+                      className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors shrink-0"
+                      aria-label="Open context panel"
+                      title="Open context panel"
+                    >
+                      <PanelRightOpen className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               </div>
-              {!contextOpen && (
-                <button
-                  onClick={() => setContextOpen(true)}
-                  className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors shrink-0"
-                  aria-label="Open context panel"
-                  title="Open context panel"
-                >
-                  <PanelRightOpen className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-          </div>
+            </>
+          )}
         </main>
 
-        {/* Right panel — editor / context */}
-        {contextOpen && (
+        {contextOpen && hasActiveSession && (
           <>
-            {/* Drag handle */}
             <div
               onMouseDown={rightPanel.onMouseDown}
               className="w-2 shrink-0 bg-zinc-900 hover:bg-blue-500/30 active:bg-blue-500/40 transition-colors cursor-col-resize flex items-center justify-center group"
@@ -413,10 +569,7 @@ export function App() {
               className="shrink-0 flex flex-col overflow-hidden bg-zinc-950 border-l border-zinc-800"
               style={{ width: rightPanel.size }}
             >
-              {/* Top: editor or context */}
-              <div
-                className="flex-1 min-h-0 flex flex-col overflow-hidden"
-              >
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                 {activeFile ? (
                   <>
                     <FileTabs
@@ -440,18 +593,18 @@ export function App() {
                   </>
                 ) : (
                   <ContextPanel
-                    events={session.active.events}
+                    events={session.active!.events}
                     isStreaming={chat.isStreaming}
                     onCollapse={() => setContextOpen(false)}
-                    playbooks={session.active.playbooks}
-                    inventory={session.active.inventory}
-                    workspaceFiles={session.active.workspaceFiles}
+                    playbooks={session.active!.playbooks}
+                    inventory={session.active!.inventory}
+                    workspaceFiles={session.active!.workspaceFiles}
                     onOpenFile={openFileInEditor}
+                    sessionId={session.activeId ?? undefined}
                   />
                 )}
               </div>
 
-              {/* Bottom: terminal / problems */}
               {bottomTab && (
                 <>
                   <div
@@ -498,9 +651,9 @@ export function App() {
                       {bottomTab === "terminal" && (
                         <TerminalPanel
                           sessionId={
-                            session.active.id.startsWith("local-")
+                            session.active!.id.startsWith("local-")
                               ? null
-                              : session.active.id
+                              : session.active!.id
                           }
                           visible
                         />
@@ -508,9 +661,9 @@ export function App() {
                       {bottomTab === "problems" && (
                         <LintPanel
                           sessionId={
-                            session.active.id.startsWith("local-")
+                            session.active!.id.startsWith("local-")
                               ? null
-                              : session.active.id
+                              : session.active!.id
                           }
                           onOpenFile={handleOpenFileFromLint}
                         />
@@ -531,7 +684,6 @@ export function App() {
         </div>
       )}
 
-      {/* Status bar */}
       <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/50 px-3 py-0.5 text-[10px] text-zinc-600">
         <div className="flex items-center gap-3">
           <button
@@ -570,7 +722,7 @@ export function App() {
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}
-        workspaceFiles={session.active.workspaceFiles}
+        workspaceFiles={session.active?.workspaceFiles ?? []}
         onOpenFile={(file) => openFileInEditor(file)}
         onAction={handleCommandAction}
       />
@@ -586,6 +738,44 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+
+      {pickerState && (
+        <ProjectSessionPicker
+          projectPath={pickerState.projectPath}
+          sessions={pickerState.sessions}
+          onResume={handlePickerResume}
+          onNew={handlePickerNew}
+          onClose={() => setPickerState(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function WelcomeScreen({ onOpenFolder }: { onOpenFolder: () => void }) {
+  return (
+    <div className="flex flex-1 items-center justify-center">
+      <div className="text-center max-w-sm">
+        <svg width="64" height="64" viewBox="0 0 120 120" fill="none" className="mx-auto mb-6 opacity-80">
+          <path d="M20 52 L42 46 L42 74 L20 68 Z" fill="#9CA3AF" opacity="0.85"/>
+          <path d="M42 44 L72 38 L72 82 L42 76 Z" fill="#9CA3AF"/>
+          <path d="M72 50 Q85 48 98 44" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.8"/>
+          <path d="M72 60 Q90 60 108 60" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.9"/>
+          <path d="M72 70 Q85 72 98 76" stroke="#10B981" strokeWidth="3" strokeLinecap="round" opacity="0.8"/>
+          <circle cx="108" cy="60" r="4" fill="#10B981" opacity="0.85"/>
+        </svg>
+        <h2 className="text-lg font-semibold text-zinc-100 mb-2">Welcome to Tuyere</h2>
+        <p className="text-sm text-zinc-500 mb-6">
+          Open a project folder to start an infrastructure automation session.
+        </p>
+        <button
+          onClick={onOpenFolder}
+          className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-500 transition-colors shadow-lg shadow-emerald-900/30"
+        >
+          <FolderOpen className="h-4 w-4" />
+          Open Project Folder
+        </button>
+      </div>
     </div>
   );
 }

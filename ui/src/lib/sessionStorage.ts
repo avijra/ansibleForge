@@ -12,6 +12,7 @@ interface StoredSession {
   inventory: Record<string, string>;
   createdAt: number;
   title?: string;
+  projectPath?: string;
 }
 
 function stripLargeData(session: Session): StoredSession {
@@ -23,6 +24,7 @@ function stripLargeData(session: Session): StoredSession {
     inventory: session.inventory,
     createdAt: session.createdAt,
     title: session.title,
+    projectPath: session.projectPath,
   };
 }
 
@@ -30,6 +32,7 @@ function restoreSession(stored: StoredSession): Session {
   return {
     ...stored,
     workspaceFiles: [],
+    projectPath: stored.projectPath,
   };
 }
 

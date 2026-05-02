@@ -1,19 +1,33 @@
-import { useMemo } from "react";
-import { Server, Wifi, WifiOff, HardDrive } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { HardDrive, RefreshCw, Server, Wifi, WifiOff } from "lucide-react";
 import type { AgentEvent } from "@/api/types";
+import { request } from "@/api/client";
 import { cn } from "@/lib/utils";
+
+interface PersistedHost {
+  host_id: string;
+  hostname: string;
+  ip_address: string;
+  groups: string[];
+  status: string;
+  ansible_user: string;
+  updated_at: number;
+}
 
 interface HostInfo {
   name: string;
+  ip?: string;
   lastSeen: number;
   reachable: boolean;
   os?: string;
   taskCount: number;
   failCount: number;
   changeCount: number;
+  groups?: string[];
+  user?: string;
 }
 
-function extractHosts(events: AgentEvent[]): HostInfo[] {
+function extractSessionHosts(events: AgentEvent[]): Map<string, HostInfo> {
   const hostMap = new Map<string, HostInfo>();
 
   for (const ev of events) {
@@ -67,7 +81,42 @@ function extractHosts(events: AgentEvent[]): HostInfo[] {
     }
   }
 
-  return Array.from(hostMap.values()).sort((a, b) => b.lastSeen - a.lastSeen);
+  return hostMap;
+}
+
+function mergeHosts(persisted: PersistedHost[], sessionHosts: Map<string, HostInfo>): HostInfo[] {
+  const merged = new Map<string, HostInfo>();
+
+  for (const h of persisted) {
+    const reachable = ["reachable", "configured", "verified"].includes(h.status);
+    merged.set(h.hostname, {
+      name: h.hostname,
+      ip: h.ip_address || undefined,
+      lastSeen: h.updated_at * 1000,
+      reachable,
+      taskCount: 0,
+      failCount: 0,
+      changeCount: 0,
+      groups: h.groups,
+      user: h.ansible_user || undefined,
+    });
+  }
+
+  for (const [name, session] of sessionHosts) {
+    const existing = merged.get(name);
+    if (existing) {
+      existing.taskCount = Math.max(existing.taskCount, session.taskCount);
+      existing.failCount = Math.max(existing.failCount, session.failCount);
+      existing.changeCount = Math.max(existing.changeCount, session.changeCount);
+      existing.reachable = session.reachable;
+      existing.lastSeen = Math.max(existing.lastSeen, session.lastSeen);
+      if (session.os) existing.os = session.os;
+    } else {
+      merged.set(name, session);
+    }
+  }
+
+  return Array.from(merged.values()).sort((a, b) => b.lastSeen - a.lastSeen);
 }
 
 function timeAgo(ts: number): string {
@@ -105,17 +154,25 @@ function HostCard({ host }: { host: HostInfo }) {
         )}
       </div>
 
-      {host.os && (
-        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-          <HardDrive className="h-3 w-3" />
-          {host.os}
+      {(host.ip || host.os) && (
+        <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+          {host.ip && <span className="font-mono">{host.ip}</span>}
+          {host.os && (
+            <span className="flex items-center gap-1">
+              <HardDrive className="h-3 w-3" />
+              {host.os}
+            </span>
+          )}
         </div>
       )}
 
       <div className="flex items-center gap-3 text-[10px] font-mono">
-        <span className="text-zinc-500">{host.taskCount} tasks</span>
+        {host.taskCount > 0 && <span className="text-zinc-500">{host.taskCount} tasks</span>}
         {host.changeCount > 0 && <span className="text-amber-400">{host.changeCount} changed</span>}
         {host.failCount > 0 && <span className="text-red-400">{host.failCount} failed</span>}
+        {host.groups && host.groups.length > 0 && (
+          <span className="text-zinc-600">{host.groups.join(", ")}</span>
+        )}
         <span className="ml-auto text-zinc-600">{timeAgo(host.lastSeen)}</span>
       </div>
     </div>
@@ -123,9 +180,26 @@ function HostCard({ host }: { host: HostInfo }) {
 }
 
 export function HostInventory({ events }: { events: AgentEvent[] }) {
-  const hosts = useMemo(() => extractHosts(events), [events]);
+  const [persisted, setPersisted] = useState<PersistedHost[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  if (hosts.length === 0) {
+  const loadPersisted = useCallback(async () => {
+    try {
+      const data = await request<PersistedHost[]>("/infrastructure/hosts");
+      setPersisted(data);
+    } catch {
+      // API may not be ready
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadPersisted(); }, [loadPersisted]);
+
+  const sessionHosts = useMemo(() => extractSessionHosts(events), [events]);
+  const hosts = useMemo(() => mergeHosts(persisted, sessionHosts), [persisted, sessionHosts]);
+
+  if (hosts.length === 0 && !loading) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-6 text-center">
         <div className="rounded-xl bg-zinc-900/50 p-4 ring-1 ring-zinc-800">
@@ -147,9 +221,13 @@ export function HostInventory({ events }: { events: AgentEvent[] }) {
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
           {hosts.length} host{hosts.length !== 1 ? "s" : ""} discovered
         </span>
-        <span className="text-[10px] text-zinc-600">
-          {hosts.filter((h) => h.reachable).length} reachable
-        </span>
+        <button
+          onClick={loadPersisted}
+          className="rounded p-0.5 text-zinc-600 hover:text-zinc-400 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
       </div>
       {hosts.map((host) => (
         <HostCard key={host.name} host={host} />

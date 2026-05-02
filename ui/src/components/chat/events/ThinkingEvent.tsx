@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/chat/Markdown";
 
 export function ThinkingEvent({ event }: { event: AgentEvent }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const content = (event.data.content as string) || "";
 
   if (!content) return null;

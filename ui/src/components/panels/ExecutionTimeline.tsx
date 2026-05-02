@@ -51,28 +51,70 @@ const STATUS_MAP: Record<string, StatusFilter> = {
   runner_on_unreachable: "unreachable",
 };
 
+function extractAdhocTasks(data: Record<string, unknown>): AnsibleTaskEvent[] {
+  const hostResults = data.host_results as Record<string, Record<string, unknown>> | undefined;
+  if (!hostResults) return [];
+  const module = (data.module as string) || "shell";
+  const moduleArgs = (data.module_args as string) || "";
+  const label = moduleArgs.length > 60 ? moduleArgs.slice(0, 60) + "..." : moduleArgs || module;
+
+  return Object.entries(hostResults).map(([host, result]) => {
+    const status = result.status as string;
+    const eventType = status === "ok" ? "runner_on_ok"
+      : status === "failed" ? "runner_on_failed"
+      : status === "unreachable" ? "runner_on_unreachable"
+      : "runner_on_ok";
+    return {
+      event: eventType,
+      host,
+      task: label,
+      result: result as Record<string, unknown>,
+    };
+  });
+}
+
 function extractRuns(events: AgentEvent[]): ExecutionRun[] {
   const runs: ExecutionRun[] = [];
   for (const ev of events) {
     if (ev.event !== "tool_result") continue;
+    const tool = (ev.data.tool as string) || "";
     const data = ev.data.data as Record<string, unknown> | undefined;
-    const tasks = (data?.events as AnsibleTaskEvent[] | undefined) || [];
+    if (!data) continue;
+
+    if (tool === "run_adhoc") {
+      const tasks = extractAdhocTasks(data);
+      if (tasks.length === 0) continue;
+      const module = (data.module as string) || "shell";
+      const moduleArgs = (data.module_args as string) || "";
+      const label = moduleArgs.length > 60 ? moduleArgs.slice(0, 60) + "..." : moduleArgs || module;
+      runs.push({
+        id: ev.id,
+        tool,
+        status: (ev.data.status as string) || "success",
+        mode: "adhoc",
+        tasks,
+        timestamp: ev.timestamp,
+        playbook: `adhoc: ${label}`,
+      });
+      continue;
+    }
+
+    const tasks = (data.events as AnsibleTaskEvent[] | undefined) || [];
     if (tasks.length === 0) continue;
 
-    const tool = (ev.data.tool as string) || "execute_playbook";
-    const mode = (data?.mode as string) || "check";
-    const playbook = (data?.playbook as string) || undefined;
+    const mode = (data.mode as string) || "check";
+    const playbook = (data.playbook as string) || undefined;
 
     runs.push({
       id: ev.id,
-      tool,
+      tool: tool || "execute_playbook",
       status: (ev.data.status as string) || "success",
       mode,
       tasks,
-      summary: data?.summary as AnsibleSummary | undefined,
+      summary: data.summary as AnsibleSummary | undefined,
       timestamp: ev.timestamp,
       playbook,
-      rawStdout: (data?.raw_stdout as string) || undefined,
+      rawStdout: (data.raw_stdout as string) || undefined,
     });
   }
   return runs;

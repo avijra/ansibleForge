@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Check, X, ShieldAlert, FileCode2, ArrowRight } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { Check, X, ShieldAlert, FileCode2, ArrowRight, CheckCircle2, XCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentEvent } from "@/api/types";
 
@@ -15,6 +15,17 @@ interface DiffBlock {
   task: string;
   before: string;
   after: string;
+  action?: string;
+  detail?: string;
+}
+
+function parseDiffString(diff: string): { before: string; after: string } {
+  const beforeMatch = diff.match(/^---\s*.*?\n([\s\S]*?)(?=\+\+\+)/m);
+  const afterMatch = diff.match(/\+\+\+\s*.*?\n([\s\S]*)$/m);
+  return {
+    before: beforeMatch?.[1]?.trim() || "",
+    after: afterMatch?.[1]?.trim() || "",
+  };
 }
 
 function extractDiffs(event: AgentEvent): DiffBlock[] {
@@ -27,11 +38,22 @@ function extractDiffs(event: AgentEvent): DiffBlock[] {
   if (diffSummary) {
     const changes = (diffSummary.changes as Array<Record<string, unknown>>) || [];
     for (const c of changes) {
+      let before = String(c.before || "");
+      let after = String(c.after || "");
+
+      if (!before && !after && c.diff) {
+        const parsed = parseDiffString(String(c.diff));
+        before = parsed.before;
+        after = parsed.after;
+      }
+
       diffs.push({
         host: String(c.host || ""),
         task: String(c.task || c.name || ""),
-        before: String(c.before || ""),
-        after: String(c.after || ""),
+        before,
+        after,
+        action: String(c.action || ""),
+        detail: String(c.detail || ""),
       });
     }
   }
@@ -149,66 +171,107 @@ function TaskList({ diffs }: { diffs: DiffBlock[] }) {
 export function DiffReview({ event, isPending, onApprove, onReject }: DiffReviewProps) {
   const allDiffs = useMemo(() => extractDiffs(event), [event]);
   const output = (event.data.output as string) || "Execution requires your approval.";
+  const [resolved, setResolved] = useState<"approved" | "rejected" | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  const handleApprove = useCallback(() => {
+    setResolved("approved");
+    onApprove();
+  }, [onApprove]);
+
+  const handleReject = useCallback(() => {
+    setResolved("rejected");
+    onReject();
+  }, [onReject]);
 
   const realDiffs = allDiffs.filter((d) => d.before.trim() || d.after.trim());
   const taskOnlyDiffs = allDiffs.filter((d) => !d.before.trim() && !d.after.trim() && d.task);
 
   const hasRealDiffs = realDiffs.length > 0;
   const hasTaskList = taskOnlyDiffs.length > 0;
+  const actionCount = allDiffs.length;
 
-  return (
-    <div className="animate-slide-in rounded-lg border border-amber-800/30 bg-amber-950/15 shadow-[0_0_12px_-4px_rgba(245,158,11,0.12)] p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <ShieldAlert className="h-4 w-4 text-amber-400" />
-        <span className="text-sm font-semibold text-amber-300">
-          Approval Required
-        </span>
-        {(hasRealDiffs || hasTaskList) && (
-          <span className="text-[10px] text-amber-500/70 ml-auto">
-            {allDiffs.length} action{allDiffs.length !== 1 ? "s" : ""}
+  const showButtons = isPending && !resolved;
+  const isResolved = resolved || !isPending;
+
+  if (isResolved && !showButtons) {
+    const label = resolved === "rejected" ? "Rejected" : "Approved";
+    const Icon = resolved === "rejected" ? XCircle : CheckCircle2;
+    const color = resolved === "rejected" ? "text-red-400" : "text-emerald-400";
+    const border = resolved === "rejected" ? "border-red-800/20" : "border-emerald-800/20";
+    return (
+      <div className={cn("flex items-center gap-2 rounded-md border px-3 py-1.5 bg-zinc-900/40", border)}>
+        <Icon className={cn("h-3.5 w-3.5", color)} />
+        <span className={cn("text-xs font-medium", color)}>{label}</span>
+        {actionCount > 0 && (
+          <span className="text-[10px] text-zinc-600">
+            · {actionCount} action{actionCount !== 1 ? "s" : ""}
           </span>
         )}
       </div>
+    );
+  }
 
-      {hasRealDiffs && (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {realDiffs.map((block, i) => (
-            <SideBySideDiff key={i} block={block} />
-          ))}
-        </div>
-      )}
-
-      {hasTaskList && (
-        <TaskList diffs={taskOnlyDiffs} />
-      )}
-
-      {!hasRealDiffs && !hasTaskList && (
-        <pre className="rounded-md bg-zinc-950/60 border border-zinc-800 p-3 text-xs font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-          {output}
-        </pre>
-      )}
-
-      {isPending && (
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            onClick={onApprove}
-            className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 transition-colors"
-          >
-            <Check className="h-3.5 w-3.5" />
-            Approve
-          </button>
-          <button
-            onClick={onReject}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-700 px-4 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-600 transition-colors"
-          >
-            <X className="h-3.5 w-3.5" />
-            Reject
-          </button>
-          <span className="text-[10px] text-zinc-600 ml-auto">
-            ⌘⇧A approve
+  return (
+    <div className="animate-slide-in rounded-lg border border-amber-800/30 bg-amber-950/15 shadow-[0_0_12px_-4px_rgba(245,158,11,0.12)] p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+        <span className="text-xs font-semibold text-amber-300">Approval Required</span>
+        {actionCount > 0 && (
+          <span className="text-[10px] text-amber-500/70">
+            · {actionCount} action{actionCount !== 1 ? "s" : ""}
           </span>
-        </div>
+        )}
+        {(hasRealDiffs || hasTaskList || output) && (
+          <button
+            onClick={() => setDetailsOpen(!detailsOpen)}
+            className="ml-auto flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            Details
+          </button>
+        )}
+      </div>
+
+      {detailsOpen && (
+        <>
+          {hasRealDiffs && (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {realDiffs.map((block, i) => (
+                <SideBySideDiff key={i} block={block} />
+              ))}
+            </div>
+          )}
+
+          {hasTaskList && (
+            <TaskList diffs={taskOnlyDiffs} />
+          )}
+
+          {!hasRealDiffs && !hasTaskList && (
+            <pre className="rounded-md bg-zinc-950/60 border border-zinc-800 p-2 text-[11px] font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
+              {output}
+            </pre>
+          )}
+        </>
       )}
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleApprove}
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 transition-colors"
+        >
+          <Check className="h-3 w-3" />
+          Approve
+        </button>
+        <button
+          onClick={handleReject}
+          className="inline-flex items-center gap-1.5 rounded-md bg-zinc-700 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-600 transition-colors"
+        >
+          <X className="h-3 w-3" />
+          Reject
+        </button>
+        <span className="text-[10px] text-zinc-600 ml-auto">⌘⇧A</span>
+      </div>
     </div>
   );
 }

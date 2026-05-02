@@ -117,12 +117,12 @@ export function SettingsModal({
           <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/30 px-3.5 py-3 space-y-2">
             <p className="text-[11px] font-medium text-zinc-300">Recommended Models</p>
             <p className="text-[10px] leading-relaxed text-zinc-500">
-              For best results use <span className="text-zinc-300 font-mono">deepseek/deepseek-chat</span> (DeepSeek V4 Flash).
+              For best results use <span className="text-zinc-300 font-mono">deepseek/deepseek-v4-flash</span> (DeepSeek V4 Flash).
               Other good options:
             </p>
             <div className="flex flex-wrap gap-1.5">
               {[
-                { provider: "deepseek", model: "deepseek/deepseek-chat", label: "DeepSeek V4 Flash" },
+                { provider: "deepseek", model: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" },
                 { provider: "groq", model: "groq/llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
                 { provider: "ollama", model: "ollama/qwen2.5:32b", label: "Qwen 2.5 32B" },
                 { provider: "mistral", model: "mistral/mistral-large-latest", label: "Mistral Large" },

@@ -64,7 +64,7 @@ export function EmptyState({ onAction }: EmptyStateProps) {
             Infrastructure Command Center
           </h2>
           <p className="mt-1 text-xs text-zinc-500">
-            Describe what you need — AnsibleForge handles the automation
+            Describe what you need — Tuyere handles the automation
           </p>
         </div>
       </div>

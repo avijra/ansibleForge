@@ -1,0 +1,26 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="120" height="120" rx="20" fill="#18181B"/>
+  <!-- Tuyere nozzle body -->
+  <path d="M20 52 L42 46 L42 74 L20 68 Z" fill="#9CA3AF" opacity="0.85"/>
+  <path d="M42 44 L72 38 L72 82 L42 76 Z" fill="#9CA3AF"/>
+  <rect x="16" y="50" width="6" height="20" rx="2" fill="#6B7280"/>
+  <!-- Air flow streams (emerald) -->
+  <path d="M72 50 Q85 48 98 44" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" opacity="0.8"/>
+  <path d="M72 56 Q88 55 105 52" stroke="#10B981" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <path d="M72 60 Q90 60 108 60" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+  <path d="M72 64 Q88 65 105 68" stroke="#10B981" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <path d="M72 70 Q85 72 98 76" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" opacity="0.8"/>
+  <!-- Neural spark nodes at the output -->
+  <circle cx="98" cy="44" r="3" fill="#10B981" opacity="0.7"/>
+  <circle cx="105" cy="52" r="2.5" fill="#10B981" opacity="0.5"/>
+  <circle cx="108" cy="60" r="3.5" fill="#10B981" opacity="0.85"/>
+  <circle cx="105" cy="68" r="2.5" fill="#10B981" opacity="0.5"/>
+  <circle cx="98" cy="76" r="3" fill="#10B981" opacity="0.7"/>
+  <!-- Neural connections between nodes -->
+  <line x1="98" y1="44" x2="105" y2="52" stroke="#10B981" stroke-width="0.7" opacity="0.3"/>
+  <line x1="105" y1="52" x2="108" y2="60" stroke="#10B981" stroke-width="0.7" opacity="0.3"/>
+  <line x1="108" y1="60" x2="105" y2="68" stroke="#10B981" stroke-width="0.7" opacity="0.3"/>
+  <line x1="105" y1="68" x2="98" y2="76" stroke="#10B981" stroke-width="0.7" opacity="0.3"/>
+  <line x1="98" y1="44" x2="108" y2="60" stroke="#10B981" stroke-width="0.5" opacity="0.2"/>
+  <line x1="108" y1="60" x2="98" y2="76" stroke="#10B981" stroke-width="0.5" opacity="0.2"/>
+</svg>

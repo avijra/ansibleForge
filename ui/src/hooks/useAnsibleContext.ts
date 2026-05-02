@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { AgentEvent, WorkspaceFile } from "@/api/types";
 
 export interface Suggestion {
-  type: "host" | "module" | "role" | "playbook" | "command";
+  type: "host" | "module" | "role" | "playbook" | "command" | "file";
   label: string;
   detail?: string;
 }
@@ -108,6 +108,13 @@ export function useAnsibleContext(
     }
     for (const m of modules.slice(0, 50)) {
       result.push({ type: "module", label: m, detail: "Module" });
+    }
+
+    const addedPaths = new Set(playbooks);
+    for (const f of workspaceFiles) {
+      if (addedPaths.has(f.name) || addedPaths.has(f.path)) continue;
+      addedPaths.add(f.path);
+      result.push({ type: "file", label: f.path, detail: `${(f.size / 1024).toFixed(1)}KB` });
     }
 
     return result;

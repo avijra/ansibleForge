@@ -5,6 +5,7 @@ interface ElectronAPI {
   onToggleCommandPalette: (callback: () => void) => void;
   onToggleSidebar: (callback: () => void) => void;
   onToggleTerminal: (callback: () => void) => void;
+  selectProjectDirectory: () => Promise<string | null>;
   platform: string;
 }
 

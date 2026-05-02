@@ -1,4 +1,4 @@
-import { Send, Square, Server, Box, FileCode2, Terminal, Hash } from "lucide-react";
+import { Send, Square, Server, Box, FileCode2, Terminal, Hash, File } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import type { Suggestion } from "@/hooks/useAnsibleContext";
@@ -20,6 +20,7 @@ function suggestionIcon(type: Suggestion["type"]) {
     case "module": return Box;
     case "role": return FileCode2;
     case "playbook": return FileCode2;
+    case "file": return File;
     case "command": return Terminal;
     default: return Hash;
   }
@@ -31,6 +32,7 @@ function suggestionColor(type: Suggestion["type"]) {
     case "module": return "text-blue-400";
     case "role": return "text-purple-400";
     case "playbook": return "text-amber-400";
+    case "file": return "text-zinc-400";
     case "command": return "text-emerald-400";
     default: return "text-zinc-400";
   }
