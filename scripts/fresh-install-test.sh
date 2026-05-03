@@ -17,8 +17,8 @@ ELECTRON_DIR="$HOME/Library/Application Support/tuyere-desktop"
 DOWNLOAD_DIR="$HOME/Downloads"
 
 step "Stopping all ${APP_NAME} processes"
-pkill -f "${APP_NAME}" 2>/dev/null && info "Killed app processes" || info "No app processes running"
-pkill -f "ansibleforge-backend" 2>/dev/null && info "Killed backend" || info "No backend running"
+pkill -f "${APP_NAME}" 2>/dev/null && info "Killed app processes" || true
+pkill -f "ansibleforge-backend" 2>/dev/null && info "Killed backend" || true
 sleep 2
 
 REMAINING=$(ps aux | grep -iE "tuyere|ansibleforge-backend" | grep -v grep | grep -v "Cursor Helper" | wc -l | tr -d ' ')
