@@ -22,6 +22,7 @@ node_modules/
 ui/dist/
 electron/release/
 electron/resources/backend/
+!electron/build/
 
 *.log
 *.zip
