@@ -372,9 +372,9 @@ jobs:
           echo "Backend binary exists"
 
           echo "--- Checking UI dist ---"
-          UI_INDEX="$APP_DIR/Contents/Resources/backend/ui/dist/index.html"
+          UI_INDEX="$APP_DIR/Contents/Resources/backend/_internal/ui/dist/index.html"
           if [ ! -f "$UI_INDEX" ]; then
-            echo "::error::UI dist not found at Contents/Resources/backend/ui/dist/index.html"
+            echo "::error::UI dist not found at Contents/Resources/backend/_internal/ui/dist/index.html"
             exit 1
           fi
           echo "UI dist/index.html exists"
