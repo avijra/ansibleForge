@@ -10,6 +10,7 @@ import {
   FileText,
   FolderOpen,
   FolderClosed,
+  RefreshCw,
   ScrollText,
   Settings2,
   FolderTree,
@@ -325,9 +326,10 @@ function IniLine({ line }: { line: string }) {
 interface WorkspaceExplorerProps {
   files: WorkspaceFile[];
   onOpenFile?: (file: WorkspaceFile) => void;
+  onRefresh?: () => void;
 }
 
-export function WorkspaceExplorer({ files, onOpenFile }: WorkspaceExplorerProps) {
+export function WorkspaceExplorer({ files, onOpenFile, onRefresh }: WorkspaceExplorerProps) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   const tree = useMemo(() => buildTree(files), [files]);
@@ -359,6 +361,15 @@ export function WorkspaceExplorer({ files, onOpenFile }: WorkspaceExplorerProps)
             Generated playbooks, roles, inventory, and templates will appear here
           </p>
         </div>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-900 hover:bg-zinc-800 transition-colors"
+          >
+            <RefreshCw className="h-3 w-3" />
+            Refresh
+          </button>
+        )}
       </div>
     );
   }
@@ -371,7 +382,22 @@ export function WorkspaceExplorer({ files, onOpenFile }: WorkspaceExplorerProps)
   });
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      {onRefresh && (
+        <div className="flex items-center justify-between px-2 py-1.5 border-b border-zinc-800 shrink-0">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
+            {files.length} file{files.length !== 1 ? "s" : ""}
+          </span>
+          <button
+            onClick={onRefresh}
+            className="rounded p-0.5 text-zinc-600 hover:text-zinc-400 transition-colors"
+            title="Refresh files"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0">
       {/* File tree sidebar */}
       <div className="w-[200px] shrink-0 border-r border-zinc-800 overflow-y-auto py-1">
         {topEntries.map((child) =>
@@ -407,6 +433,7 @@ export function WorkspaceExplorer({ files, onOpenFile }: WorkspaceExplorerProps)
             Select a file to view its contents
           </div>
         )}
+      </div>
       </div>
     </div>
   );

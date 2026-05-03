@@ -28,6 +28,7 @@ interface ContextPanelProps {
   inventory: Record<string, string>;
   workspaceFiles: WorkspaceFile[];
   onOpenFile?: (file: WorkspaceFile) => void;
+  onRefreshFiles?: () => void;
   sessionId?: string;
 }
 
@@ -39,6 +40,7 @@ export function ContextPanel({
   inventory,
   workspaceFiles,
   onOpenFile,
+  onRefreshFiles,
   sessionId,
 }: ContextPanelProps) {
   const [activeTab, setActiveTab] = useState<ContextTab>("logs");
@@ -93,7 +95,7 @@ export function ContextPanel({
             />
           </div>
         )}
-        {activeTab === "files" && <WorkspaceExplorer files={workspaceFiles} onOpenFile={onOpenFile} />}
+        {activeTab === "files" && <WorkspaceExplorer files={workspaceFiles} onOpenFile={onOpenFile} onRefresh={onRefreshFiles} />}
         {activeTab === "hosts" && (
           <div className="h-full overflow-y-auto overflow-x-hidden">
             <HostInventory events={events} />

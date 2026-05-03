@@ -235,12 +235,10 @@ async function createWindow(): Promise<void> {
     ? path.join(process.resourcesPath, "..", "Resources", "icon.icns")
     : path.join(__dirname, "..", "build", "icon.png");
 
-  if (process.platform === "darwin" && app.dock) {
+  if (process.platform === "darwin" && app.dock && !app.isPackaged) {
     try {
       const { nativeImage } = require("electron") as typeof import("electron");
-      const rawIcon = nativeImage.createFromPath(
-        path.join(__dirname, "..", "build", "icon.png")
-      );
+      const rawIcon = nativeImage.createFromPath(iconPath);
       if (!rawIcon.isEmpty()) {
         const dockIcon = rawIcon.resize({ width: 128, height: 128 });
         app.dock.setIcon(dockIcon);

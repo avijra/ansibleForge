@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, XCircle, Layers, MessageSquare } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, KeyRound, ShieldCheck, XCircle, Layers, MessageSquare } from "lucide-react";
 import type { AgentEvent } from "@/api/types";
 import { api } from "@/api/client";
 import { TuyereThinkingIndicator } from "@/components/common/TuyereLogo";
@@ -105,8 +105,14 @@ function isStepGroup(item: AgentEvent | StepGroup): item is StepGroup {
 }
 
 function StepSummaryLine({ group, onClick }: { group: StepGroup; onClick?: () => void }) {
-  const Icon = group.status === "error" ? XCircle : CheckCircle2;
-  const iconColor = group.status === "error" ? "text-red-400/60" : "text-emerald-400/50";
+  const isSecret = group.stepNum <= -1000 && group.stepNum > -2000;
+  const isApproval = group.stepNum <= -2000;
+
+  let Icon = group.status === "error" ? XCircle : CheckCircle2;
+  let iconColor = group.status === "error" ? "text-red-400/60" : "text-emerald-400/50";
+  if (isSecret) { Icon = KeyRound; iconColor = "text-cyan-400/60"; }
+  if (isApproval) { Icon = ShieldCheck; iconColor = group.status === "error" ? "text-red-400/60" : "text-emerald-400/50"; }
+
   const label = group.toolSummary || `Step ${group.stepNum}`;
 
   return (
@@ -212,6 +218,25 @@ function StepEventRenderer({ event }: { event: AgentEvent }) {
           Rejected. {event.data.feedback as string}
         </div>
       );
+    case "secret_request": {
+      const name = (event.data.secret_name as string) || "secret";
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-800/20 bg-zinc-900/40 px-3 py-1.5">
+          <KeyRound className="h-3.5 w-3.5 text-cyan-400/60" />
+          <span className="text-xs text-zinc-400">Secret provided</span>
+          <code className="rounded bg-zinc-800/60 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500">{name}</code>
+        </div>
+      );
+    }
+    case "approval_required": {
+      const mode = (event.data.mode as string) || "";
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-800/20 bg-zinc-900/40 px-3 py-1.5">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400/60" />
+          <span className="text-xs text-zinc-400">Approved{mode ? ` (${mode})` : ""}</span>
+        </div>
+      );
+    }
     case "step_start":
       return null;
     case "progress":
@@ -329,13 +354,34 @@ export function ActivityFeed({
 
   const approvalResolutions = useMemo(() => {
     let approvalIdx = 0;
-    const resolved = new Set<number>();
+    const resolved = new Map<number, "approved" | "rejected">();
     const approvalIndices: number[] = [];
     for (const e of events) {
       if (e.event === "approval_required") approvalIndices.push(approvalIdx++);
-      if (e.event === "approval_granted" || e.event === "approval_rejected") {
+      if (e.event === "approval_granted") {
         const pending = approvalIndices.find((i) => !resolved.has(i));
-        if (pending !== undefined) resolved.add(pending);
+        if (pending !== undefined) resolved.set(pending, "approved");
+      }
+      if (e.event === "approval_rejected") {
+        const pending = approvalIndices.find((i) => !resolved.has(i));
+        if (pending !== undefined) resolved.set(pending, "rejected");
+      }
+    }
+    return resolved;
+  }, [events]);
+
+  const secretResolutions = useMemo(() => {
+    let secretIdx = 0;
+    const resolved = new Map<number, "provided" | "skipped">();
+    const indices: number[] = [];
+    for (const e of events) {
+      if (e.event === "secret_request") indices.push(secretIdx++);
+      if (e.event === "tool_result" && (e.data.tool as string) === "request_secret") {
+        const pending = indices.find((i) => !resolved.has(i));
+        if (pending !== undefined) {
+          const status = (e.data.status as string) === "success" ? "provided" : "skipped";
+          resolved.set(pending, status as "provided" | "skipped");
+        }
       }
     }
     return resolved;
@@ -351,6 +397,7 @@ export function ActivityFeed({
   let lastMessageId: string | null = null;
   let hasItemsAfterLastMessage = false;
   let approvalCounter = 0;
+  let secretCounter = 0;
 
   const flushCollapsed = () => {
     if (collapsedBuffer.length === 0) return;
@@ -384,16 +431,17 @@ export function ActivityFeed({
       continue;
     }
 
-    flushCollapsed();
     const event = item;
     switch (event.event) {
       case "user_message":
+        flushCollapsed();
         renderItems.push(<UserMessageEvent key={event.id} event={event} />);
         lastMessageEvent = null;
         lastMessageId = null;
         hasItemsAfterLastMessage = false;
         break;
       case "message":
+        flushCollapsed();
         lastMessageEvent = event;
         lastMessageId = event.id;
         hasItemsAfterLastMessage = false;
@@ -404,33 +452,67 @@ export function ActivityFeed({
         );
         break;
       case "plan": {
+        flushCollapsed();
         const completedTools = events
           .filter((e) => e.event === "tool_result" && e.data.status === "success")
           .map((e) => e.data.tool as string);
         renderItems.push(<PlanEvent key={event.id} event={event} completedTools={completedTools} />);
         break;
       }
-      case "secret_request":
-        renderItems.push(<SecretRequestEvent key={event.id} event={event} onSkip={onCancelSecret} />);
+      case "secret_request": {
+        const thisSecretIdx = secretCounter++;
+        const resolution = secretResolutions.get(thisSecretIdx);
+        if (resolution) {
+          const secretName = (event.data.secret_name as string) || "secret";
+          collapsedBuffer.push({
+            stepNum: -(thisSecretIdx + 1000),
+            events: [event],
+            isComplete: true,
+            toolSummary: resolution === "provided" ? `Secret provided: ${secretName}` : `Secret skipped: ${secretName}`,
+            status: "success",
+          });
+        } else {
+          flushCollapsed();
+          renderItems.push(<SecretRequestEvent key={event.id} event={event} onSkip={onCancelSecret} />);
+        }
         break;
+      }
       case "approval_required": {
         const thisApprovalIdx = approvalCounter++;
-        const alreadyResolved = approvalResolutions.has(thisApprovalIdx);
-        renderItems.push(
-          <DiffReview
-            key={event.id}
-            event={event}
-            isPending={isPendingApproval && !alreadyResolved}
-            onApprove={onApprove}
-            onReject={onReject}
-          />
-        );
+        const resolution = approvalResolutions.get(thisApprovalIdx);
+        if (resolution) {
+          const output = (event.data.output as string) || "";
+          const mode = (event.data.mode as string) || "";
+          const label = resolution === "approved"
+            ? `Approved${mode ? ` (${mode})` : ""}`
+            : `Rejected${output ? ` — ${output.slice(0, 40)}` : ""}`;
+          collapsedBuffer.push({
+            stepNum: -(thisApprovalIdx + 2000),
+            events: [event],
+            isComplete: true,
+            toolSummary: label,
+            status: resolution === "approved" ? "success" : "error",
+          });
+        } else {
+          flushCollapsed();
+          renderItems.push(
+            <DiffReview
+              key={event.id}
+              event={event}
+              isPending={isPendingApproval}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
+          );
+        }
         break;
       }
       case "max_steps":
+        flushCollapsed();
         renderItems.push(<ErrorEvent key={event.id} event={event} />);
         break;
       default:
+        flushCollapsed();
         break;
     }
   }

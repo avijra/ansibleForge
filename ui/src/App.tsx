@@ -158,6 +158,34 @@ export function App() {
     }
   }, [session.active?.id]);
 
+  const FILE_MUTATING_TOOLS = useMemo(() => new Set([
+    "write_file", "generate_playbook", "scaffold_role", "manage_inventory",
+    "render_template", "generate_terraform", "generate_rollback",
+    "manage_vault", "import_project", "manage_git",
+  ]), []);
+
+  const wsRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastWsRefreshCount = useRef(0);
+
+  useEffect(() => {
+    const sid = session.active?.id;
+    if (!sid || sid.startsWith("local-")) return;
+
+    const events = session.active?.events ?? [];
+    const fileToolResults = events.filter(
+      (e) => e.event === "tool_result" && FILE_MUTATING_TOOLS.has(e.data.tool as string)
+    );
+    if (fileToolResults.length === lastWsRefreshCount.current) return;
+    lastWsRefreshCount.current = fileToolResults.length;
+
+    if (wsRefreshTimer.current) clearTimeout(wsRefreshTimer.current);
+    wsRefreshTimer.current = setTimeout(() => {
+      api.workspaceFiles(sid)
+        .then((ws) => session.setWorkspaceFiles(sid, ws.files))
+        .catch(() => {});
+    }, 600);
+  }, [session.active?.id, session.active?.events, FILE_MUTATING_TOOLS]);
+
   const ansibleCtx = useAnsibleContext(
     session.active?.events ?? [],
     session.active?.workspaceFiles ?? []
@@ -600,6 +628,14 @@ export function App() {
                     inventory={session.active!.inventory}
                     workspaceFiles={session.active!.workspaceFiles}
                     onOpenFile={openFileInEditor}
+                    onRefreshFiles={() => {
+                      const sid = session.active?.id;
+                      if (sid && !sid.startsWith("local-")) {
+                        api.workspaceFiles(sid)
+                          .then((ws) => session.setWorkspaceFiles(sid, ws.files))
+                          .catch(() => {});
+                      }
+                    }}
                     sessionId={session.activeId ?? undefined}
                   />
                 )}

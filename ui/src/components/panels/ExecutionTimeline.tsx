@@ -6,11 +6,13 @@ import {
   WifiOff,
   ChevronDown,
   ChevronRight,
+  FileCode2,
   Filter,
   Play,
   AlertTriangle,
   ScrollText,
   Terminal,
+  Wrench,
 } from "lucide-react";
 import type { AgentEvent } from "@/api/types";
 import { cn } from "@/lib/utils";
@@ -649,6 +651,168 @@ function colorizeAnsibleOutput(text: string): React.ReactNode {
   });
 }
 
+const FRIENDLY_TOOL_NAMES: Record<string, string> = {
+  write_file: "Write file",
+  generate_playbook: "Generate playbook",
+  scaffold_role: "Scaffold role",
+  execute_playbook: "Execute playbook",
+  run_adhoc: "Ad-hoc command",
+  local_exec: "Local command",
+  test_connectivity: "Test connectivity",
+  collect_facts: "Collect facts",
+  manage_inventory: "Manage inventory",
+  read_file: "Read file",
+  render_template: "Render template",
+  manage_git: "Git",
+  verify_state: "Verify state",
+  manage_galaxy: "Galaxy",
+  search_docs: "Search docs",
+  run_lint: "Lint",
+  manage_vault: "Vault",
+  import_project: "Import project",
+  terraform_exec: "Terraform",
+  generate_terraform: "Generate Terraform",
+  web_search: "Web search",
+  request_secret: "Request secret",
+};
+
+interface ToolActivity {
+  id: string;
+  tool: string;
+  label: string;
+  status: string;
+  timestamp: number;
+  output?: string;
+  isAnsibleRun: boolean;
+}
+
+function extractToolActivity(events: AgentEvent[]): ToolActivity[] {
+  const callArgs = new Map<string, Record<string, unknown>>();
+  for (const ev of events) {
+    if (ev.event !== "tool_call") continue;
+    const callId = (ev.data.tool_call_id as string) || "";
+    const args = ev.data.arguments as Record<string, unknown> | undefined;
+    if (callId && args) callArgs.set(callId, args);
+  }
+
+  const activities: ToolActivity[] = [];
+  for (const ev of events) {
+    if (ev.event !== "tool_result") continue;
+    const tool = (ev.data.tool as string) || "";
+    if (!tool) continue;
+    const status = (ev.data.status as string) || "success";
+    const data = ev.data.data as Record<string, unknown> | undefined;
+    const output = (ev.data.output as string) || "";
+    const callId = (ev.data.tool_call_id as string) || "";
+    const args = callArgs.get(callId);
+
+    let label = FRIENDLY_TOOL_NAMES[tool] || tool.replace(/_/g, " ");
+    let isAnsibleRun = false;
+
+    if (tool === "execute_playbook" && data) {
+      const playbook = (data.playbook as string) || "";
+      const mode = (data.mode as string) || "check";
+      label = playbook ? `${playbook} (${mode})` : `Playbook (${mode})`;
+      isAnsibleRun = true;
+    } else if (tool === "run_adhoc" && data) {
+      const module = (data.module_args as string) || (data.module as string) || "command";
+      label = module.length > 50 ? `adhoc: ${module.slice(0, 47)}...` : `adhoc: ${module}`;
+      isAnsibleRun = true;
+    } else if (tool === "local_exec") {
+      const cmd = (args?.command as string) || "";
+      if (cmd) {
+        label = cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
+      } else {
+        label = output.length > 60 ? output.slice(0, 57) + "..." : output || "Local command";
+      }
+    } else if (tool === "write_file") {
+      const path = (args?.path as string) || (data?.path as string) || "";
+      label = path ? `Write ${path.split("/").pop()}` : "Write file";
+    } else if (tool === "scaffold_role") {
+      const roleName = (args?.role_name as string) || (data?.role_name as string) || "";
+      label = roleName ? `Scaffold role: ${roleName}` : "Scaffold role";
+    } else if (tool === "generate_playbook") {
+      const path = (args?.path as string) || (data?.path as string) || "";
+      label = path ? `Generate ${path.split("/").pop()}` : "Generate playbook";
+    } else if (tool === "test_connectivity") {
+      const hosts = (args?.hosts as string) || "";
+      label = hosts ? `Test ${hosts}` : "Test connectivity";
+    }
+
+    activities.push({
+      id: ev.id,
+      tool,
+      label,
+      status,
+      timestamp: ev.timestamp,
+      output: output.length > 200 ? output.slice(0, 197) + "..." : output,
+      isAnsibleRun,
+    });
+  }
+  return activities;
+}
+
+function ToolActivityEntry({ activity }: { activity: ToolActivity }) {
+  const isError = activity.status === "error" || activity.status === "failed";
+  const isApproval = activity.status === "needs_approval";
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-900/50 transition-colors">
+      {isError ? (
+        <XCircle className="h-3 w-3 text-red-400 shrink-0" />
+      ) : isApproval ? (
+        <Clock className="h-3 w-3 text-amber-400 shrink-0" />
+      ) : activity.isAnsibleRun ? (
+        <Play className="h-3 w-3 text-emerald-400 shrink-0" />
+      ) : activity.tool === "write_file" || activity.tool === "generate_playbook" || activity.tool === "scaffold_role" ? (
+        <FileCode2 className="h-3 w-3 text-blue-400 shrink-0" />
+      ) : (
+        <Wrench className="h-3 w-3 text-zinc-500 shrink-0" />
+      )}
+      <span className={cn(
+        "flex-1 truncate font-mono",
+        isError ? "text-red-300" : "text-zinc-300"
+      )}>
+        {activity.label}
+      </span>
+      <span className="text-[10px] font-mono text-zinc-600 shrink-0">
+        {new Date(activity.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+      </span>
+    </div>
+  );
+}
+
+function ToolActivityLog({ events, hasAnsibleRuns }: { events: AgentEvent[]; hasAnsibleRuns: boolean }) {
+  const allActivities = useMemo(() => extractToolActivity(events), [events]);
+  const activities = hasAnsibleRuns
+    ? allActivities.filter((a) => !a.isAnsibleRun)
+    : allActivities;
+
+  if (activities.length === 0) return null;
+
+  const errorCount = activities.filter((a) => a.status === "error" || a.status === "failed").length;
+
+  return (
+    <div className="border-t border-zinc-800">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800/50">
+        <Wrench className="h-3 w-3 text-zinc-500" />
+        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
+          Tool Activity
+        </span>
+        <span className="text-[10px] font-mono text-zinc-600">
+          {activities.length} call{activities.length !== 1 ? "s" : ""}
+          {errorCount > 0 && <span className="text-red-400 ml-1">· {errorCount} failed</span>}
+        </span>
+      </div>
+      <div className="divide-y divide-zinc-800/30 max-h-[50vh] overflow-y-auto">
+        {activities.map((a) => (
+          <ToolActivityEntry key={a.id} activity={a} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface ExecutionTimelineProps {
   events: AgentEvent[];
   isStreaming: boolean;
@@ -663,8 +827,12 @@ export function ExecutionTimeline({
   inventory,
 }: ExecutionTimelineProps) {
   const runs = useMemo(() => extractRuns(events), [events]);
+  const toolResultCount = useMemo(
+    () => events.filter((e) => e.event === "tool_result").length,
+    [events]
+  );
 
-  if (runs.length === 0) {
+  if (runs.length === 0 && toolResultCount === 0) {
     const pbCount = Object.keys(playbooks).length;
     const invCount = Object.keys(inventory).length;
     const hasArtifacts = pbCount > 0 || invCount > 0;
@@ -677,7 +845,7 @@ export function ExecutionTimeline({
         <div>
           <p className="text-xs text-zinc-500">No execution logs yet</p>
           <p className="mt-1 text-[11px] text-zinc-600">
-            Run a playbook to see the execution timeline here
+            Tool calls and playbook runs will appear here
           </p>
         </div>
         {hasArtifacts && (
@@ -691,15 +859,20 @@ export function ExecutionTimeline({
   }
 
   return (
-    <div className="divide-y divide-zinc-800/50 min-w-0 w-full">
-      {runs.map((run, i) => (
-        <RunSection
-          key={run.id}
-          run={run}
-          isLatest={i === runs.length - 1}
-          isStreaming={isStreaming}
-        />
-      ))}
+    <div className="min-w-0 w-full">
+      {runs.length > 0 && (
+        <div className="divide-y divide-zinc-800/50">
+          {runs.map((run, i) => (
+            <RunSection
+              key={run.id}
+              run={run}
+              isLatest={i === runs.length - 1}
+              isStreaming={isStreaming}
+            />
+          ))}
+        </div>
+      )}
+      <ToolActivityLog events={events} hasAnsibleRuns={runs.length > 0} />
     </div>
   );
 }
