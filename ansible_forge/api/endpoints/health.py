@@ -66,7 +66,7 @@ def _check_llm_key_configured() -> tuple[str, str]:
 
 def _get_llm_status() -> tuple[str, str]:
     now = time.time()
-    if now - float(_llm_status_cache.get("checked_at", 0)) < _LLM_CHECK_INTERVAL:
+    if now - float(str(_llm_status_cache.get("checked_at", 0))) < _LLM_CHECK_INTERVAL:
         return str(_llm_status_cache["status"]), str(_llm_status_cache["detail"])
 
     status, detail = _check_llm_key_configured()
