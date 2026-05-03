@@ -793,7 +793,7 @@ function ToolActivityLog({ events, hasAnsibleRuns }: { events: AgentEvent[]; has
   const errorCount = activities.filter((a) => a.status === "error" || a.status === "failed").length;
 
   return (
-    <div className="border-t border-zinc-800">
+    <div className={hasAnsibleRuns ? "border-t border-zinc-800" : ""}>
       <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800/50">
         <Wrench className="h-3 w-3 text-zinc-500" />
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
@@ -804,7 +804,10 @@ function ToolActivityLog({ events, hasAnsibleRuns }: { events: AgentEvent[]; has
           {errorCount > 0 && <span className="text-red-400 ml-1">· {errorCount} failed</span>}
         </span>
       </div>
-      <div className="divide-y divide-zinc-800/30 max-h-[50vh] overflow-y-auto">
+      <div className={cn(
+        "divide-y divide-zinc-800/30 overflow-y-auto",
+        hasAnsibleRuns && "max-h-[50vh]"
+      )}>
         {activities.map((a) => (
           <ToolActivityEntry key={a.id} activity={a} />
         ))}

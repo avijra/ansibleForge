@@ -15,7 +15,7 @@ const tabs: { id: ContextTab; label: string; icon: typeof ScrollText }[] = [
   { id: "logs", label: "Logs", icon: ScrollText },
   { id: "files", label: "Files", icon: FolderTree },
   { id: "hosts", label: "Hosts", icon: Server },
-  { id: "runs", label: "Runs", icon: GitBranch },
+  { id: "runs", label: "Playbooks", icon: GitBranch },
   { id: "knowledge", label: "Knowledge", icon: Brain },
   { id: "rules", label: "Rules", icon: BookOpen },
 ];

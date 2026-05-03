@@ -182,6 +182,7 @@ function HostCard({ host }: { host: HostInfo }) {
 export function HostInventory({ events }: { events: AgentEvent[] }) {
   const [persisted, setPersisted] = useState<PersistedHost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showSessionOnly, setShowSessionOnly] = useState(false);
 
   const loadPersisted = useCallback(async () => {
     try {
@@ -197,18 +198,27 @@ export function HostInventory({ events }: { events: AgentEvent[] }) {
   useEffect(() => { loadPersisted(); }, [loadPersisted]);
 
   const sessionHosts = useMemo(() => extractSessionHosts(events), [events]);
-  const hosts = useMemo(() => mergeHosts(persisted, sessionHosts), [persisted, sessionHosts]);
+  const allHosts = useMemo(() => mergeHosts(persisted, sessionHosts), [persisted, sessionHosts]);
 
-  if (hosts.length === 0 && !loading) {
+  const hosts = useMemo(() => {
+    if (!showSessionOnly) return allHosts;
+    const sessionNames = new Set(sessionHosts.keys());
+    return allHosts.filter((h) => sessionNames.has(h.name));
+  }, [allHosts, sessionHosts, showSessionOnly]);
+
+  if (allHosts.length === 0 && !loading) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-6 text-center">
         <div className="rounded-xl bg-zinc-900/50 p-4 ring-1 ring-zinc-800">
           <Server className="h-8 w-8 text-zinc-600" />
         </div>
         <div>
-          <p className="text-xs text-zinc-500">No hosts discovered</p>
+          <p className="text-xs text-zinc-500">No Ansible-managed hosts</p>
           <p className="mt-1 text-[11px] text-zinc-600">
-            Hosts will appear here after running playbooks or collecting facts
+            Hosts appear here after running playbooks, collecting facts, or testing connectivity
+          </p>
+          <p className="mt-1 text-[10px] text-zinc-700">
+            CLI-only activity (kubectl, tart, ssh) does not register hosts
           </p>
         </div>
       </div>
@@ -219,19 +229,48 @@ export function HostInventory({ events }: { events: AgentEvent[] }) {
     <div className="p-3 space-y-2">
       <div className="flex items-center justify-between px-1 mb-1">
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
-          {hosts.length} host{hosts.length !== 1 ? "s" : ""} discovered
+          {hosts.length} host{hosts.length !== 1 ? "s" : ""}
+          {showSessionOnly && " (this session)"}
         </span>
-        <button
-          onClick={loadPersisted}
-          className="rounded p-0.5 text-zinc-600 hover:text-zinc-400 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw className="h-3 w-3" />
-        </button>
+        <div className="flex items-center gap-1">
+          {sessionHosts.size > 0 && (
+            <button
+              onClick={() => setShowSessionOnly(!showSessionOnly)}
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                showSessionOnly
+                  ? "bg-zinc-700 text-zinc-200"
+                  : "text-zinc-600 hover:text-zinc-400"
+              )}
+              title={showSessionOnly ? "Show all hosts" : "Show session hosts only"}
+            >
+              session
+            </button>
+          )}
+          <button
+            onClick={loadPersisted}
+            className="rounded p-0.5 text-zinc-600 hover:text-zinc-400 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
+        </div>
       </div>
-      {hosts.map((host) => (
-        <HostCard key={host.name} host={host} />
-      ))}
+      {hosts.length === 0 && showSessionOnly ? (
+        <div className="text-center py-6">
+          <p className="text-[11px] text-zinc-600">No Ansible-managed hosts in this session</p>
+          <button
+            onClick={() => setShowSessionOnly(false)}
+            className="mt-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            Show all hosts
+          </button>
+        </div>
+      ) : (
+        hosts.map((host) => (
+          <HostCard key={host.name} host={host} />
+        ))
+      )}
     </div>
   );
 }

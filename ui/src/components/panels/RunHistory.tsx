@@ -197,11 +197,11 @@ export function RunHistory({ events }: { events: AgentEvent[] }) {
           <GitBranch className="h-8 w-8 text-zinc-600" />
         </div>
         <div>
-          <p className="text-xs text-zinc-500">No playbook or adhoc runs</p>
+          <p className="text-xs text-zinc-500">No playbook or adhoc runs yet</p>
           <p className="mt-1 text-[11px] text-zinc-600">
             {toolResultCount > 0
               ? `${toolResultCount} tool call${toolResultCount !== 1 ? "s" : ""} completed — check the Logs tab for details`
-              : "Execution history will appear here"}
+              : "Ansible playbook executions, adhoc commands, and Terraform runs appear here"}
           </p>
         </div>
       </div>
