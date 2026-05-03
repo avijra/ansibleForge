@@ -212,6 +212,7 @@ hidden_imports = [
     "httpcore",
     "idna",
     "charset_normalizer",
+    "kuzu",
     "sqlite3",
     "email.mime.text",
     "email.mime.multipart",
