@@ -187,6 +187,7 @@ jobs:
           mkdir -p /tmp/release-mac
           cp electron/release/*.dmg /tmp/release-mac/ 2>/dev/null || true
           cp electron/release/*.zip /tmp/release-mac/ 2>/dev/null || true
+          cp electron/release/*.yml /tmp/release-mac/ 2>/dev/null || true
           ls -lh /tmp/release-mac/
 
       - name: Upload macOS artifacts
@@ -254,6 +255,7 @@ jobs:
           mkdir -p /tmp/release-linux
           cp electron/release/*.AppImage /tmp/release-linux/ 2>/dev/null || true
           cp electron/release/*.deb /tmp/release-linux/ 2>/dev/null || true
+          cp electron/release/*.yml /tmp/release-linux/ 2>/dev/null || true
           ls -lh /tmp/release-linux/
 
       - name: Upload Linux artifacts
@@ -539,6 +541,7 @@ jobs:
             artifacts/*.zip
             artifacts/*.AppImage
             artifacts/*.deb
+            artifacts/*.yml
             artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
