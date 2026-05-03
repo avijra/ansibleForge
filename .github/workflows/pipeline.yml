@@ -32,10 +32,12 @@ jobs:
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           PYPROJECT_VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           ELECTRON_VERSION=$(jq -r '.version' electron/package.json)
+          INIT_VERSION=$(grep '__version__' ansible_forge/__init__.py | sed 's/.*"\(.*\)".*/\1/')
 
           echo "Tag:       $TAG_VERSION"
           echo "pyproject: $PYPROJECT_VERSION"
           echo "electron:  $ELECTRON_VERSION"
+          echo "__init__:  $INIT_VERSION"
 
           FAIL=0
           if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
@@ -44,6 +46,10 @@ jobs:
           fi
           if [ "$TAG_VERSION" != "$ELECTRON_VERSION" ]; then
             echo "::error::Version mismatch: tag ($TAG_VERSION) != electron/package.json ($ELECTRON_VERSION)"
+            FAIL=1
+          fi
+          if [ "$TAG_VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::Version mismatch: tag ($TAG_VERSION) != ansible_forge/__init__.py ($INIT_VERSION)"
             FAIL=1
           fi
           if [ "$FAIL" -eq 1 ]; then
