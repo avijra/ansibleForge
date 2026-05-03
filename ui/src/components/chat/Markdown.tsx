@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-const components: Components = {
+const defaultComponents: Components = {
   h1: ({ children }) => (
     <h1 className="mt-4 mb-2 text-base font-bold text-zinc-100">{children}</h1>
   ),
@@ -91,10 +91,102 @@ const components: Components = {
   ),
 };
 
-export function Markdown({ content }: { content: string }) {
+const terminalComponents: Components = {
+  h1: ({ children }) => (
+    <h1 className="mt-3 mb-1.5 text-xs font-bold text-emerald-300">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mt-3 mb-1.5 text-xs font-bold text-emerald-300">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mt-2 mb-1 text-xs font-semibold text-emerald-400">{children}</h3>
+  ),
+  h4: ({ children }) => (
+    <h4 className="mt-1.5 mb-0.5 text-[11px] font-semibold text-emerald-400">{children}</h4>
+  ),
+  p: ({ children }) => (
+    <p className="mb-1.5 text-xs leading-relaxed text-emerald-400/90">{children}</p>
+  ),
+  ul: ({ children }) => (
+    <ul className="mb-1.5 ml-3 list-disc space-y-0.5 text-xs text-emerald-400/90">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="mb-1.5 ml-3 list-decimal space-y-0.5 text-xs text-emerald-400/90">{children}</ol>
+  ),
+  li: ({ children }) => (
+    <li className="leading-relaxed">{children}</li>
+  ),
+  strong: ({ children }) => (
+    <strong className="font-semibold text-emerald-300">{children}</strong>
+  ),
+  em: ({ children }) => (
+    <em className="italic text-emerald-500/80">{children}</em>
+  ),
+  code: ({ className, children, ...props }) => {
+    const isBlock = className?.includes("language-");
+    if (isBlock) {
+      const lang = className?.replace("language-", "") || "";
+      return (
+        <div className="my-1.5 rounded border border-emerald-900/40 bg-black/40 overflow-hidden">
+          {lang && (
+            <div className="border-b border-emerald-900/30 px-2.5 py-0.5 text-[9px] font-mono text-emerald-600 uppercase">
+              {lang}
+            </div>
+          )}
+          <pre className="overflow-x-auto p-2.5">
+            <code className="text-[11px] font-mono text-emerald-300/80 leading-relaxed" {...props}>
+              {children}
+            </code>
+          </pre>
+        </div>
+      );
+    }
+    return (
+      <code className="rounded bg-emerald-950/40 px-1 py-0.5 text-[11px] font-mono text-emerald-300" {...props}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }) => <>{children}</>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-1.5 border-l-2 border-emerald-800/50 pl-2.5 text-xs italic text-emerald-500/70">
+      {children}
+    </blockquote>
+  ),
+  table: ({ children }) => (
+    <div className="my-1.5 overflow-x-auto rounded border border-emerald-900/40">
+      <table className="w-full text-[11px]">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => (
+    <thead className="border-b border-emerald-900/40 bg-emerald-950/20">{children}</thead>
+  ),
+  th: ({ children }) => (
+    <th className="px-2.5 py-1 text-left font-semibold text-emerald-300">{children}</th>
+  ),
+  td: ({ children }) => (
+    <td className="border-t border-emerald-900/30 px-2.5 py-1 text-emerald-400/80">{children}</td>
+  ),
+  hr: () => <hr className="my-2 border-emerald-900/40" />,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-emerald-300 underline decoration-emerald-700/50 hover:decoration-emerald-400 transition-colors"
+    >
+      {children}
+    </a>
+  ),
+};
+
+export function Markdown({ content, terminal }: { content: string; terminal?: boolean }) {
   return (
-    <div className="markdown-body">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <div className={terminal ? "markdown-body font-mono" : "markdown-body"}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={terminal ? terminalComponents : defaultComponents}
+      >
         {content}
       </ReactMarkdown>
     </div>

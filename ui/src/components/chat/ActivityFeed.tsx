@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, KeyRound, ShieldCheck, XCircle, Layers, MessageSquare } from "lucide-react";
+import { ChevronDown, Loader2, MessageSquare } from "lucide-react";
 import type { AgentEvent } from "@/api/types";
-import { api } from "@/api/client";
-import { TuyereThinkingIndicator } from "@/components/common/TuyereLogo";
 import { friendlyToolName } from "@/lib/tool-labels";
-import { ThinkingEvent } from "./events/ThinkingEvent";
-import { ToolCallEvent } from "./events/ToolCallEvent";
-import { ToolResultEvent } from "./events/ToolResultEvent";
 import { DiffReview } from "@/components/review/DiffReview";
 import { MessageEvent } from "./events/MessageEvent";
 import { ErrorEvent } from "./events/ErrorEvent";
@@ -14,7 +9,6 @@ import { PlanEvent } from "./events/PlanEvent";
 import { UserMessageEvent } from "./events/UserMessageEvent";
 import { SecretRequestEvent } from "./events/SecretRequestEvent";
 import { EmptyState } from "./EmptyState";
-import { cn } from "@/lib/utils";
 
 const SCROLL_THRESHOLD = 150;
 
@@ -104,157 +98,43 @@ function isStepGroup(item: AgentEvent | StepGroup): item is StepGroup {
   return "stepNum" in item && "events" in item;
 }
 
-function StepSummaryLine({ group, onClick }: { group: StepGroup; onClick?: () => void }) {
-  const isSecret = group.stepNum <= -1000 && group.stepNum > -2000;
-  const isApproval = group.stepNum <= -2000;
+function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
+  const stepCount = events.filter((e) => e.event === "step_start").length;
+  const toolCalls = events.filter((e) => e.event === "tool_call").length;
 
-  let Icon = group.status === "error" ? XCircle : CheckCircle2;
-  let iconColor = group.status === "error" ? "text-red-400/60" : "text-emerald-400/50";
-  if (isSecret) { Icon = KeyRound; iconColor = "text-cyan-400/60"; }
-  if (isApproval) { Icon = ShieldCheck; iconColor = group.status === "error" ? "text-red-400/60" : "text-emerald-400/50"; }
+  const lastTool = [...events].reverse().find((e) => e.event === "tool_call");
+  const lastProgress = [...events].reverse().find((e) => e.event === "progress");
 
-  const label = group.toolSummary || `Step ${group.stepNum}`;
+  const activeTool = lastTool ? friendlyToolName((lastTool.data.tool as string) || "") : null;
+  const statusMsg = lastProgress ? (lastProgress.data.message as string) : null;
 
   return (
-    <button
-      onClick={onClick}
-      className="flex w-full items-center gap-2 py-0.5 text-left group"
-    >
-      <Icon className={cn("h-3 w-3 shrink-0", iconColor)} />
-      <span className="text-[11px] text-zinc-500 truncate flex-1 group-hover:text-zinc-300 transition-colors">
-        {label}
-      </span>
-    </button>
-  );
-}
-
-function CollapsedStepsBlock({ groups }: { groups: StepGroup[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const [expandedStep, setExpandedStep] = useState<number | null>(null);
-  const errorCount = groups.filter((g) => g.status === "error").length;
-  const totalTools = groups.reduce(
-    (sum, g) => sum + g.events.filter((e) => e.event === "tool_call").length,
-    0
-  );
-
-  if (groups.length === 1) {
-    return (
-      <div className="rounded-lg border border-zinc-800/40 bg-zinc-900/20">
-        <div className="px-3 py-1.5">
-          <StepSummaryLine
-            group={groups[0]}
-            onClick={() => setExpandedStep(expandedStep === 0 ? null : 0)}
-          />
+    <div className="rounded-lg border border-emerald-900/40 bg-black/50 px-3 py-2 font-mono" role="status" aria-live="polite">
+      <div className="flex items-center gap-2">
+        <Loader2 className="h-3 w-3 text-emerald-600 animate-spin shrink-0" />
+        <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 min-w-0">
+          {stepCount > 0 && (
+            <>
+              <span>step {stepCount}</span>
+              {toolCalls > 0 && <span className="text-emerald-900">·</span>}
+            </>
+          )}
+          {toolCalls > 0 && <span>{toolCalls} tool calls</span>}
+          {activeTool && (
+            <>
+              <span className="text-emerald-900">·</span>
+              <span className="text-emerald-500 truncate">{activeTool}</span>
+            </>
+          )}
         </div>
-        {expandedStep === 0 && (
-          <div className="px-3 pb-2 pt-1 space-y-2 border-t border-zinc-800/30">
-            {groups[0].events.map((event) => (
-              <StepEventRenderer key={event.id} event={event} />
-            ))}
-          </div>
-        )}
       </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border border-zinc-800/40 bg-zinc-900/20">
-      <button
-        onClick={() => { setExpanded(!expanded); setExpandedStep(null); }}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-zinc-800/20 transition-colors rounded-lg"
-      >
-        <Layers className="h-3 w-3 text-zinc-600 shrink-0" />
-        <span className="text-[11px] text-zinc-500 flex-1">
-          {groups.length} steps completed
-          {totalTools > 0 && <span className="text-zinc-600"> · {totalTools} tool calls</span>}
-          {errorCount > 0 && <span className="text-red-400/60"> · {errorCount} failed</span>}
-        </span>
-        {expanded
-          ? <ChevronDown className="h-3 w-3 text-zinc-600 shrink-0" />
-          : <ChevronRight className="h-3 w-3 text-zinc-600 shrink-0" />}
-      </button>
-      {expanded && (
-        <div className="px-3 pb-2 space-y-0.5 border-t border-zinc-800/30 pt-1">
-          {groups.map((group, i) => (
-            <div key={`step-${group.stepNum}-${i}`}>
-              <StepSummaryLine
-                group={group}
-                onClick={() => setExpandedStep(expandedStep === i ? null : i)}
-              />
-              {expandedStep === i && (
-                <div className="pl-5 pb-2 pt-1 space-y-2">
-                  {group.events.map((event) => (
-                    <StepEventRenderer key={event.id} event={event} />
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+      {statusMsg && (
+        <div className="mt-1 text-[11px] text-emerald-600/80 truncate pl-5">
+          {statusMsg}
         </div>
       )}
     </div>
   );
-}
-
-function StepEventRenderer({ event }: { event: AgentEvent }) {
-  switch (event.event) {
-    case "thinking":
-      return <ThinkingEvent event={event} />;
-    case "tool_call":
-      return <ToolCallEvent event={event} />;
-    case "tool_result":
-      return <ToolResultEvent event={event} />;
-    case "error_recovery":
-      return <ErrorEvent event={event} />;
-    case "approval_granted":
-      return (
-        <div className="rounded-lg bg-emerald-950/15 border border-emerald-800/30 px-3 py-2 text-xs text-zinc-400">
-          Approved — executing...
-        </div>
-      );
-    case "approval_rejected":
-      return (
-        <div className="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs text-zinc-400">
-          Rejected. {event.data.feedback as string}
-        </div>
-      );
-    case "secret_request": {
-      const name = (event.data.secret_name as string) || "secret";
-      return (
-        <div className="flex items-center gap-2 rounded-md border border-emerald-800/20 bg-zinc-900/40 px-3 py-1.5">
-          <KeyRound className="h-3.5 w-3.5 text-cyan-400/60" />
-          <span className="text-xs text-zinc-400">Secret provided</span>
-          <code className="rounded bg-zinc-800/60 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500">{name}</code>
-        </div>
-      );
-    }
-    case "approval_required": {
-      const mode = (event.data.mode as string) || "";
-      return (
-        <div className="flex items-center gap-2 rounded-md border border-emerald-800/20 bg-zinc-900/40 px-3 py-1.5">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400/60" />
-          <span className="text-xs text-zinc-400">Approved{mode ? ` (${mode})` : ""}</span>
-        </div>
-      );
-    }
-    case "step_start":
-      return null;
-    case "progress":
-      return (
-        <div className="flex items-center gap-2.5 py-1 text-xs text-zinc-500">
-          <span>{event.data.message as string}</span>
-        </div>
-      );
-    case "checkpoint":
-      return (
-        <div className="flex items-center gap-2 py-1 text-[10px] font-mono text-zinc-600">
-          <span className="text-zinc-500">checkpoint</span>
-          <span>{event.data.hash as string}</span>
-        </div>
-      );
-    default:
-      return null;
-  }
 }
 
 interface ActivityFeedProps {
@@ -392,56 +272,26 @@ export function ActivityFeed({
   }
 
   const renderItems: React.ReactNode[] = [];
-  let collapsedBuffer: StepGroup[] = [];
   let lastMessageEvent: AgentEvent | null = null;
   let lastMessageId: string | null = null;
   let hasItemsAfterLastMessage = false;
   let approvalCounter = 0;
   let secretCounter = 0;
 
-  const flushCollapsed = () => {
-    if (collapsedBuffer.length === 0) return;
-    renderItems.push(
-      <CollapsedStepsBlock
-        key={`collapsed-${collapsedBuffer[0].stepNum}`}
-        groups={[...collapsedBuffer]}
-      />
-    );
-    collapsedBuffer = [];
-  };
-
   for (let idx = 0; idx < grouped.length; idx++) {
     const item = grouped[idx];
 
-    if (isStepGroup(item)) {
-      const isLast = idx === grouped.length - 1;
-      if (item.isComplete && !isLast) {
-        collapsedBuffer.push(item);
-        continue;
-      }
-      flushCollapsed();
-      if (lastMessageId) hasItemsAfterLastMessage = true;
-      renderItems.push(
-        <div key={`step-live-${item.stepNum}-${idx}`} className="space-y-3">
-          {item.events.map((event) => (
-            <StepEventRenderer key={event.id} event={event} />
-          ))}
-        </div>
-      );
-      continue;
-    }
+    if (isStepGroup(item)) continue;
 
     const event = item;
     switch (event.event) {
       case "user_message":
-        flushCollapsed();
         renderItems.push(<UserMessageEvent key={event.id} event={event} />);
         lastMessageEvent = null;
         lastMessageId = null;
         hasItemsAfterLastMessage = false;
         break;
       case "message":
-        flushCollapsed();
         lastMessageEvent = event;
         lastMessageId = event.id;
         hasItemsAfterLastMessage = false;
@@ -452,7 +302,7 @@ export function ActivityFeed({
         );
         break;
       case "plan": {
-        flushCollapsed();
+        if (lastMessageId) hasItemsAfterLastMessage = true;
         const completedTools = events
           .filter((e) => e.event === "tool_result" && e.data.status === "success")
           .map((e) => e.data.tool as string);
@@ -462,17 +312,8 @@ export function ActivityFeed({
       case "secret_request": {
         const thisSecretIdx = secretCounter++;
         const resolution = secretResolutions.get(thisSecretIdx);
-        if (resolution) {
-          const secretName = (event.data.secret_name as string) || "secret";
-          collapsedBuffer.push({
-            stepNum: -(thisSecretIdx + 1000),
-            events: [event],
-            isComplete: true,
-            toolSummary: resolution === "provided" ? `Secret provided: ${secretName}` : `Secret skipped: ${secretName}`,
-            status: "success",
-          });
-        } else {
-          flushCollapsed();
+        if (!resolution) {
+          if (lastMessageId) hasItemsAfterLastMessage = true;
           renderItems.push(<SecretRequestEvent key={event.id} event={event} onSkip={onCancelSecret} />);
         }
         break;
@@ -480,21 +321,8 @@ export function ActivityFeed({
       case "approval_required": {
         const thisApprovalIdx = approvalCounter++;
         const resolution = approvalResolutions.get(thisApprovalIdx);
-        if (resolution) {
-          const output = (event.data.output as string) || "";
-          const mode = (event.data.mode as string) || "";
-          const label = resolution === "approved"
-            ? `Approved${mode ? ` (${mode})` : ""}`
-            : `Rejected${output ? ` — ${output.slice(0, 40)}` : ""}`;
-          collapsedBuffer.push({
-            stepNum: -(thisApprovalIdx + 2000),
-            events: [event],
-            isComplete: true,
-            toolSummary: label,
-            status: resolution === "approved" ? "success" : "error",
-          });
-        } else {
-          flushCollapsed();
+        if (!resolution) {
+          if (lastMessageId) hasItemsAfterLastMessage = true;
           renderItems.push(
             <DiffReview
               key={event.id}
@@ -508,15 +336,13 @@ export function ActivityFeed({
         break;
       }
       case "max_steps":
-        flushCollapsed();
+        if (lastMessageId) hasItemsAfterLastMessage = true;
         renderItems.push(<ErrorEvent key={event.id} event={event} />);
         break;
       default:
-        flushCollapsed();
         break;
     }
   }
-  flushCollapsed();
 
   const showPinned =
     msgOffScreen && hasItemsAfterLastMessage && lastMessageEvent != null;
@@ -529,16 +355,7 @@ export function ActivityFeed({
         className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
       >
         {renderItems}
-        {isStreaming &&
-          (() => {
-            const lastProgress = [...events]
-              .reverse()
-              .find((e) => e.event === "progress");
-            const msg = lastProgress
-              ? (lastProgress.data.message as string)
-              : "Thinking...";
-            return <TuyereThinkingIndicator message={msg} />;
-          })()}
+        {isStreaming && <LiveActivityStatus events={events} />}
       </div>
       {showPinned && (
         <PinnedMessage
