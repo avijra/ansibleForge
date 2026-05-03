@@ -20,6 +20,7 @@ from ansible_forge.api.middleware.logging import RequestLoggingMiddleware
 from ansible_forge.api.router import api_router
 from ansible_forge.config import get_settings
 from ansible_forge.logging import get_logger, setup_logging
+
 logger = get_logger(__name__)
 
 

@@ -37,12 +37,8 @@ async def get_rules(
         raise HTTPException(status_code=404, detail="Session workspace not found")
 
     rules_file = ws.runner_dir / "rules.md"
-    content = ""
     exists = rules_file.is_file()
-    if exists:
-        content = rules_file.read_text()
-    else:
-        content = _DEFAULT_TEMPLATE
+    content = rules_file.read_text() if exists else _DEFAULT_TEMPLATE
 
     return {
         "session_id": session_id,

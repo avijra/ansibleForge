@@ -401,14 +401,12 @@ class ComplianceScanner(BaseTool):
 
             passed = True
             reason = ""
-            if check.get("expect_contains"):
-                if check["expect_contains"] not in stdout:
-                    passed = False
-                    reason = f"Expected '{check['expect_contains']}' in output, got: {stdout[:200]}"
-            if check.get("expect_not"):
-                if check["expect_not"] in stdout:
-                    passed = False
-                    reason = f"Found disallowed value '{check['expect_not']}' in output: {stdout[:200]}"
+            if check.get("expect_contains") and check["expect_contains"] not in stdout:
+                passed = False
+                reason = f"Expected '{check['expect_contains']}' in output, got: {stdout[:200]}"
+            if check.get("expect_not") and check["expect_not"] in stdout:
+                passed = False
+                reason = f"Found disallowed value '{check['expect_not']}' in output: {stdout[:200]}"
             if rc != 0 and event.get("event") == "runner_on_failed":
                 passed = False
                 reason = reason or f"Command failed with rc={rc}"

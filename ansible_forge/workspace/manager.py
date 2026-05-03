@@ -36,10 +36,7 @@ class WorkspaceManager:
     ) -> Workspace:
         sid = session_id or uuid.uuid4().hex[:12]
 
-        if project_path:
-            ws_path = Path(project_path).expanduser().resolve()
-        else:
-            ws_path = self._base / sid
+        ws_path = Path(project_path).expanduser().resolve() if project_path else self._base / sid
 
         ws_path.mkdir(parents=True, exist_ok=True)
         (ws_path / "inventory").mkdir(exist_ok=True)

@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ansible_forge.api.middleware.auth import verify_api_key
 from ansible_forge.api.endpoints.health import reset_llm_status_cache
+from ansible_forge.api.middleware.auth import verify_api_key
 from ansible_forge.config import (
     clear_runtime_llm,
     effective_llm_model,

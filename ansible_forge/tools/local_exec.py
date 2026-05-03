@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shlex
 from typing import Any
 
 from ansible_forge.logging import get_logger
@@ -68,7 +67,7 @@ class LocalExec(BaseTool):
         for pattern in _DANGEROUS_PATTERNS:
             if pattern.search(command):
                 return ToolResult.fail(
-                    f"Command blocked by safety filter: matches dangerous pattern."
+                    "Command blocked by safety filter: matches dangerous pattern."
                 )
 
         timeout = min(kwargs.get("timeout", DEFAULT_TIMEOUT), 600)
@@ -91,7 +90,7 @@ class LocalExec(BaseTool):
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 proc.kill()
                 await proc.wait()

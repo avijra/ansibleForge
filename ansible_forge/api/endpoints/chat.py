@@ -92,10 +92,10 @@ async def _run_agent_background(
 ) -> None:
     bus = EventBusRegistry.get_instance().get_or_create(session_id)
     gen = bus_gen
-    _TRANSIENT_EVENTS = frozenset({"thinking_delta", "message_delta", "progress"})
+    transient_events = frozenset({"thinking_delta", "message_delta", "progress"})
     try:
         async for event in orch.handle_message(session_id, message):
-            if event.event_type not in _TRANSIENT_EVENTS:
+            if event.event_type not in transient_events:
                 store.save_event(session_id, event.event_type, event.data)
             bus.publish(event.event_type, event.data)
     except Exception as exc:

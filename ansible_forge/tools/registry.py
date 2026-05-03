@@ -60,9 +60,6 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.compliance_scanner import ComplianceScanner
     from ansible_forge.tools.config_comparator import ConfigComparator
     from ansible_forge.tools.connectivity_tester import ConnectivityTester
-    from ansible_forge.tools.terraform_executor import TerraformExecutor
-    from ansible_forge.tools.terraform_generator import TerraformGenerator
-    from ansible_forge.tools.terraform_inventory import TerraformInventoryBridge
     from ansible_forge.tools.doc_searcher import DocSearcher
     from ansible_forge.tools.drift_detector import DriftDetector
     from ansible_forge.tools.executor import Executor
@@ -84,6 +81,9 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.schedule_manager import ScheduleManager
     from ansible_forge.tools.secret_requester import SecretRequester
     from ansible_forge.tools.template_renderer import TemplateRenderer
+    from ansible_forge.tools.terraform_executor import TerraformExecutor
+    from ansible_forge.tools.terraform_generator import TerraformGenerator
+    from ansible_forge.tools.terraform_inventory import TerraformInventoryBridge
     from ansible_forge.tools.variable_inspector import VariableInspector
     from ansible_forge.tools.vault_manager import VaultManager
     from ansible_forge.tools.verifier import Verifier

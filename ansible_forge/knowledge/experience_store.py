@@ -35,7 +35,7 @@ _STOP_WORDS = frozenset({
     "no", "yes", "ok", "hey", "please", "need", "want", "like",
     "get", "got", "make", "let", "try", "use", "set", "run", "check",
     "look", "see", "now", "here", "there", "right", "don", "doesn",
-    "didn", "won", "can", "tell", "sure", "think", "know",
+    "didn", "won", "tell", "sure", "think", "know",
 })
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -156,10 +157,8 @@ class SessionVault:
 
     def clear(self) -> None:
         self._secrets.clear()
-        try:
+        with contextlib.suppress(OSError):
             self._disk_path().unlink(missing_ok=True)
-        except OSError:
-            pass
 
     def create_pending(self, name: str) -> asyncio.Event:
         evt = asyncio.Event()

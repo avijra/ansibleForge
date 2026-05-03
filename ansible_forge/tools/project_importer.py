@@ -166,9 +166,8 @@ class ProjectImporter(BaseTool):
         }
 
         for f in src.iterdir():
-            if f.suffix in _PLAYBOOK_EXTENSIONS and f.is_file():
-                if self._is_playbook(f):
-                    analysis["playbooks"].append(f.name)
+            if f.suffix in _PLAYBOOK_EXTENSIONS and f.is_file() and self._is_playbook(f):
+                analysis["playbooks"].append(f.name)
 
         roles_dir = src / "roles"
         if roles_dir.exists():

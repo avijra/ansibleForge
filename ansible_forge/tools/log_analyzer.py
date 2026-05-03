@@ -192,7 +192,7 @@ class LogAnalyzer(BaseTool):
                     elif status == "failed":
                         stats["failed"] += 1
 
-        for h, stats in host_stats.items():
+        for _h, stats in host_stats.items():
             stats["success_rate"] = round(
                 (stats["successful"] / stats["total"] * 100) if stats["total"] else 0, 1
             )

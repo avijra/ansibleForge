@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import json
 import os
 import pty
 import signal
 import struct
-import fcntl
 import termios
-from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -91,16 +91,10 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
     finally:
         closed = True
         reader_task.cancel()
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.close(master_fd)
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(ChildProcessError):
             os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
         logger.debug("terminal_closed", session_id=session_id)

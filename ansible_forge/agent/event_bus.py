@@ -8,6 +8,7 @@ Events are also stored in ``SessionStore`` so they survive reconnections.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections import deque
 from typing import Any
@@ -49,10 +50,8 @@ class SessionEventBus:
         }
         self._buffer.append(wrapped)
         for q in self._subscribers:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(wrapped)
-            except asyncio.QueueFull:
-                pass
 
     def mark_running(self) -> int:
         """Mark bus as running. Returns a generation token to pass to mark_done."""
@@ -68,10 +67,8 @@ class SessionEventBus:
         self._running = False
         self._done = True
         for q in self._subscribers:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
 
     def subscribe(self, from_seq: int = 0) -> asyncio.Queue[dict[str, Any] | None]:
         q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=200)
@@ -84,17 +81,13 @@ class SessionEventBus:
                         break
         self._subscribers.append(q)
         if self._done:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
         return q
 
     def unsubscribe(self, q: asyncio.Queue[dict[str, Any] | None]) -> None:
-        try:
+        with contextlib.suppress(ValueError):
             self._subscribers.remove(q)
-        except ValueError:
-            pass
 
     def get_events_since(self, seq: int) -> list[dict[str, Any]]:
         return [e for e in self._buffer if e["seq"] > seq]

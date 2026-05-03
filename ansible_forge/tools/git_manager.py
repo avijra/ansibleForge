@@ -139,17 +139,17 @@ class GitManager(BaseTool):
         branch_rc, branch_out, _ = await self._run_git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
         branch = branch_out.strip() if branch_rc == 0 else "unknown"
 
-        lines = [l for l in out.strip().splitlines() if l.strip()]
-        staged = [l for l in lines if l[0] != " " and l[0] != "?"]
-        unstaged = [l for l in lines if len(l) > 1 and l[1] != " " and l[0] != "?"]
-        untracked = [l for l in lines if l.startswith("??")]
+        lines = [line for line in out.strip().splitlines() if line.strip()]
+        staged = [line for line in lines if line[0] != " " and line[0] != "?"]
+        unstaged = [line for line in lines if len(line) > 1 and line[1] != " " and line[0] != "?"]
+        untracked = [line for line in lines if line.startswith("??")]
 
         return ToolResult.ok(
             output=f"Branch: {branch} | {len(staged)} staged, {len(unstaged)} modified, {len(untracked)} untracked",
             branch=branch,
-            staged=[l[3:] for l in staged],
-            modified=[l[3:] for l in unstaged],
-            untracked=[l[3:] for l in untracked],
+            staged=[line[3:] for line in staged],
+            modified=[line[3:] for line in unstaged],
+            untracked=[line[3:] for line in untracked],
             raw=out[:3000],
         )
 
@@ -187,7 +187,7 @@ class GitManager(BaseTool):
         )
         if rc != 0:
             return ToolResult.fail(f"git log failed: {err}")
-        entries = [l.strip() for l in out.strip().splitlines() if l.strip()]
+        entries = [line.strip() for line in out.strip().splitlines() if line.strip()]
         return ToolResult.ok(
             output=f"Showing {len(entries)} commit(s)",
             commits=entries,
@@ -203,7 +203,7 @@ class GitManager(BaseTool):
         rc, out, err = await self._run_git(cwd, "branch", "-a")
         if rc != 0:
             return ToolResult.fail(f"git branch failed: {err}")
-        branches = [l.strip() for l in out.strip().splitlines() if l.strip()]
+        branches = [line.strip() for line in out.strip().splitlines() if line.strip()]
         return ToolResult.ok(output=f"{len(branches)} branch(es)", branches=branches)
 
     async def _do_checkout(self, cwd: Path, branch_name: str = "", **_: Any) -> ToolResult:
