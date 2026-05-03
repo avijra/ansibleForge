@@ -1,0 +1,544 @@
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # GATE: version consistency (tag pushes only)
+  # ---------------------------------------------------------------------------
+  preflight:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify version consistency
+        id: check
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PYPROJECT_VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          ELECTRON_VERSION=$(jq -r '.version' electron/package.json)
+
+          echo "Tag:       $TAG_VERSION"
+          echo "pyproject: $PYPROJECT_VERSION"
+          echo "electron:  $ELECTRON_VERSION"
+
+          FAIL=0
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "::error::Version mismatch: tag ($TAG_VERSION) != pyproject.toml ($PYPROJECT_VERSION)"
+            FAIL=1
+          fi
+          if [ "$TAG_VERSION" != "$ELECTRON_VERSION" ]; then
+            echo "::error::Version mismatch: tag ($TAG_VERSION) != electron/package.json ($ELECTRON_VERSION)"
+            FAIL=1
+          fi
+          if [ "$FAIL" -eq 1 ]; then
+            echo "::error::Fix version strings before tagging. All three must match."
+            exit 1
+          fi
+
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "All versions match: $TAG_VERSION"
+
+  # ---------------------------------------------------------------------------
+  # STAGE 1: test (always runs; waits for preflight on tag pushes)
+  # ---------------------------------------------------------------------------
+  test:
+    needs: [preflight]
+    if: always() && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install Python dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Backend lint
+        run: ruff check ansible_forge/ tests/
+
+      - name: Backend type check
+        run: mypy ansible_forge/ --ignore-missing-imports
+
+      - name: Backend tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Frontend install
+        working-directory: ui
+        run: npm ci
+
+      - name: Frontend type check
+        working-directory: ui
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        working-directory: ui
+        run: npm test
+
+      - name: Frontend build
+        working-directory: ui
+        run: npm run build
+
+      - name: Electron install
+        working-directory: electron
+        run: npm ci
+
+      - name: Electron type check
+        working-directory: electron
+        run: npx tsc --noEmit
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: build-mac (tag only)
+  # ---------------------------------------------------------------------------
+  build-mac:
+    needs: [test, preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bundle backend with PyInstaller
+        run: pyinstaller --clean --noconfirm ansibleforge.spec
+
+      - name: Copy backend to electron resources
+        run: |
+          rm -rf electron/resources/backend
+          mkdir -p electron/resources/backend
+          cp -R dist/ansibleforge-backend/* electron/resources/backend/
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Build Electron TypeScript
+        working-directory: electron
+        run: npm run build
+
+      - name: Import macOS signing certificate
+        if: env.CSC_LINK != ''
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: echo "Certificate imported via electron-builder env vars"
+
+      - name: Package Electron app
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 || '' }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12_BASE64 != '' && 'true' || 'false' }}
+          APPLE_ID: ${{ secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [ -z "$CSC_LINK" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+          fi
+          npx electron-builder --mac --publish never
+
+      - name: Flatten release artifacts
+        run: |
+          mkdir -p /tmp/release-mac
+          cp electron/release/*.dmg /tmp/release-mac/ 2>/dev/null || true
+          cp electron/release/*.zip /tmp/release-mac/ 2>/dev/null || true
+          ls -lh /tmp/release-mac/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-mac
+          path: /tmp/release-mac/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: build-linux (tag only)
+  # ---------------------------------------------------------------------------
+  build-linux:
+    needs: [test, preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bundle backend with PyInstaller
+        run: pyinstaller --clean --noconfirm ansibleforge.spec
+
+      - name: Copy backend to electron resources
+        run: |
+          rm -rf electron/resources/backend
+          mkdir -p electron/resources/backend
+          cp -R dist/ansibleforge-backend/* electron/resources/backend/
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Build Electron TypeScript
+        working-directory: electron
+        run: npm run build
+
+      - name: Package Electron app
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --publish never
+
+      - name: Flatten release artifacts
+        run: |
+          mkdir -p /tmp/release-linux
+          cp electron/release/*.AppImage /tmp/release-linux/ 2>/dev/null || true
+          cp electron/release/*.deb /tmp/release-linux/ 2>/dev/null || true
+          ls -lh /tmp/release-linux/
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: /tmp/release-linux/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # STAGE 3: verify artifacts (tag only)
+  # ---------------------------------------------------------------------------
+  verify:
+    needs: [build-mac, build-linux, preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-mac
+          path: mac-artifacts
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: linux-artifacts
+
+      - name: Verify macOS artifacts
+        env:
+          EXPECTED_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "=== macOS Artifact Verification ==="
+
+          echo "--- Checking DMG ---"
+          DMG=$(find mac-artifacts -name '*.dmg' -type f | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::No DMG file found"
+            exit 1
+          fi
+          DMG_SIZE=$(stat -f%z "$DMG")
+          echo "DMG: $DMG ($DMG_SIZE bytes)"
+          if [ "$DMG_SIZE" -lt 104857600 ]; then
+            echo "::error::DMG is suspiciously small (${DMG_SIZE} bytes < 100MB). Build is likely broken."
+            exit 1
+          fi
+          echo "DMG size check passed"
+
+          echo "--- Checking ZIP ---"
+          ZIP=$(find mac-artifacts -name '*.zip' -type f | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::No ZIP file found"
+            exit 1
+          fi
+          echo "ZIP: $ZIP"
+
+          echo "--- Extracting .app from ZIP ---"
+          EXTRACT_DIR=$(mktemp -d)
+          unzip -q "$ZIP" -d "$EXTRACT_DIR"
+          APP_DIR=$(find "$EXTRACT_DIR" -name '*.app' -maxdepth 1 -type d | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::No .app bundle found inside ZIP"
+            exit 1
+          fi
+          echo "App bundle: $APP_DIR"
+
+          echo "--- Checking icon ---"
+          ICON="$APP_DIR/Contents/Resources/icon.icns"
+          if [ ! -f "$ICON" ]; then
+            echo "::error::icon.icns not found in Contents/Resources/"
+            exit 1
+          fi
+          ICON_SIZE=$(stat -f%z "$ICON")
+          if [ "$ICON_SIZE" -lt 51200 ]; then
+            echo "::error::icon.icns is suspiciously small (${ICON_SIZE} bytes < 50KB). Likely a placeholder."
+            exit 1
+          fi
+          echo "icon.icns exists and is $ICON_SIZE bytes"
+
+          echo "--- Checking Info.plist ---"
+          PLIST="$APP_DIR/Contents/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            echo "::error::Info.plist not found"
+            exit 1
+          fi
+
+          BUNDLE_ICON=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST")
+          if [ "$BUNDLE_ICON" != "icon.icns" ]; then
+            echo "::error::CFBundleIconFile is '$BUNDLE_ICON', expected 'icon.icns'"
+            exit 1
+          fi
+          echo "CFBundleIconFile = $BUNDLE_ICON"
+
+          BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+          if [ "$BUNDLE_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::CFBundleShortVersionString is '$BUNDLE_VERSION', expected '$EXPECTED_VERSION'"
+            exit 1
+          fi
+          echo "CFBundleShortVersionString = $BUNDLE_VERSION"
+
+          BUNDLE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$PLIST")
+          if [ "$BUNDLE_NAME" != "Tuyere" ]; then
+            echo "::error::Bundle display name is '$BUNDLE_NAME', expected 'Tuyere'"
+            exit 1
+          fi
+          echo "Bundle name = $BUNDLE_NAME"
+
+          echo "--- Checking backend binary ---"
+          BACKEND="$APP_DIR/Contents/Resources/backend/ansibleforge-backend"
+          if [ ! -f "$BACKEND" ]; then
+            echo "::error::Backend binary not found at Contents/Resources/backend/ansibleforge-backend"
+            exit 1
+          fi
+          echo "Backend binary exists"
+
+          echo "--- Checking UI dist ---"
+          UI_INDEX="$APP_DIR/Contents/Resources/backend/ui/dist/index.html"
+          if [ ! -f "$UI_INDEX" ]; then
+            echo "::error::UI dist not found at Contents/Resources/backend/ui/dist/index.html"
+            exit 1
+          fi
+          echo "UI dist/index.html exists"
+
+          echo "=== macOS verification PASSED ==="
+
+      - name: Verify Linux artifacts
+        run: |
+          set -euo pipefail
+          echo "=== Linux Artifact Verification ==="
+
+          echo "--- Checking AppImage ---"
+          APPIMAGE=$(find linux-artifacts -name '*.AppImage' -type f | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::No AppImage file found"
+            exit 1
+          fi
+          APPIMAGE_SIZE=$(stat -f%z "$APPIMAGE" 2>/dev/null || stat -c%s "$APPIMAGE")
+          echo "AppImage: $APPIMAGE ($APPIMAGE_SIZE bytes)"
+          if [ "$APPIMAGE_SIZE" -lt 104857600 ]; then
+            echo "::error::AppImage is suspiciously small (${APPIMAGE_SIZE} bytes < 100MB). Build is likely broken."
+            exit 1
+          fi
+          echo "AppImage size check passed"
+
+          echo "--- Checking deb ---"
+          DEB=$(find linux-artifacts -name '*.deb' -type f | head -1)
+          if [ -z "$DEB" ]; then
+            echo "::error::No .deb file found"
+            exit 1
+          fi
+          DEB_SIZE=$(stat -f%z "$DEB" 2>/dev/null || stat -c%s "$DEB")
+          echo "deb: $DEB ($DEB_SIZE bytes)"
+          if [ "$DEB_SIZE" -lt 52428800 ]; then
+            echo "::error::deb is suspiciously small (${DEB_SIZE} bytes < 50MB). Build is likely broken."
+            exit 1
+          fi
+          echo "deb size check passed"
+
+          echo "=== Linux verification PASSED ==="
+
+  # ---------------------------------------------------------------------------
+  # STAGE 4: publish GitHub Release (tag only)
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [verify, preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-mac
+          path: artifacts
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: artifacts
+
+      - name: List all artifacts
+        run: find artifacts -type f | sort
+
+      - name: Generate checksums and release body
+        id: release_body
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cd artifacts
+
+          echo "=== Generating SHA256 checksums ==="
+          sha256sum * > SHA256SUMS.txt 2>/dev/null || shasum -a 256 * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+          echo "=== Building release body ==="
+
+          {
+            echo "## Downloads"
+            echo ""
+            echo "| Platform | File | Size |"
+            echo "|----------|------|------|"
+
+            for f in *.dmg; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| macOS (Apple Silicon) | \`$f\` | $SIZE |"
+            done
+
+            for f in *.zip; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| macOS (Apple Silicon) | \`$f\` | $SIZE |"
+            done
+
+            for f in *.AppImage; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| Linux (AppImage) | \`$f\` | $SIZE |"
+            done
+
+            for f in *.deb; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| Linux (Debian) | \`$f\` | $SIZE |"
+            done
+
+            echo ""
+            echo "## Install"
+            echo ""
+            echo "### macOS (Apple Silicon)"
+            echo "Download the \`.dmg\`, open it, drag **Tuyere** to Applications, then run:"
+            echo "\`\`\`"
+            echo "xattr -cr /Applications/Tuyere.app"
+            echo "\`\`\`"
+            echo ""
+            echo "### Linux"
+            echo "**AppImage:**"
+            echo "\`\`\`"
+            echo "chmod +x Tuyere-*.AppImage"
+            echo "./Tuyere-*.AppImage"
+            echo "\`\`\`"
+            echo "**Debian/Ubuntu:**"
+            echo "\`\`\`"
+            echo "sudo dpkg -i tuyere_*.deb"
+            echo "\`\`\`"
+            echo ""
+            echo "## Checksums (SHA256)"
+            echo "\`\`\`"
+            cat SHA256SUMS.txt
+            echo "\`\`\`"
+            echo ""
+            echo "## What Changed"
+          } > /tmp/release_body.md
+
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v${VERSION}" ]; then
+            echo "Changelog since $PREV_TAG:" >> /tmp/release_body.md
+            echo "" >> /tmp/release_body.md
+            git log --oneline "${PREV_TAG}..HEAD" >> /tmp/release_body.md
+          else
+            echo "Initial release." >> /tmp/release_body.md
+          fi
+
+          cat /tmp/release_body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Tuyere v${{ needs.preflight.outputs.version }}"
+          body_path: /tmp/release_body.md
+          draft: false
+          files: |
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
