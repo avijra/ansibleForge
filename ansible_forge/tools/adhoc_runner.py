@@ -24,6 +24,7 @@ _MAX_ADHOC_TIMEOUT = 7200
 
 
 def _kill_runner(runner: Any) -> None:
+    """Terminate ansible-runner's subprocess tree on timeout."""
     import contextlib
 
     with contextlib.suppress(Exception):
