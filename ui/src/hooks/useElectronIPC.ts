@@ -7,14 +7,16 @@ export interface UpdateStatus {
   message?: string;
 }
 
+type CleanupFn = () => void;
+
 interface ElectronAPI {
-  onOpenSettings: (callback: () => void) => void;
-  onToggleCommandPalette: (callback: () => void) => void;
-  onToggleSidebar: (callback: () => void) => void;
-  onToggleTerminal: (callback: () => void) => void;
+  onOpenSettings: (callback: () => void) => CleanupFn;
+  onToggleCommandPalette: (callback: () => void) => CleanupFn;
+  onToggleSidebar: (callback: () => void) => CleanupFn;
+  onToggleTerminal: (callback: () => void) => CleanupFn;
   onUpdateStatus: (
     callback: (data: { status: string; version?: string; percent?: number; message?: string }) => void,
-  ) => void;
+  ) => CleanupFn;
   selectProjectDirectory: () => Promise<string | null>;
   platform: string;
 }
@@ -37,10 +39,13 @@ export function useElectronIPC(handlers: UseElectronIPCHandlers) {
     const api = window.electronAPI;
     if (!api) return;
 
-    api.onOpenSettings(handlers.onOpenSettings);
-    api.onToggleCommandPalette(handlers.onToggleCommandPalette);
-    api.onToggleSidebar(handlers.onToggleSidebar);
-    api.onToggleTerminal(handlers.onToggleTerminal);
+    const cleanups = [
+      api.onOpenSettings(handlers.onOpenSettings),
+      api.onToggleCommandPalette(handlers.onToggleCommandPalette),
+      api.onToggleSidebar(handlers.onToggleSidebar),
+      api.onToggleTerminal(handlers.onToggleTerminal),
+    ];
+    return () => cleanups.forEach((fn) => fn());
   }, [handlers.onOpenSettings, handlers.onToggleCommandPalette, handlers.onToggleSidebar, handlers.onToggleTerminal]);
 }
 
@@ -62,7 +67,8 @@ export function useUpdateStatus(): UpdateStatus {
   useEffect(() => {
     const api = window.electronAPI;
     if (!api?.onUpdateStatus) return;
-    api.onUpdateStatus(handler);
+    const cleanup = api.onUpdateStatus(handler);
+    return cleanup;
   }, [handler]);
 
   return status;

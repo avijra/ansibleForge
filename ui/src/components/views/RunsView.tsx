@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { GitBranch, RefreshCw, CheckCircle2, XCircle, Play, Eye } from "lucide-react";
+import { GitBranch, RefreshCw, CheckCircle2, XCircle, Play } from "lucide-react";
 import { request } from "@/api/client";
 import { cn } from "@/lib/utils";
 
@@ -41,14 +41,16 @@ function timeAgo(ts: number): string {
 export function RunsView() {
   const [runs, setRuns] = useState<RunData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const data = await request<RunData[]>("/infrastructure/runs?limit=100");
       setRuns(data);
-    } catch {
-      // API may not be available
+    } catch (err) {
+      setFetchError(err instanceof Error ? err.message : "Failed to load runs");
     } finally {
       setLoading(false);
     }
@@ -75,7 +77,19 @@ export function RunsView() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {runs.length === 0 && !loading ? (
+        {fetchError && !loading ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-8">
+            <XCircle className="h-10 w-10 text-red-800 mb-3" />
+            <p className="text-sm text-red-400">Failed to load runs</p>
+            <p className="text-xs text-zinc-600 mt-1">{fetchError}</p>
+            <button
+              onClick={refresh}
+              className="mt-3 text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2"
+            >
+              Retry
+            </button>
+          </div>
+        ) : runs.length === 0 && !loading ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">
             <GitBranch className="h-10 w-10 text-zinc-800 mb-3" />
             <p className="text-sm text-zinc-500">No runs recorded yet</p>
@@ -111,7 +125,6 @@ export function RunsView() {
                       <span>{timeAgo(run.started_at)}</span>
                     </div>
                   </div>
-                  <Eye className="h-3.5 w-3.5 text-zinc-700" />
                 </div>
               </div>
             ))}

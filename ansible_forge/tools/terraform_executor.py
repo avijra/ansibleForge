@@ -17,7 +17,7 @@ from ansible_forge.tools.binary_resolver import resolve_terraform_or_download_as
 
 logger = get_logger(__name__)
 
-_MAX_TF_TIMEOUT = 7200
+_MAX_TF_TIMEOUT = 86400
 
 _DEFAULT_TF_TIMEOUTS: dict[str, int] = {
     "init": 120,
@@ -114,10 +114,10 @@ class TerraformExecutor(BaseTool):
                     "description": (
                         "Max seconds to wait. Defaults: init/validate/fmt=120, plan=600, "
                         "apply/destroy=1800, import=120. Set higher for large infrastructure "
-                        "(e.g. EKS/RDS creation can take 30+ min). Max: 7200 (2 hours)."
+                        "(e.g. EKS/RDS creation can take 30+ min). Max: 86400 (24 hours)."
                     ),
                     "minimum": 60,
-                    "maximum": 7200,
+                    "maximum": 86400,
                 },
             },
             "required": ["workspace_path", "action"],
@@ -451,7 +451,7 @@ class TerraformExecutor(BaseTool):
                         },
                     }
             except json.JSONDecodeError:
-                pass
+                logger.debug("tf_state_json_decode_failed", exc_info=True)
 
         return ToolResult.ok(
             output=f"Infrastructure state: {len(resources)} resource(s) currently managed.",

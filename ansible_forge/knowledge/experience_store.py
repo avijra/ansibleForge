@@ -515,7 +515,7 @@ def extract_modules_from_workspace(workspace: Workspace | None) -> set[str]:
             content = yml_file.read_text(encoding="utf-8")
             modules.update(_MODULE_PATTERN.findall(content))
         except OSError:
-            pass
+            logger.debug("yml_read_failed", file=str(yml_file), exc_info=True)
     return modules
 
 

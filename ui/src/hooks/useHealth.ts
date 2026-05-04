@@ -13,6 +13,7 @@ export function useHealth(intervalMs = 30_000) {
       setHealth(res);
       setError(null);
     } catch (err) {
+      setHealth(null);
       setError(err instanceof Error ? err.message : "Health check failed");
     }
   }, []);

@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import { streamChat, reconnectStream, lastSeq, api } from "@/api/client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { streamChat, reconnectStream, getLastSeq, clearLastSeq, api } from "@/api/client";
 import type { AgentEvent, Session, WorkspaceFile } from "@/api/types";
 
 interface UseChatOptions {
@@ -21,7 +21,7 @@ interface PerSessionState {
 
 const sessionStates = new Map<string, PerSessionState>();
 
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_ATTEMPTS = 15;
 const BASE_BACKOFF_MS = 1_000;
 
 function getSessionState(id: string): PerSessionState {
@@ -75,8 +75,10 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
           markStreaming(sessionId, false);
           break;
         case "approval_granted":
-        case "approval_rejected":
           opts.updateStatus(sessionId, "active");
+          markStreaming(sessionId, true);
+          break;
+        case "approval_rejected":
           markStreaming(sessionId, true);
           break;
         case "step_start":
@@ -96,7 +98,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
   );
 
   const finishSession = useCallback(
-    async (sessionId: string, ss: PerSessionState, returnedSessionId: string) => {
+    async (sessionId: string, ss: PerSessionState, returnedSessionId: string, backendStatus?: string) => {
       ss.serverSid = returnedSessionId;
       ss.reconnectAttempts = 0;
       opts.updateSessionId(sessionId, returnedSessionId);
@@ -105,10 +107,16 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       newSs.serverSid = returnedSessionId;
       newSs.controller = ss.controller;
 
+      if (sessionId !== returnedSessionId) {
+        sessionStates.delete(sessionId);
+        clearLastSeq(sessionId);
+      }
+
+      const resolvedStatus = (backendStatus || "completed") as Session["status"];
       markStreaming(sessionId, false);
       markStreaming(returnedSessionId, false);
-      opts.updateStatus(sessionId, "completed");
-      opts.updateStatus(returnedSessionId, "completed");
+      opts.updateStatus(sessionId, resolvedStatus);
+      opts.updateStatus(returnedSessionId, resolvedStatus);
 
       try {
         const pb = await api.playbooks(returnedSessionId);
@@ -150,9 +158,11 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
       ss.reconnectTimer = setTimeout(async () => {
         let sessionDone = false;
+        let lastKnownStatus = "completed";
         try {
-          const status = await api.sessionStatus(sid);
-          sessionDone = status.status === "completed" || status.status === "error";
+          const statusResp = await api.sessionStatus(sid);
+          lastKnownStatus = statusResp.status;
+          sessionDone = ["completed", "error", "max_steps_reached", "rejected"].includes(lastKnownStatus);
         } catch {
           markStreaming(sessionId, false);
           opts.updateStatus(sessionId, "error");
@@ -164,15 +174,18 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
         const controller = reconnectStream(
           sid,
-          lastSeq,
-          (event) => handleEvent(sessionId, ss, event),
-          async () => {
+          getLastSeq(sid),
+          (event) => {
             ss.reconnectAttempts = 0;
-            await finishSession(sessionId, ss, sid);
+            handleEvent(sessionId, ss, event);
+          },
+          async (doneStatus) => {
+            ss.reconnectAttempts = 0;
+            await finishSession(sessionId, ss, sid, doneStatus);
           },
           () => {
             if (sessionDone) {
-              finishSession(sessionId, ss, sid);
+              finishSession(sessionId, ss, sid, lastKnownStatus);
             } else {
               tryReconnect(sessionId);
             }
@@ -188,6 +201,13 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
     (message: string, sessionId: string, projectPath?: string) => {
       const ss = getSessionState(sessionId);
       if (ss.streaming) return;
+
+      ss.controller?.abort();
+      if (ss.reconnectTimer) {
+        clearTimeout(ss.reconnectTimer);
+        ss.reconnectTimer = null;
+      }
+
       markStreaming(sessionId, true);
       opts.updateStatus(sessionId, "active");
       ss.reconnectAttempts = 0;
@@ -213,7 +233,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
           opts.updateStatus(sessionId, "error");
           markStreaming(sessionId, false);
         },
-        async (returnedSessionId) => finishSession(sessionId, ss, returnedSessionId),
+        async (returnedSessionId, doneStatus) => finishSession(sessionId, ss, returnedSessionId, doneStatus),
         () => tryReconnect(sessionId),
         projectPath,
       );
@@ -261,16 +281,42 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
           data: { error: `Rejection failed: ${msg}` },
           timestamp: Date.now(),
         });
+        opts.updateStatus(sessionId, "error");
+        markStreaming(sessionId, false);
       }
     },
-    [opts]
+    [opts, markStreaming]
   );
 
   const cancel = useCallback(() => {
     const ss = getSessionState(activeId);
     ss.controller?.abort();
+    if (ss.reconnectTimer) {
+      clearTimeout(ss.reconnectTimer);
+      ss.reconnectTimer = null;
+    }
     markStreaming(activeId, false);
   }, [activeId, markStreaming]);
 
-  return { send, approve, reject, cancel, isStreaming };
+  const cleanupSession = useCallback((sessionId: string) => {
+    const ss = sessionStates.get(sessionId);
+    if (ss) {
+      ss.controller?.abort();
+      if (ss.reconnectTimer) clearTimeout(ss.reconnectTimer);
+      sessionStates.delete(sessionId);
+    }
+    clearLastSeq(sessionId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const [, ss] of sessionStates) {
+        ss.controller?.abort();
+        ss.streaming = false;
+        if (ss.reconnectTimer) clearTimeout(ss.reconnectTimer);
+      }
+    };
+  }, []);
+
+  return { send, approve, reject, cancel, cleanupSession, isStreaming };
 }

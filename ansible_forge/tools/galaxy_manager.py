@@ -111,7 +111,7 @@ class GalaxyManager(BaseTool):
                                 "version": info.get("version", "unknown"),
                             })
             except (json.JSONDecodeError, AttributeError):
-                pass
+                logger.debug("galaxy_list_parse_failed", exc_info=True)
 
         return ToolResult.ok(
             output=f"Found {len(results)} installed package(s) matching '{query}'.",
@@ -284,7 +284,7 @@ class GalaxyManager(BaseTool):
                 proc.kill()
                 await proc.wait()
             except Exception:
-                pass
+                logger.debug("galaxy_timeout_kill_failed", exc_info=True)
             return (1, "", f"ansible-galaxy timed out after {timeout}s")
         return (
             proc.returncode or 0,

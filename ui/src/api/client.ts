@@ -179,13 +179,25 @@ export const api = {
 
 let eventCounter = 0;
 
-export let lastSeq = 0;
+const sessionLastSeq = new Map<string, number>();
+
+export function getLastSeq(sessionId: string): number {
+  return sessionLastSeq.get(sessionId) ?? 0;
+}
+
+function setLastSeq(sessionId: string, seq: number): void {
+  sessionLastSeq.set(sessionId, seq);
+}
+
+export function clearLastSeq(sessionId: string): void {
+  sessionLastSeq.delete(sessionId);
+}
 
 export function reconnectStream(
   sessionId: string,
   fromSeq: number,
   onEvent: (event: AgentEvent) => void,
-  onDone: () => void,
+  onDone: (status: string) => void,
   onDropped: () => void,
 ): AbortController {
   const controller = new AbortController();
@@ -206,6 +218,7 @@ export function reconnectStream(
       let buffer = "";
       let currentEvent: AgentEventType | null = null;
       let receivedDone = false;
+      let doneStatus = "completed";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -217,7 +230,7 @@ export function reconnectStream(
         for (const line of lines) {
           if (line.startsWith("id: ")) {
             const seq = parseInt(line.slice(4).trim(), 10);
-            if (!isNaN(seq)) lastSeq = seq;
+            if (!isNaN(seq)) setLastSeq(sessionId, seq);
           } else if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim() as AgentEventType;
           } else if (line.startsWith("data: ") && currentEvent) {
@@ -225,7 +238,8 @@ export function reconnectStream(
               const data = JSON.parse(line.slice(6));
               if (currentEvent === "done") {
                 receivedDone = true;
-                onDone();
+                doneStatus = (data.status as string) || "completed";
+                onDone(doneStatus);
               } else {
                 onEvent({
                   id: `evt-${++eventCounter}`,
@@ -239,7 +253,7 @@ export function reconnectStream(
           }
         }
       }
-      if (!receivedDone) onDropped(); else onDone();
+      if (!receivedDone) onDropped();
     })
     .catch((err) => {
       if (err.name !== "AbortError") onDropped();
@@ -253,13 +267,13 @@ export function streamChat(
   sessionId: string | null,
   onEvent: (event: AgentEvent) => void,
   onError: (error: Error) => void,
-  onDone: (sessionId: string) => void,
+  onDone: (sessionId: string, status: string) => void,
   onDropped: (sessionId: string) => void,
   projectPath?: string,
 ): AbortController {
   const controller = new AbortController();
 
-  lastSeq = 0;
+  if (sessionId) clearLastSeq(sessionId);
 
   fetch(`${BASE}/chat`, {
     method: "POST",
@@ -300,6 +314,7 @@ export function streamChat(
 
       let receivedDone = false;
       let lastSessionId: string | null = sessionId;
+      let doneStatus = "completed";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -312,7 +327,7 @@ export function streamChat(
         for (const line of lines) {
           if (line.startsWith("id: ")) {
             const seq = parseInt(line.slice(4).trim(), 10);
-            if (!isNaN(seq)) lastSeq = seq;
+            if (!isNaN(seq) && lastSessionId) setLastSeq(lastSessionId, seq);
           } else if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim() as AgentEventType;
           } else if (line.startsWith("data: ") && currentEvent) {
@@ -325,7 +340,8 @@ export function streamChat(
 
               if (currentEvent === "done") {
                 receivedDone = true;
-                onDone(data.session_id);
+                doneStatus = (data.status as string) || "completed";
+                onDone(data.session_id, doneStatus);
               } else {
                 onEvent({
                   id: `evt-${++eventCounter}`,
@@ -344,8 +360,12 @@ export function streamChat(
         }
       }
 
-      if (!receivedDone && lastSessionId) {
-        onDropped(lastSessionId);
+      if (!receivedDone) {
+        if (lastSessionId) {
+          onDropped(lastSessionId);
+        } else {
+          onError(new Error("Connection lost before session was established. Please try again."));
+        }
       }
     })
     .catch((err) => {

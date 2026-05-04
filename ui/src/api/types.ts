@@ -142,7 +142,7 @@ export interface SessionListItem {
 
 export interface Session {
   id: string;
-  status: "active" | "completed" | "awaiting_approval" | "awaiting_secret" | "rejected" | "error";
+  status: "active" | "completed" | "error" | "awaiting_approval" | "awaiting_secret" | "rejected" | "max_steps_reached";
   events: AgentEvent[];
   playbooks: Record<string, string>;
   inventory: Record<string, string>;

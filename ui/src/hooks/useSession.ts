@@ -79,6 +79,7 @@ export function useSession() {
 
   const deleteSession = useCallback(
     (sessionId: string) => {
+      api.sessions.delete(sessionId).catch(() => {});
       setSessions((prev) => {
         const filtered = prev.filter((s) => s.id !== sessionId);
         if (sessionId === activeId) {
@@ -91,7 +92,12 @@ export function useSession() {
   );
 
   const clearAllSessions = useCallback(() => {
-    setSessions([]);
+    setSessions((prev) => {
+      for (const s of prev) {
+        api.sessions.delete(s.id).catch(() => {});
+      }
+      return [];
+    });
     setActiveId(null);
   }, []);
 

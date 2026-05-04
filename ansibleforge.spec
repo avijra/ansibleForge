@@ -40,6 +40,7 @@ hidden_imports = [
     "ansible_forge.api.middleware.auth",
     "ansible_forge.api.middleware.logging",
     "ansible_forge.agent.orchestrator",
+    "ansible_forge.agent.types",
     "ansible_forge.agent.llm_client",
     "ansible_forge.agent.memory",
     "ansible_forge.agent.planner",

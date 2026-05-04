@@ -35,7 +35,7 @@ def _extract_hosts_from_workspace(workspace: Workspace | None) -> set[str]:
             data = json.loads(facts_file.read_text(encoding="utf-8"))
             hosts.update(data.keys())
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.debug("host_facts_read_failed", exc_info=True)
 
     inv_dir = workspace.inventory_dir
     if inv_dir.is_dir():
@@ -46,7 +46,7 @@ def _extract_hosts_from_workspace(workspace: Workspace | None) -> set[str]:
                 content = inv_file.read_text(encoding="utf-8")
                 hosts.update(_HOST_PATTERN.findall(content))
             except OSError:
-                pass
+                logger.debug("inventory_read_failed", file=str(inv_file), exc_info=True)
 
     hosts.discard("0.0.0.0")
     return hosts
@@ -67,7 +67,7 @@ def _extract_modules_from_workspace(workspace: Workspace | None) -> set[str]:
             content = yml_file.read_text(encoding="utf-8")
             modules.update(_MODULE_PATTERN.findall(content))
         except OSError:
-            pass
+            logger.debug("module_extract_read_failed", file=str(yml_file), exc_info=True)
 
     return modules
 

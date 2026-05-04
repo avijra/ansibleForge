@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff, Circle, XCircle as XC, MinusCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff, Circle, XCircle as XC, MinusCircle } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { DiffReview } from "@/components/review/DiffReview";
@@ -26,7 +26,7 @@ function groupEventsIntoSteps(events: AgentEvent[]): (AgentEvent | StepGroup)[] 
 
   const TOP_LEVEL = new Set([
     "user_message", "message", "plan", "max_steps",
-    "secret_request", "approval_required",
+    "secret_request", "approval_required", "error_recovery",
   ]);
 
   const STEP_EVENTS = new Set([
@@ -468,6 +468,19 @@ export function ActivityFeed({
       case "max_steps":
         if (lastMessageId) hasItemsAfterLastMessage = true;
         renderItems.push(<ErrorEvent key={event.id} event={event} />);
+        break;
+      case "error_recovery":
+        if (lastMessageId) hasItemsAfterLastMessage = true;
+        renderItems.push(
+          <div key={event.id} className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 font-mono">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
+              <span className="text-[10px] text-amber-400 truncate">
+                {(event.data.error as string) || "An internal error occurred — the agent is recovering."}
+              </span>
+            </div>
+          </div>
+        );
         break;
       default:
         break;

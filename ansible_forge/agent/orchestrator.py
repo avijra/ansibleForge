@@ -12,6 +12,7 @@ from typing import Any
 from ansible_forge.agent.llm_client import LLMClient, LLMResponse, ToolCall, _repair_json
 from ansible_forge.agent.memory import Memory
 from ansible_forge.agent.planner import build_context
+from ansible_forge.agent.types import SessionStatus
 from ansible_forge.agent.prompts.system import SYSTEM_PROMPT
 from ansible_forge.agent.prompts.templates import ERROR_RECOVERY_PROMPT
 from ansible_forge.config import Settings, get_settings
@@ -141,7 +142,7 @@ class SessionState:
         self.workspace = workspace
         self.memory = Memory()
         self.step_count = 0
-        self.status: str = "active"
+        self.status: SessionStatus = SessionStatus.ACTIVE
         self.last_error: str | None = None
         self._recent_tool_calls: list[str] = []
         self._progress_warned = False
@@ -411,15 +412,15 @@ class Orchestrator:
         state._generation += 1
         state.cancel_active_work()
 
-        if state.status == "awaiting_secret":
+        if state.status == SessionStatus.AWAITING_SECRET:
             session_vault = self._secret_vault.for_session(session_id)
             session_vault.cancel_all_pending()
             logger.info("secret_wait_cancelled", session_id=session_id)
 
-        if state.status == "awaiting_approval":
+        if state.status == SessionStatus.AWAITING_APPROVAL:
             self._approval_gate.cleanup(session_id)
 
-        state.status = "active"
+        state.status = SessionStatus.ACTIVE
         await asyncio.sleep(0)
 
         context = build_context(state.workspace)
@@ -468,149 +469,129 @@ class Orchestrator:
         progress_check_interval = max(max_steps // 3, 15)
         llm_timeout = 120
         my_generation = state._generation
+        yielded_terminal = False
 
-        while state.step_count < max_steps:
+        try:
+          while state.step_count < max_steps:
             if state._generation != my_generation:
                 logger.info("react_loop_superseded", session_id=state.session_id)
                 return
-            state.step_count += 1
-            logger.info(
-                "react_step",
-                session_id=state.session_id,
-                step=state.step_count,
-            )
-
-            yield AgentEvent("step_start", {"step": state.step_count})
-
-            # ── Progress checkpoint (fires every N steps) ────────────
-            if (
-                state.step_count > 1
-                and state.step_count % progress_check_interval == 0
-            ):
-                state.memory.add_user(
-                    PROGRESS_CHECK_PROMPT.format(step_count=state.step_count)
-                )
-                logger.info(
-                    "progress_check",
-                    session_id=state.session_id,
-                    step=state.step_count,
-                )
-
-            # ── Validate message integrity before every LLM call ─────────
-            repairs = state.memory.ensure_integrity()
-            if repairs:
-                logger.warning(
-                    "message_integrity_repaired",
-                    session_id=state.session_id,
-                    repairs=repairs,
-                    step=state.step_count,
-                )
-
-            # ── Loop detection: hard stop after 6 loop-break attempts ──
-            if state._loop_break_count >= 6:
-                logger.warning(
-                    "force_stop_after_loops",
-                    session_id=state.session_id,
-                    step=state.step_count,
-                )
-                fs_response = None
-                try:
-                    fs_response = await asyncio.wait_for(
-                        self._llm.complete(messages=state.memory.messages, tools=None),
-                        timeout=llm_timeout,
-                    )
-                    content = fs_response.content or "Task ended — the agent was unable to converge."
-                    usage = fs_response.usage
-                except TimeoutError:
-                    content = "Task ended — the LLM timed out while generating a final response."
-                    usage = {}
-                state.memory.add_assistant(
-                    content=content,
-                    reasoning_content=fs_response.reasoning_content if fs_response else None,
-                    raw_message=fs_response.raw_message if fs_response else None,
-                )
-                state.status = "completed"
-                self._score_used_experiences(state, success=False)
-                yield AgentEvent("message", {"content": content, "usage": usage})
-                return
-
-            logger.info(
-                "llm_call_start",
-                session_id=state.session_id,
-                step=state.step_count,
-                message_count=state.memory.message_count,
-            )
-
-            response: LLMResponse | None = None
-            streamed = False
             try:
-                llm_progress_tick = 0
-                stream_iter = self._stream_llm_call(
-                    state, self._registry.to_openai_tools()
-                ).__aiter__()
-                get_next: asyncio.Future[AgentEvent | LLMResponse] | None = None
-
-                async with asyncio.timeout(llm_timeout):
-                    while True:
-                        if get_next is None:
-                            get_next = asyncio.ensure_future(stream_iter.__anext__())
-                        done, _ = await asyncio.wait(
-                            {get_next}, timeout=_PROGRESS_INTERVAL
-                        )
-                        if not done:
-                            llm_progress_tick += 1
-                            hint = _LLM_THINKING_MESSAGES[
-                                min(llm_progress_tick - 1, len(_LLM_THINKING_MESSAGES) - 1)
-                            ]
-                            yield AgentEvent("progress", {
-                                "tool": "thinking",
-                                "elapsed_seconds": llm_progress_tick * _PROGRESS_INTERVAL,
-                                "message": hint,
-                            })
-                            continue
-
-                        try:
-                            item = get_next.result()
-                        except StopAsyncIteration:
-                            break
-                        finally:
-                            get_next = None
-
-                        if isinstance(item, LLMResponse):
-                            response = item
-                        else:
-                            yield item
-                streamed = True
-            except TimeoutError:
-                logger.error(
-                    "llm_timeout",
+                state.step_count += 1
+                logger.info(
+                    "react_step",
                     session_id=state.session_id,
                     step=state.step_count,
                 )
-                state.memory.add_user(
-                    "The LLM call timed out. Simplify your approach — "
-                    "stop calling tools and present what you have so far."
-                )
-                yield AgentEvent("error_recovery", {
-                    "tool": "llm",
-                    "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
-                })
-                continue
-            except Exception as stream_exc:
-                logger.warning(
-                    "stream_fallback",
-                    session_id=state.session_id,
-                    error=str(stream_exc),
-                )
-                try:
-                    response = await asyncio.wait_for(
-                        self._llm.complete(
-                            messages=state.memory.messages,
-                            tools=self._registry.to_openai_tools(),
-                        ),
-                        timeout=llm_timeout,
+
+                yield AgentEvent("step_start", {"step": state.step_count})
+
+                # ── Progress checkpoint (fires every N steps) ────────────
+                if (
+                    state.step_count > 1
+                    and state.step_count % progress_check_interval == 0
+                ):
+                    state.memory.add_user(
+                        PROGRESS_CHECK_PROMPT.format(step_count=state.step_count)
                     )
+                    logger.info(
+                        "progress_check",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                    )
+
+                # ── Validate message integrity before every LLM call ─────────
+                repairs = state.memory.ensure_integrity()
+                if repairs:
+                    logger.warning(
+                        "message_integrity_repaired",
+                        session_id=state.session_id,
+                        repairs=repairs,
+                        step=state.step_count,
+                    )
+
+                # ── Loop detection: hard stop after 6 loop-break attempts ──
+                if state._loop_break_count >= 6:
+                    logger.warning(
+                        "force_stop_after_loops",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                    )
+                    fs_response = None
+                    try:
+                        fs_response = await asyncio.wait_for(
+                            self._llm.complete(messages=state.memory.messages, tools=None),
+                            timeout=llm_timeout,
+                        )
+                        content = fs_response.content or "Task ended — the agent was unable to converge."
+                        usage = fs_response.usage
+                    except TimeoutError:
+                        content = "Task ended — the LLM timed out while generating a final response."
+                        usage = {}
+                    state.memory.add_assistant(
+                        content=content,
+                        reasoning_content=fs_response.reasoning_content if fs_response else None,
+                        raw_message=fs_response.raw_message if fs_response else None,
+                    )
+                    state.status = SessionStatus.COMPLETED
+                    self._score_used_experiences(state, success=False)
+                    yielded_terminal = True
+                    yield AgentEvent("message", {"content": content, "usage": usage})
+                    return
+
+                logger.info(
+                    "llm_call_start",
+                    session_id=state.session_id,
+                    step=state.step_count,
+                    message_count=state.memory.message_count,
+                )
+
+                response: LLMResponse | None = None
+                streamed = False
+                try:
+                    llm_progress_tick = 0
+                    stream_iter = self._stream_llm_call(
+                        state, self._registry.to_openai_tools()
+                    ).__aiter__()
+                    get_next: asyncio.Future[AgentEvent | LLMResponse] | None = None
+
+                    async with asyncio.timeout(llm_timeout):
+                        while True:
+                            if get_next is None:
+                                get_next = asyncio.ensure_future(stream_iter.__anext__())
+                            done, _ = await asyncio.wait(
+                                {get_next}, timeout=_PROGRESS_INTERVAL
+                            )
+                            if not done:
+                                llm_progress_tick += 1
+                                hint = _LLM_THINKING_MESSAGES[
+                                    min(llm_progress_tick - 1, len(_LLM_THINKING_MESSAGES) - 1)
+                                ]
+                                yield AgentEvent("progress", {
+                                    "tool": "thinking",
+                                    "elapsed_seconds": llm_progress_tick * _PROGRESS_INTERVAL,
+                                    "message": hint,
+                                })
+                                continue
+
+                            try:
+                                item = get_next.result()
+                            except StopAsyncIteration:
+                                break
+                            finally:
+                                get_next = None
+
+                            if isinstance(item, LLMResponse):
+                                response = item
+                            else:
+                                yield item
+                    streamed = True
                 except TimeoutError:
+                    logger.error(
+                        "llm_timeout",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                    )
                     state.memory.add_user(
                         "The LLM call timed out. Simplify your approach — "
                         "stop calling tools and present what you have so far."
@@ -620,281 +601,386 @@ class Orchestrator:
                         "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
                     })
                     continue
-                except Exception as fallback_exc:
-                    logger.error(
-                        "llm_fallback_failed",
+                except Exception as stream_exc:
+                    logger.warning(
+                        "stream_fallback",
                         session_id=state.session_id,
-                        error=str(fallback_exc),
+                        error=str(stream_exc),
                     )
+                    try:
+                        response = await asyncio.wait_for(
+                            self._llm.complete(
+                                messages=state.memory.messages,
+                                tools=self._registry.to_openai_tools(),
+                            ),
+                            timeout=llm_timeout,
+                        )
+                    except TimeoutError:
+                        state.memory.add_user(
+                            "The LLM call timed out. Simplify your approach — "
+                            "stop calling tools and present what you have so far."
+                        )
+                        yield AgentEvent("error_recovery", {
+                            "tool": "llm",
+                            "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
+                        })
+                        continue
+                    except Exception as fallback_exc:
+                        logger.error(
+                            "llm_fallback_failed",
+                            session_id=state.session_id,
+                            error=str(fallback_exc),
+                        )
+                        yield AgentEvent("error_recovery", {
+                            "tool": "llm",
+                            "error": str(fallback_exc),
+                            "cause": "LLM rejected the request after both stream and non-stream attempts.",
+                            "hint": "Check your API key and model settings. If using DeepSeek or OpenAI, verify your key is valid. If using Ollama, ensure it is running locally.",
+                        })
+                        state.status = SessionStatus.ERROR
+                        yielded_terminal = True
+                        yield AgentEvent("message", {
+                            "content": "The AI model is not responding. Check your API key and model settings, then try again.",
+                        })
+                        return
+
+                if response is None:
                     yield AgentEvent("error_recovery", {
                         "tool": "llm",
-                        "error": str(fallback_exc),
-                        "cause": "LLM rejected the request after both stream and non-stream attempts.",
-                        "hint": "Check your API key and model settings. If using DeepSeek or OpenAI, verify your key is valid. If using Ollama, ensure it is running locally.",
+                        "error": "The AI model returned no response. Retrying with a simpler approach.",
                     })
-                    state.status = "error"
+                    continue
+
+                if state._generation != my_generation:
                     return
 
-            if response is None:
-                yield AgentEvent("error_recovery", {
-                    "tool": "llm",
-                    "error": "The AI model returned no response. Retrying with a simpler approach.",
-                })
-                continue
+                # ── Log the full LLM response ──────────────────────────────
+                logger.info(
+                    "llm_response",
+                    session_id=state.session_id,
+                    step=state.step_count,
+                    has_tool_calls=response.has_tool_calls,
+                    tool_count=len(response.tool_calls),
+                    content_length=len(response.content) if response.content else 0,
+                    finish_reason=response.finish_reason,
+                    usage=response.usage,
+                    has_reasoning=response.reasoning_content is not None,
+                )
 
-            if state._generation != my_generation:
-                return
+                if not response.has_tool_calls:
+                    state.memory.add_assistant(
+                        content=response.content,
+                        reasoning_content=response.reasoning_content,
+                        raw_message=response.raw_message,
+                    )
+                    state.status = SessionStatus.COMPLETED
+                    had_errors = state._consecutive_errors > 0 or state._loop_break_count > 0
+                    self._score_used_experiences(state, success=not had_errors)
+                    yielded_terminal = True
+                    yield AgentEvent("message", {
+                        "content": response.content or "",
+                        "usage": response.usage,
+                    })
+                    return
 
-            # ── Log the full LLM response ──────────────────────────────
-            logger.info(
-                "llm_response",
-                session_id=state.session_id,
-                step=state.step_count,
-                has_tool_calls=response.has_tool_calls,
-                tool_count=len(response.tool_calls),
-                content_length=len(response.content) if response.content else 0,
-                finish_reason=response.finish_reason,
-                usage=response.usage,
-                has_reasoning=response.reasoning_content is not None,
-            )
-
-            if not response.has_tool_calls:
+                tool_calls_raw = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                    }
+                    for tc in response.tool_calls
+                ]
                 state.memory.add_assistant(
                     content=response.content,
+                    tool_calls=tool_calls_raw,
                     reasoning_content=response.reasoning_content,
                     raw_message=response.raw_message,
                 )
-                state.status = "completed"
-                had_errors = state._consecutive_errors > 0 or state._loop_break_count > 0
-                self._score_used_experiences(state, success=not had_errors)
-                yield AgentEvent("message", {
-                    "content": response.content or "",
-                    "usage": response.usage,
-                })
-                return
 
-            tool_calls_raw = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-                }
-                for tc in response.tool_calls
-            ]
-            state.memory.add_assistant(
-                content=response.content,
-                tool_calls=tool_calls_raw,
-                reasoning_content=response.reasoning_content,
-                raw_message=response.raw_message,
-            )
+                if not streamed:
+                    if response.reasoning_content:
+                        yield AgentEvent("thinking", {"content": response.reasoning_content})
+                    if response.content:
+                        yield AgentEvent("thinking", {"content": response.content})
 
-            if not streamed:
-                if response.reasoning_content:
-                    yield AgentEvent("thinking", {"content": response.reasoning_content})
-                if response.content:
-                    yield AgentEvent("thinking", {"content": response.content})
+                loop_broken = False
+                deferred_user_msgs: list[str] = []
+                deferred_events: list[AgentEvent] = []
+                early_return = False
 
-            loop_broken = False
-            deferred_user_msgs: list[str] = []
-            deferred_events: list[AgentEvent] = []
-            early_return = False
+                # ── Parallel fast-path for independent read-only tools ────
+                can_parallel = (
+                    len(response.tool_calls) > 1
+                    and all(tc.name in _PARALLELIZABLE_TOOLS for tc in response.tool_calls)
+                    and not any(self._requires_unapproved_apply_gate(tc, state) for tc in response.tool_calls)
+                )
+                if can_parallel:
+                    session_vault = self._secret_vault.for_session(state.session_id)
+                    parallel_tasks: dict[str, asyncio.Task[ToolResult]] = {}
+                    for tc in response.tool_calls:
+                        state.record_tool_call(tc.name, tc.arguments)
+                        logger.info(
+                            "tool_call_parallel",
+                            session_id=state.session_id,
+                            step=state.step_count,
+                            tool=tc.name,
+                            tool_call_id=tc.id,
+                        )
+                        yield AgentEvent("tool_call", session_vault.redact_dict({
+                            "tool": tc.name,
+                            "arguments": tc.arguments,
+                            "tool_call_id": tc.id,
+                        }))
+                        ptask = asyncio.create_task(
+                            self._execute_tool(state, tc.name, tc.arguments)
+                        )
+                        state.track_task(ptask)
+                        parallel_tasks[tc.id] = ptask
 
-            # ── Parallel fast-path for independent read-only tools ────
-            can_parallel = (
-                len(response.tool_calls) > 1
-                and all(tc.name in _PARALLELIZABLE_TOOLS for tc in response.tool_calls)
-                and not any(self._requires_unapproved_apply_gate(tc, state) for tc in response.tool_calls)
-            )
-            if can_parallel:
-                session_vault = self._secret_vault.for_session(state.session_id)
-                parallel_tasks: dict[str, asyncio.Task[ToolResult]] = {}
+                    progress_tick = 0
+                    pending = set(parallel_tasks.values())
+                    tool_names = ", ".join(tc.name for tc in response.tool_calls)
+                    while pending:
+                        done_set, pending = await asyncio.wait(pending, timeout=_PROGRESS_INTERVAL)
+                        if not done_set:
+                            if state._generation != my_generation:
+                                for p in pending:
+                                    p.cancel()
+                                return
+                            progress_tick += 1
+                            elapsed = progress_tick * _PROGRESS_INTERVAL
+                            elapsed_str = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+                            yield AgentEvent("progress", {
+                                "tool": "parallel",
+                                "elapsed_seconds": elapsed,
+                                "message": f"[{elapsed_str}] Running {len(pending)} tools in parallel ({tool_names})...",
+                            })
+
+                    deferred_user_msgs_p: list[str] = []
+                    deferred_events_p: list[AgentEvent] = []
+                    for tc in response.tool_calls:
+                        result = parallel_tasks[tc.id].result()
+                        try:
+                            state.memory.add_tool_result(tc.id, result.model_dump_json())
+                        except Exception:
+                            state.memory.add_tool_result(
+                                tc.id,
+                                f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
+                            )
+                        try:
+                            clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
+                            self._capture_experience(tc.name, result, state, clean_args)
+                        except Exception:
+                            logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
+                        tool_result_payload: dict[str, Any] = {
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": result.status.value,
+                            "output": result.output[:2000],
+                        }
+                        if result.data:
+                            tool_result_payload["data"] = result.data
+                        yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
+                        if result.status == ToolStatus.ERROR:
+                            state._consecutive_errors += 1
+                            state.last_error = result.error
+                            remaining = max(state._max_error_retries - state._consecutive_errors, 0)
+                            error_ctx = ERROR_RECOVERY_PROMPT.format(
+                                tool_name=tc.name,
+                                error_message=result.error or "Unknown error",
+                                remaining_retries=remaining,
+                            )
+                            knowledge_hint = self._build_error_knowledge(
+                                state, tc.name, result.error or "Unknown error",
+                            )
+                            if knowledge_hint:
+                                error_ctx += knowledge_hint
+                            deferred_user_msgs_p.append(error_ctx)
+                            deferred_events_p.append(AgentEvent("error_recovery", {
+                                "tool": tc.name,
+                                "error": result.error,
+                                "retries_remaining": remaining,
+                            }))
+                        else:
+                            state._consecutive_errors = 0
+
+                    for msg in deferred_user_msgs_p:
+                        state.memory.add_user(msg)
+                    for evt in deferred_events_p:
+                        yield evt
+
+                    logger.info(
+                        "parallel_tools_complete",
+                        session_id=state.session_id,
+                        tool_count=len(response.tool_calls),
+                        step=state.step_count,
+                    )
+                    continue
+
+                # ── Sequential path (approval gates, secrets, side effects) ──
                 for tc in response.tool_calls:
                     state.record_tool_call(tc.name, tc.arguments)
+
+                    pattern = state.loop_pattern
+                    if pattern:
+                        state._loop_break_count += 1
+                        logger.warning(
+                            "loop_detected",
+                            session_id=state.session_id,
+                            tool=tc.name,
+                            pattern=pattern,
+                            step=state.step_count,
+                            break_count=state._loop_break_count,
+                        )
+                        is_hard_loop = pattern in ("exact_repeat", "alternating")
+                        if is_hard_loop:
+                            remaining_idx = response.tool_calls.index(tc)
+                            for remaining_tc in response.tool_calls[remaining_idx:]:
+                                state.memory.add_tool_result(
+                                    remaining_tc.id,
+                                    '{"status":"error","output":"Tool call skipped — identical call loop detected."}',
+                                )
+                            deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                            deferred_events.append(AgentEvent("error_recovery", {
+                                "tool": tc.name,
+                                "error": "The agent appears to be stuck repeating the same action. Pausing to reassess.",
+                            }))
+                            loop_broken = True
+                            break
+                        deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                        deferred_events.append(AgentEvent("error_recovery", {
+                            "tool": tc.name,
+                            "error": "The agent has been running the same type of action many times — checking if this is intentional.",
+                        }))
+
+                    session_vault = self._secret_vault.for_session(state.session_id)
+
                     logger.info(
-                        "tool_call_parallel",
+                        "tool_call",
                         session_id=state.session_id,
                         step=state.step_count,
                         tool=tc.name,
                         tool_call_id=tc.id,
+                        arguments=session_vault.redact_dict(tc.arguments),
                     )
+
                     yield AgentEvent("tool_call", session_vault.redact_dict({
                         "tool": tc.name,
                         "arguments": tc.arguments,
                         "tool_call_id": tc.id,
                     }))
-                    ptask = asyncio.create_task(
+
+                    if self._requires_unapproved_apply_gate(tc, state):
+                        playbook_name = tc.arguments.get("playbook", "unknown")
+                        state.status = SessionStatus.AWAITING_APPROVAL
+                        gate_msg = (
+                            f"Apply mode requested for '{playbook_name}' without a prior "
+                            f"dry-run approval. Approval is required before live execution."
+                        )
+                        yield AgentEvent("approval_required", {
+                            "session_id": state.session_id,
+                            "output": gate_msg,
+                            "data": {"playbook": playbook_name, "mode": "apply"},
+                        })
+                        approval = self._approval_gate.create_request(
+                            session_id=state.session_id,
+                            description=f"Apply {playbook_name} (no prior dry-run)",
+                            diff_summary=gate_msg,
+                            metadata={"playbook": playbook_name, "mode": "apply"},
+                        )
+                        gate_status = await approval.wait(timeout=600)
+                        if state._generation != my_generation:
+                            return
+                        if gate_status == ApprovalStatus.APPROVED:
+                            state.status = SessionStatus.ACTIVE
+                            state._approved_playbooks.add(playbook_name)
+                            yield AgentEvent("approval_granted", {
+                                "session_id": state.session_id,
+                            })
+                        else:
+                            state.status = SessionStatus.REJECTED
+                            feedback = approval.feedback or "User rejected apply without dry-run."
+                            state.memory.add_tool_result(
+                                tc.id,
+                                f'{{"status":"error","output":"Rejected: {feedback}"}}',
+                            )
+                            state.memory.add_user(f"User rejected: {feedback}")
+                            yield AgentEvent("approval_rejected", {
+                                "session_id": state.session_id,
+                                "feedback": feedback,
+                            })
+                            early_return = True
+                            break
+
+                    if is_file_writing_tool(tc.name):
+                        try:
+                            await create_checkpoint(
+                                state.workspace.path,
+                                f"before {tc.name}",
+                                step=state.step_count,
+                            )
+                        except Exception:
+                            logger.debug("checkpoint_before_failed", tool=tc.name, exc_info=True)
+
+                    live_queue: asyncio.Queue[dict[str, Any]] | None = None
+                    if tc.name in ("execute_playbook", "run_adhoc"):
+                        live_queue = asyncio.Queue()
+                        tc.arguments["_live_log_queue"] = live_queue
+
+                    task = asyncio.create_task(
                         self._execute_tool(state, tc.name, tc.arguments)
                     )
-                    state.track_task(ptask)
-                    parallel_tasks[tc.id] = ptask
-
-                progress_tick = 0
-                pending = set(parallel_tasks.values())
-                tool_names = ", ".join(tc.name for tc in response.tool_calls)
-                while pending:
-                    done_set, pending = await asyncio.wait(pending, timeout=_PROGRESS_INTERVAL)
-                    if not done_set:
-                        if state._generation != my_generation:
-                            for p in pending:
-                                p.cancel()
-                            return
-                        progress_tick += 1
-                        elapsed = progress_tick * _PROGRESS_INTERVAL
-                        elapsed_str = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
-                        yield AgentEvent("progress", {
-                            "tool": "parallel",
-                            "elapsed_seconds": elapsed,
-                            "message": f"[{elapsed_str}] Running {len(pending)} tools in parallel ({tool_names})...",
-                        })
-
-                for tc in response.tool_calls:
-                    result = parallel_tasks[tc.id].result()
-                    state.memory.add_tool_result(tc.id, result.model_dump_json())
-                    clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                    self._capture_experience(tc.name, result, state, clean_args)
-                    tool_result_payload: dict[str, Any] = {
-                        "tool": tc.name,
-                        "tool_call_id": tc.id,
-                        "status": result.status.value,
-                        "output": result.output[:2000],
-                    }
-                    if result.data:
-                        tool_result_payload["data"] = result.data
-                    yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
-                    if result.status == ToolStatus.ERROR:
-                        state._consecutive_errors += 1
-                        state.last_error = result.error
-                    else:
-                        state._consecutive_errors = 0
-
-                logger.info(
-                    "parallel_tools_complete",
-                    session_id=state.session_id,
-                    tool_count=len(response.tool_calls),
-                    step=state.step_count,
-                )
-                continue
-
-            # ── Sequential path (approval gates, secrets, side effects) ──
-            for tc in response.tool_calls:
-                state.record_tool_call(tc.name, tc.arguments)
-
-                pattern = state.loop_pattern
-                if pattern:
-                    state._loop_break_count += 1
-                    logger.warning(
-                        "loop_detected",
-                        session_id=state.session_id,
-                        tool=tc.name,
-                        pattern=pattern,
-                        step=state.step_count,
-                        break_count=state._loop_break_count,
-                    )
-                    is_hard_loop = pattern in ("exact_repeat", "alternating")
-                    if is_hard_loop:
-                        remaining_idx = response.tool_calls.index(tc)
-                        for remaining_tc in response.tool_calls[remaining_idx:]:
-                            state.memory.add_tool_result(
-                                remaining_tc.id,
-                                '{"status":"error","output":"Tool call skipped — identical call loop detected."}',
-                            )
-                        deferred_user_msgs.append(LOOP_BREAK_PROMPT)
-                        deferred_events.append(AgentEvent("error_recovery", {
-                            "tool": tc.name,
-                            "error": "The agent appears to be stuck repeating the same action. Pausing to reassess.",
-                        }))
-                        loop_broken = True
-                        break
-                    deferred_user_msgs.append(LOOP_BREAK_PROMPT)
-                    deferred_events.append(AgentEvent("error_recovery", {
-                        "tool": tc.name,
-                        "error": "The agent has been running the same type of action many times — checking if this is intentional.",
-                    }))
-
-                session_vault = self._secret_vault.for_session(state.session_id)
-
-                logger.info(
-                    "tool_call",
-                    session_id=state.session_id,
-                    step=state.step_count,
-                    tool=tc.name,
-                    tool_call_id=tc.id,
-                    arguments=session_vault.redact_dict(tc.arguments),
-                )
-
-                yield AgentEvent("tool_call", session_vault.redact_dict({
-                    "tool": tc.name,
-                    "arguments": tc.arguments,
-                    "tool_call_id": tc.id,
-                }))
-
-                if self._requires_unapproved_apply_gate(tc, state):
-                    playbook_name = tc.arguments.get("playbook", "unknown")
-                    state.status = "awaiting_approval"
-                    gate_msg = (
-                        f"Apply mode requested for '{playbook_name}' without a prior "
-                        f"dry-run approval. Approval is required before live execution."
-                    )
-                    yield AgentEvent("approval_required", {
-                        "session_id": state.session_id,
-                        "output": gate_msg,
-                        "data": {"playbook": playbook_name, "mode": "apply"},
-                    })
-                    approval = self._approval_gate.create_request(
-                        session_id=state.session_id,
-                        description=f"Apply {playbook_name} (no prior dry-run)",
-                        diff_summary=gate_msg,
-                        metadata={"playbook": playbook_name, "mode": "apply"},
-                    )
-                    gate_status = await approval.wait(timeout=600)
-                    if state._generation != my_generation:
-                        return
-                    if gate_status == ApprovalStatus.APPROVED:
-                        state.status = "active"
-                        state._approved_playbooks.add(playbook_name)
-                        yield AgentEvent("approval_granted", {
-                            "session_id": state.session_id,
-                        })
-                    else:
-                        state.status = "rejected"
-                        feedback = approval.feedback or "User rejected apply without dry-run."
-                        state.memory.add_tool_result(
-                            tc.id,
-                            f'{{"status":"error","output":"Rejected: {feedback}"}}',
+                    state.track_task(task)
+                    progress_tick = 0
+                    total_elapsed = 0.0
+                    last_progress_at = 0.0
+                    msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
+                    while not task.done():
+                        poll = 1.0 if live_queue else (
+                            _PROGRESS_INTERVAL if total_elapsed < 60 else 15
                         )
-                        state.memory.add_user(f"User rejected: {feedback}")
-                        yield AgentEvent("approval_rejected", {
-                            "session_id": state.session_id,
-                            "feedback": feedback,
-                        })
-                        early_return = True
-                        break
+                        done, _ = await asyncio.wait({task}, timeout=poll)
 
-                if is_file_writing_tool(tc.name):
-                    await create_checkpoint(
-                        state.workspace.path,
-                        f"before {tc.name}",
-                        step=state.step_count,
-                    )
+                        if live_queue:
+                            while not live_queue.empty():
+                                try:
+                                    yield AgentEvent("live_log", live_queue.get_nowait())
+                                except asyncio.QueueEmpty:
+                                    break
 
-                live_queue: asyncio.Queue[dict[str, Any]] | None = None
-                if tc.name in ("execute_playbook", "run_adhoc"):
-                    live_queue = asyncio.Queue()
-                    tc.arguments["_live_log_queue"] = live_queue
+                        if done:
+                            break
+                        if state._generation != my_generation:
+                            task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await task
+                            logger.info(
+                                "tool_cancelled_on_supersession",
+                                session_id=state.session_id,
+                                tool=tc.name,
+                            )
+                            return
 
-                task = asyncio.create_task(
-                    self._execute_tool(state, tc.name, tc.arguments)
-                )
-                state.track_task(task)
-                progress_tick = 0
-                total_elapsed = 0.0
-                last_progress_at = 0.0
-                msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
-                while not task.done():
-                    poll = 1.0 if live_queue else (
-                        _PROGRESS_INTERVAL if total_elapsed < 60 else 15
-                    )
-                    done, _ = await asyncio.wait({task}, timeout=poll)
+                        total_elapsed += poll
+                        progress_interval = (
+                            _PROGRESS_INTERVAL if total_elapsed < 60 else 15
+                        )
+                        if total_elapsed - last_progress_at >= progress_interval:
+                            last_progress_at = total_elapsed
+                            progress_tick += 1
+                            elapsed = int(total_elapsed)
+                            hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
+                            elapsed_str = (
+                                f"{elapsed // 60}m {elapsed % 60}s"
+                                if elapsed >= 60
+                                else f"{elapsed}s"
+                            )
+                            yield AgentEvent("progress", {
+                                "tool": tc.name,
+                                "elapsed_seconds": elapsed,
+                                "message": f"[{elapsed_str}] {hint}",
+                            })
 
                     if live_queue:
                         while not live_queue.empty():
@@ -903,294 +989,298 @@ class Orchestrator:
                             except asyncio.QueueEmpty:
                                 break
 
-                    if done:
-                        break
-                    if state._generation != my_generation:
-                        task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await task
-                        logger.info(
-                            "tool_cancelled_on_supersession",
-                            session_id=state.session_id,
-                            tool=tc.name,
-                        )
+                    if task.cancelled():
                         return
+                    result = task.result()
 
-                    total_elapsed += poll
-                    progress_interval = (
-                        _PROGRESS_INTERVAL if total_elapsed < 60 else 15
-                    )
-                    if total_elapsed - last_progress_at >= progress_interval:
-                        last_progress_at = total_elapsed
-                        progress_tick += 1
-                        elapsed = int(total_elapsed)
-                        hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
-                        elapsed_str = (
-                            f"{elapsed // 60}m {elapsed % 60}s"
-                            if elapsed >= 60
-                            else f"{elapsed}s"
-                        )
-                        yield AgentEvent("progress", {
-                            "tool": tc.name,
-                            "elapsed_seconds": elapsed,
-                            "message": f"[{elapsed_str}] {hint}",
-                        })
-
-                if live_queue:
-                    while not live_queue.empty():
+                    if is_file_writing_tool(tc.name) and result.status != ToolStatus.ERROR:
                         try:
-                            yield AgentEvent("live_log", live_queue.get_nowait())
-                        except asyncio.QueueEmpty:
-                            break
-
-                if task.cancelled():
-                    return
-                result = task.result()
-
-                if is_file_writing_tool(tc.name) and result.status != ToolStatus.ERROR:
-                    cp_hash = await create_checkpoint(
-                        state.workspace.path,
-                        f"after {tc.name}: {tc.arguments.get('playbook', tc.arguments.get('path', tc.name))}",
-                        step=state.step_count,
-                    )
-                    if cp_hash:
-                        yield AgentEvent("checkpoint", {
-                            "hash": cp_hash,
-                            "tool": tc.name,
-                            "step": state.step_count,
-                        })
-
-                if state._generation != my_generation:
-                    return
-
-                logger.info(
-                    "tool_result",
-                    session_id=state.session_id,
-                    step=state.step_count,
-                    tool=tc.name,
-                    tool_call_id=tc.id,
-                    status=result.status.value,
-                    output_preview=result.output[:500] if result.output else "",
-                )
-
-                if (
-                    result.status == ToolStatus.NEEDS_APPROVAL
-                    and result.data.get("secret_request")
-                ):
-                    secret_name = result.data["secret_name"]
-                    secret_desc = result.data["secret_description"]
-                    sensitive_type = result.data.get("sensitive_type", "other")
-                    state.status = "awaiting_secret"
-
-                    yield AgentEvent("secret_request", {
-                        "session_id": state.session_id,
-                        "secret_name": secret_name,
-                        "secret_description": secret_desc,
-                        "sensitive_type": sensitive_type,
-                    })
-
-                    pending_evt = session_vault.create_pending(secret_name)
-                    try:
-                        await asyncio.wait_for(pending_evt.wait(), timeout=600)
-                    except TimeoutError:
-                        state.status = "active"
-                        session_vault.cleanup_pending(secret_name)
-                        timeout_msg = (
-                            f"Secret '{secret_name}' was not provided within the timeout. "
-                            "You may ask the user to retry or proceed without it."
-                        )
-                        state.memory.add_tool_result(tc.id, timeout_msg)
-                        yield AgentEvent("tool_result", {
-                            "tool": tc.name,
-                            "tool_call_id": tc.id,
-                            "status": "error",
-                            "output": timeout_msg,
-                        })
-                        continue
-                    finally:
-                        session_vault.cleanup_pending(secret_name)
+                            cp_hash = await create_checkpoint(
+                                state.workspace.path,
+                                f"after {tc.name}: {tc.arguments.get('playbook', tc.arguments.get('path', tc.name))}",
+                                step=state.step_count,
+                            )
+                            if cp_hash:
+                                yield AgentEvent("checkpoint", {
+                                    "hash": cp_hash,
+                                    "tool": tc.name,
+                                    "step": state.step_count,
+                                })
+                        except Exception:
+                            logger.debug("checkpoint_after_failed", tool=tc.name, exc_info=True)
 
                     if state._generation != my_generation:
                         return
 
-                    stored_value = session_vault.get(secret_name)
-                    if stored_value is None:
-                        state.status = "active"
-                        cancel_msg = (
-                            f"Secret '{secret_name}' request was cancelled. "
-                            "The user may have interrupted. Ask them what they'd prefer."
-                        )
-                        state.memory.add_tool_result(tc.id, cancel_msg)
-                        yield AgentEvent("tool_result", {
-                            "tool": tc.name,
-                            "tool_call_id": tc.id,
-                            "status": "error",
-                            "output": cancel_msg,
-                        })
-                        continue
-
-                    state.status = "active"
-                    confirm = (
-                        f"Secret '{secret_name}' has been securely stored. "
-                        f"Use the variable name `{secret_name}` in playbooks and templates — "
-                        f"the real value will be injected automatically at execution time. "
-                        f"NEVER include the actual secret value in any generated content."
+                    logger.info(
+                        "tool_result",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                        tool=tc.name,
+                        tool_call_id=tc.id,
+                        status=result.status.value,
+                        output_preview=result.output[:500] if result.output else "",
                     )
-                    state.memory.add_tool_result(tc.id, confirm)
-                    yield AgentEvent("tool_result", {
-                        "tool": tc.name,
-                        "tool_call_id": tc.id,
-                        "status": "success",
-                        "output": confirm,
-                    })
-                    continue
 
-                state.memory.add_tool_result(tc.id, result.model_dump_json())
-                clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                self._capture_experience(tc.name, result, state, clean_args)
+                    if (
+                        result.status == ToolStatus.NEEDS_APPROVAL
+                        and result.data.get("secret_request")
+                    ):
+                        secret_name = result.data["secret_name"]
+                        secret_desc = result.data["secret_description"]
+                        sensitive_type = result.data.get("sensitive_type", "other")
+                        state.status = SessionStatus.AWAITING_SECRET
 
-                tool_result_payload: dict[str, Any] = {
-                    "tool": tc.name,
-                    "tool_call_id": tc.id,
-                    "status": result.status.value,
-                    "output": result.output[:2000],
-                }
-                if result.data:
-                    tool_result_payload["data"] = result.data
-                yield AgentEvent("tool_result", session_vault.redact_dict(
-                    tool_result_payload
-                ))
-
-                if result.status == ToolStatus.NEEDS_APPROVAL:
-                    auto_approved = False
-                    if tc.name == "execute_playbook" and self._is_localhost_only_playbook(tc, state):
-                        auto_approved = True
-                        pb = tc.arguments.get("playbook", "")
-                        if pb:
-                            state._approved_playbooks.add(pb)
-                        yield AgentEvent("approval_granted", {"session_id": state.session_id})
-
-                    if not auto_approved:
-                        state.status = "awaiting_approval"
-                        yield AgentEvent("approval_required", {
+                        yield AgentEvent("secret_request", {
                             "session_id": state.session_id,
-                            "output": result.output,
-                            "data": result.data,
+                            "secret_name": secret_name,
+                            "secret_description": secret_desc,
+                            "sensitive_type": sensitive_type,
                         })
 
-                        approval = self._approval_gate.create_request(
-                            session_id=state.session_id,
-                            description=f"Execute {tc.name}",
-                            diff_summary=result.output,
-                            metadata=result.data,
-                        )
+                        pending_evt = session_vault.create_pending(secret_name)
+                        try:
+                            await asyncio.wait_for(pending_evt.wait(), timeout=600)
+                        except TimeoutError:
+                            state.status = SessionStatus.ACTIVE
+                            session_vault.cleanup_pending(secret_name)
+                            timeout_msg = (
+                                f"Secret '{secret_name}' was not provided within the timeout. "
+                                "You may ask the user to retry or proceed without it."
+                            )
+                            state.memory.add_tool_result(tc.id, timeout_msg)
+                            yield AgentEvent("tool_result", {
+                                "tool": tc.name,
+                                "tool_call_id": tc.id,
+                                "status": "error",
+                                "output": timeout_msg,
+                            })
+                            continue
+                        finally:
+                            session_vault.cleanup_pending(secret_name)
 
-                        status = await approval.wait(timeout=600)
                         if state._generation != my_generation:
                             return
 
-                    if auto_approved or status == ApprovalStatus.APPROVED:
-                        state.status = "active"
-                        if tc.name == "execute_playbook":
+                        stored_value = session_vault.get(secret_name)
+                        if stored_value is None:
+                            state.status = SessionStatus.ACTIVE
+                            cancel_msg = (
+                                f"Secret '{secret_name}' request was cancelled. "
+                                "The user may have interrupted. Ask them what they'd prefer."
+                            )
+                            state.memory.add_tool_result(tc.id, cancel_msg)
+                            yield AgentEvent("tool_result", {
+                                "tool": tc.name,
+                                "tool_call_id": tc.id,
+                                "status": "error",
+                                "output": cancel_msg,
+                            })
+                            continue
+
+                        state.status = SessionStatus.ACTIVE
+                        confirm = (
+                            f"Secret '{secret_name}' has been securely stored. "
+                            f"Use the variable name `{secret_name}` in playbooks and templates — "
+                            f"the real value will be injected automatically at execution time. "
+                            f"NEVER include the actual secret value in any generated content."
+                        )
+                        state.memory.add_tool_result(tc.id, confirm)
+                        yield AgentEvent("tool_result", {
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": "success",
+                            "output": confirm,
+                        })
+                        continue
+
+                    try:
+                        state.memory.add_tool_result(tc.id, result.model_dump_json())
+                    except Exception:
+                        state.memory.add_tool_result(
+                            tc.id,
+                            f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
+                        )
+                    try:
+                        clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
+                        self._capture_experience(tc.name, result, state, clean_args)
+                    except Exception:
+                        logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
+
+                    tool_result_payload: dict[str, Any] = {
+                        "tool": tc.name,
+                        "tool_call_id": tc.id,
+                        "status": result.status.value,
+                        "output": result.output[:2000],
+                    }
+                    if result.data:
+                        tool_result_payload["data"] = result.data
+                    yield AgentEvent("tool_result", session_vault.redact_dict(
+                        tool_result_payload
+                    ))
+
+                    if result.status == ToolStatus.NEEDS_APPROVAL:
+                        auto_approved = False
+                        gate_status: ApprovalStatus | None = None
+                        if tc.name == "execute_playbook" and self._is_localhost_only_playbook(tc, state):
+                            auto_approved = True
                             pb = tc.arguments.get("playbook", "")
                             if pb:
                                 state._approved_playbooks.add(pb)
-                        if not auto_approved:
                             yield AgentEvent("approval_granted", {"session_id": state.session_id})
-                        if state._rejected_output and state._rejected_tool == tc.name:
-                            self._capture_correction(state, tc.name, result)
-                    else:
-                        state.status = "rejected"
-                        feedback = approval.feedback or "User rejected the operation."
-                        state._rejected_output = result.output[:2000]
-                        state._rejected_feedback = feedback
-                        state._rejected_tool = tc.name
-                        remaining_idx = response.tool_calls.index(tc) + 1
-                        for remaining_tc in response.tool_calls[remaining_idx:]:
-                            state.memory.add_tool_result(
-                                remaining_tc.id,
-                                '{"status":"error","output":"Skipped — prior tool was rejected."}',
+
+                        if not auto_approved:
+                            state.status = SessionStatus.AWAITING_APPROVAL
+                            yield AgentEvent("approval_required", {
+                                "session_id": state.session_id,
+                                "output": result.output,
+                                "data": result.data,
+                            })
+
+                            approval = self._approval_gate.create_request(
+                                session_id=state.session_id,
+                                description=f"Execute {tc.name}",
+                                diff_summary=result.output,
+                                metadata=result.data,
                             )
-                        state.memory.add_user(f"User rejected: {feedback}")
-                        yield AgentEvent("approval_rejected", {
-                            "session_id": state.session_id,
-                            "feedback": feedback,
-                        })
-                        early_return = True
-                        break
 
-                if result.status == ToolStatus.ERROR:
-                    state._consecutive_errors += 1
-                    state.last_error = result.error
-                    state._last_error_by_tool[tc.name] = {
-                        "error": result.error or "Unknown error",
-                        "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
-                    }
-                    remaining = max(state._max_error_retries - state._consecutive_errors, 0)
-                    error_ctx = ERROR_RECOVERY_PROMPT.format(
-                        tool_name=tc.name,
-                        error_message=result.error or "Unknown error",
-                        remaining_retries=remaining,
-                    )
-                    knowledge_hint = self._build_error_knowledge(
-                        state, tc.name, result.error or "Unknown error",
-                    )
-                    if knowledge_hint:
-                        error_ctx += knowledge_hint
-                    deferred_user_msgs.append(error_ctx)
-                    deferred_events.append(AgentEvent("error_recovery", {
-                        "tool": tc.name,
-                        "error": result.error,
-                        "retries_remaining": remaining,
-                    }))
-                else:
-                    state._consecutive_errors = 0
+                            gate_status = await approval.wait(timeout=600)
+                            if state._generation != my_generation:
+                                return
 
-                if (
-                    tc.name == "execute_playbook"
-                    and result.status == ToolStatus.SUCCESS
-                    and result.data.get("mode") == "apply"
-                ):
-                    deferred_user_msgs.append(
-                        "The playbook was applied successfully. Now VERIFY the changes "
-                        "actually took effect. Use the `verify_state` tool to check that "
-                        "services are running, ports are listening, or endpoints are reachable. "
-                        "Do NOT just report success — prove it with evidence."
-                    )
+                        if auto_approved or gate_status == ApprovalStatus.APPROVED:
+                            state.status = SessionStatus.ACTIVE
+                            if tc.name == "execute_playbook":
+                                pb = tc.arguments.get("playbook", "")
+                                if pb:
+                                    state._approved_playbooks.add(pb)
+                            if not auto_approved:
+                                yield AgentEvent("approval_granted", {"session_id": state.session_id})
+                            if state._rejected_output and state._rejected_tool == tc.name:
+                                self._capture_correction(state, tc.name, result)
+                        else:
+                            state.status = SessionStatus.REJECTED
+                            feedback = approval.feedback or "User rejected the operation."
+                            state._rejected_output = result.output[:2000]
+                            state._rejected_feedback = feedback
+                            state._rejected_tool = tc.name
+                            remaining_idx = response.tool_calls.index(tc) + 1
+                            for remaining_tc in response.tool_calls[remaining_idx:]:
+                                state.memory.add_tool_result(
+                                    remaining_tc.id,
+                                    '{"status":"error","output":"Skipped — prior tool was rejected."}',
+                                )
+                            state.memory.add_user(f"User rejected: {feedback}")
+                            yield AgentEvent("approval_rejected", {
+                                "session_id": state.session_id,
+                                "feedback": feedback,
+                            })
+                            early_return = True
+                            break
 
-                if tc.name == "verify_state" and result.status == ToolStatus.ERROR:
-                    failed_checks = result.data.get("failed", 0)
-                    deferred_user_msgs.append(
-                        f"Verification FAILED ({failed_checks} checks). "
-                        "Consider generating a rollback playbook with `generate_rollback` "
-                        "for the most recently applied playbook, then present the rollback "
-                        "plan to the user for approval before executing it."
-                    )
+                    if result.status == ToolStatus.ERROR:
+                        state._consecutive_errors += 1
+                        state.last_error = result.error
+                        state._last_error_by_tool[tc.name] = {
+                            "error": result.error or "Unknown error",
+                            "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
+                        }
+                        remaining = max(state._max_error_retries - state._consecutive_errors, 0)
+                        error_ctx = ERROR_RECOVERY_PROMPT.format(
+                            tool_name=tc.name,
+                            error_message=result.error or "Unknown error",
+                            remaining_retries=remaining,
+                        )
+                        knowledge_hint = self._build_error_knowledge(
+                            state, tc.name, result.error or "Unknown error",
+                        )
+                        if knowledge_hint:
+                            error_ctx += knowledge_hint
+                        deferred_user_msgs.append(error_ctx)
+                        deferred_events.append(AgentEvent("error_recovery", {
+                            "tool": tc.name,
+                            "error": result.error,
+                            "retries_remaining": remaining,
+                        }))
+                    else:
+                        state._consecutive_errors = 0
 
-            if early_return:
-                state.status = "completed"
-                yield AgentEvent("message", {
-                    "content": (
-                        "The requested action was not approved and has been cancelled. "
-                        "Let me know how you'd like to proceed."
-                    ),
+                    if (
+                        tc.name == "execute_playbook"
+                        and result.status == ToolStatus.SUCCESS
+                        and result.data.get("mode") == "apply"
+                    ):
+                        deferred_user_msgs.append(
+                            "The playbook was applied successfully. Now VERIFY the changes "
+                            "actually took effect. Use the `verify_state` tool to check that "
+                            "services are running, ports are listening, or endpoints are reachable. "
+                            "Do NOT just report success — prove it with evidence."
+                        )
+
+                    if tc.name == "verify_state" and result.status == ToolStatus.ERROR:
+                        failed_checks = result.data.get("failed", 0)
+                        deferred_user_msgs.append(
+                            f"Verification FAILED ({failed_checks} checks). "
+                            "Consider generating a rollback playbook with `generate_rollback` "
+                            "for the most recently applied playbook, then present the rollback "
+                            "plan to the user for approval before executing it."
+                        )
+
+                if early_return:
+                    state.status = SessionStatus.REJECTED
+                    yielded_terminal = True
+                    yield AgentEvent("message", {
+                        "content": (
+                            "The requested action was not approved and has been cancelled. "
+                            "Let me know how you'd like to proceed."
+                        ),
+                    })
+                    return
+
+                for msg in deferred_user_msgs:
+                    state.memory.add_user(msg)
+                for evt in deferred_events:
+                    yield evt
+
+                if loop_broken:
+                    continue
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as step_exc:
+                logger.error(
+                    "react_step_failed",
+                    session_id=state.session_id,
+                    step=state.step_count,
+                    error=str(step_exc),
+                    exc_info=True,
+                )
+                state.memory.add_user(
+                    f"Internal error during step {state.step_count}: {step_exc}. "
+                    "Retry or adjust your approach."
+                )
+                yield AgentEvent("error_recovery", {
+                    "error": str(step_exc),
+                    "step": state.step_count,
                 })
-                return
-
-            for msg in deferred_user_msgs:
-                state.memory.add_user(msg)
-            for evt in deferred_events:
-                yield evt
-
-            if loop_broken:
                 continue
 
-        state.status = "max_steps_reached"
-        self._score_used_experiences(state, success=False)
-        yield AgentEvent("max_steps", {
-            "step_count": state.step_count,
-            "message": f"The agent has completed {max_steps} steps — the maximum allowed. You can continue the conversation to pick up where it left off.",
-        })
+          state.status = SessionStatus.MAX_STEPS_REACHED
+          self._score_used_experiences(state, success=False)
+          yielded_terminal = True
+          yield AgentEvent("max_steps", {
+              "step_count": state.step_count,
+              "message": f"The agent has completed {max_steps} steps — the maximum allowed. You can continue the conversation to pick up where it left off.",
+          })
+        finally:
+            if not yielded_terminal and state._generation == my_generation:
+                state.status = SessionStatus.COMPLETED
+                yield AgentEvent("message", {
+                    "content": (
+                        "The agent stopped unexpectedly. "
+                        "You can send a new message to continue."
+                    ),
+                })
 
     async def _stream_llm_call(
         self,
@@ -1577,7 +1667,7 @@ class Orchestrator:
                 if exp_text:
                     context_parts.append(exp_text[:500])
             except Exception:
-                pass
+                logger.debug("plan_experience_lookup_failed", exc_info=True)
             plan_input = "\n".join(context_parts)
 
             response = await asyncio.wait_for(
@@ -1732,7 +1822,7 @@ class Orchestrator:
                     if line.strip()
                 )
         except Exception:
-            pass
+            logger.debug("localhost_check_failed", exc_info=True)
         return False
 
     @staticmethod
@@ -1766,7 +1856,7 @@ class Orchestrator:
         state.memory.attach_vault(self._secret_vault.for_session(session_id))
         state.memory.add_system(self._build_system_prompt(state.workspace))
         state.step_count = 0
-        state.status = "active"
+        state.status = SessionStatus.ACTIVE
         state.last_error = None
         state._recent_tool_calls.clear()
         state._progress_warned = False

@@ -95,9 +95,9 @@ async def _run_agent_background(
     transient_events = frozenset({"thinking_delta", "message_delta", "progress", "live_log"})
     try:
         async for event in orch.handle_message(session_id, message):
+            seq = bus.publish(event.event_type, event.data)
             if event.event_type not in transient_events:
-                store.save_event(session_id, event.event_type, event.data)
-            bus.publish(event.event_type, event.data)
+                store.save_event(session_id, event.event_type, event.data, seq=seq)
     except Exception as exc:
         logger.error(
             "chat_background_error",
@@ -106,12 +106,42 @@ async def _run_agent_background(
             exc_info=True,
         )
         error_data = _classify_error(str(exc))
+        store.save_event(session_id, "error_recovery", error_data)
         bus.publish("error_recovery", error_data)
     finally:
-        store.save_session(session_id, status="completed")
-        bus.publish("done", {"session_id": session_id})
-        bus.mark_done(gen)
-        asyncio.create_task(_run_reflection(session_id, orch, store))
+        final_status = "error"
+        session_destroyed = False
+        try:
+            state = orch.get_session(session_id)
+            if state is None:
+                session_destroyed = True
+            else:
+                final_status = state.status.value
+        except Exception:
+            logger.debug("finally_get_session_failed", session_id=session_id, exc_info=True)
+
+        if not session_destroyed:
+            try:
+                store.save_session(session_id, status=final_status)
+            except Exception:
+                logger.debug("finally_save_session_failed", session_id=session_id, exc_info=True)
+
+        if bus.is_current_run(gen):
+            try:
+                bus.publish("done", {"session_id": session_id, "status": final_status})
+            except Exception:
+                logger.debug("finally_publish_done_failed", session_id=session_id, exc_info=True)
+
+        try:
+            bus.mark_done(gen)
+        except Exception:
+            logger.debug("finally_mark_done_failed", session_id=session_id, exc_info=True)
+
+        if not session_destroyed:
+            try:
+                asyncio.create_task(_run_reflection(session_id, orch, store))
+            except Exception:
+                logger.debug("finally_reflection_failed", session_id=session_id, exc_info=True)
 
 
 def _classify_error(error_msg: str) -> dict[str, str]:
@@ -200,10 +230,30 @@ async def reconnect_stream(
     if bus is None:
         raise HTTPException(status_code=404, detail="No active agent for this session")
 
-    subscriber = bus.subscribe(from_seq=from_seq)
+    store = _get_session_store()
+    has_gap = from_seq > 0 and bus.min_seq > from_seq
+    missed: list[dict[str, Any]] = []
+    if has_gap:
+        missed = store.get_events_since_seq(session_id, from_seq)
+        logger.info(
+            "sse_replay_from_store",
+            session_id=session_id,
+            from_seq=from_seq,
+            buffer_min=bus.min_seq,
+            replayed=len(missed),
+        )
+
+    replay_up_to = missed[-1]["seq"] if missed else from_seq
+    subscriber = bus.subscribe(from_seq=max(replay_up_to, from_seq))
 
     async def event_stream():  # type: ignore[return]
         try:
+            for evt in missed:
+                yield {
+                    "event": evt["event_type"],
+                    "id": str(evt["seq"]),
+                    "data": json.dumps(evt["data"]),
+                }
             while True:
                 try:
                     item = await asyncio.wait_for(subscriber.get(), timeout=300)

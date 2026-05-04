@@ -37,6 +37,10 @@ _MIGRATE_PROJECT_PATH = (
     "ALTER TABLE sessions ADD COLUMN project_path TEXT"
 )
 
+_MIGRATE_SEQ = (
+    "ALTER TABLE events ADD COLUMN seq INTEGER DEFAULT 0"
+)
+
 
 class SessionStore:
     """Persists session metadata and events to a SQLite database."""
@@ -70,6 +74,16 @@ class SessionStore:
             conn.execute(_MIGRATE_PROJECT_PATH)
             conn.commit()
 
+        event_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        if "seq" not in event_cols:
+            conn.execute(_MIGRATE_SEQ)
+            conn.commit()
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq)"
+        )
+        conn.commit()
+
     def save_session(
         self,
         session_id: str,
@@ -90,13 +104,20 @@ class SessionStore:
             conn.commit()
             conn.close()
 
-    def save_event(self, session_id: str, event_type: str, data: dict[str, Any]) -> None:
+    def save_event(
+        self,
+        session_id: str,
+        event_type: str,
+        data: dict[str, Any],
+        seq: int = 0,
+    ) -> None:
         now = time.time()
         with self._lock:
             conn = self._connect()
             conn.execute(
-                "INSERT INTO events (session_id, event_type, data, timestamp) VALUES (?, ?, ?, ?)",
-                (session_id, event_type, json.dumps(data), now),
+                "INSERT INTO events (session_id, event_type, data, timestamp, seq) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, event_type, json.dumps(data), now, seq),
             )
             conn.execute(
                 "UPDATE sessions SET updated_at=? WHERE session_id=?",
@@ -167,6 +188,7 @@ class SessionStore:
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
             conn = self._connect()
+            conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
             cur = conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
             conn.commit()
             conn.close()
@@ -185,6 +207,27 @@ class SessionStore:
             conn.commit()
             conn.close()
             return cur.rowcount > 0
+
+    def get_events_since_seq(
+        self, session_id: str, from_seq: int
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                "SELECT event_type, data, timestamp, seq FROM events "
+                "WHERE session_id=? AND seq > ? ORDER BY id",
+                (session_id, from_seq),
+            ).fetchall()
+            conn.close()
+        return [
+            {
+                "event_type": r[0],
+                "data": json.loads(r[1]),
+                "timestamp": r[2],
+                "seq": r[3],
+            }
+            for r in rows
+        ]
 
     def list_by_project_path(self, project_path: str) -> list[dict[str, Any]]:
         """Return all sessions associated with a specific project directory."""

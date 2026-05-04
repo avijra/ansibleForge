@@ -199,7 +199,7 @@ class ProjectImporter(BaseTool):
                         for c in data
                     ]
             except yaml.YAMLError:
-                pass
+                logger.debug("requirements_yaml_parse_failed", exc_info=True)
 
         return analysis
 
@@ -212,7 +212,7 @@ class ProjectImporter(BaseTool):
                     k in first for k in ("hosts", "tasks", "roles", "import_playbook", "include")
                 )
         except (yaml.YAMLError, OSError):
-            pass
+            logger.debug("playbook_detection_failed", exc_info=True)
         return False
 
     def _copy_project(self, src: Path, project_dir: Path, ws: Path) -> dict[str, int]:

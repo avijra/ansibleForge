@@ -8,7 +8,10 @@ import * as path from "path";
 let mainWindow: InstanceType<typeof BrowserWindow> | null = null;
 let backendProcess: ChildProcess | null = null;
 let creatingWindow = false;
+let backendRestartCount = 0;
+let intentionalShutdown = false;
 const PORT = 8420;
+const MAX_BACKEND_RESTARTS = 3;
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -22,7 +25,7 @@ function isPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-async function waitForBackend(maxRetries = 30): Promise<void> {
+async function waitForBackend(maxRetries = 30): Promise<boolean> {
   const http = require("http") as typeof import("http");
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -34,12 +37,13 @@ async function waitForBackend(maxRetries = 30): Promise<void> {
         req.on("error", () => resolve(false));
         req.setTimeout(2000, () => { req.destroy(); resolve(false); });
       });
-      if (ok) return;
+      if (ok) return true;
     } catch {
       // not ready yet
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
+  return false;
 }
 
 function getBackendCommand(): { cmd: string; args: string[]; cwd: string } {
@@ -84,14 +88,49 @@ function startBackend(): void {
     process.stderr.write(`[backend] ${data}`);
   });
 
+  backendProcess.on("error", (err) => {
+    console.error(`Backend failed to start: ${err.message}`);
+    backendProcess = null;
+    if (!intentionalShutdown) {
+      dialog.showErrorBox(
+        "Backend Failed to Start",
+        `The backend process could not be started.\n\n${err.message}\n\nThe application will now quit.`,
+      );
+      app.quit();
+    }
+  });
+
   backendProcess.on("exit", (code) => {
     console.log(`Backend exited with code ${code}`);
     backendProcess = null;
+    if (!intentionalShutdown && code !== 0) {
+      backendRestartCount++;
+      if (backendRestartCount <= MAX_BACKEND_RESTARTS) {
+        console.log(`Restarting backend (attempt ${backendRestartCount}/${MAX_BACKEND_RESTARTS})...`);
+        setTimeout(() => {
+          startBackend();
+          waitForBackend(15).then((ok) => {
+            if (ok) {
+              mainWindow?.webContents.send("update-status", {
+                status: "backend-restarted",
+              });
+            }
+          });
+        }, 1000);
+      } else {
+        dialog.showErrorBox(
+          "Backend Crashed",
+          "The backend process has crashed repeatedly and cannot be recovered.\n\nPlease restart the application.",
+        );
+        app.quit();
+      }
+    }
   });
 }
 
 function stopBackend(): void {
   if (!backendProcess) return;
+  intentionalShutdown = true;
   const proc = backendProcess;
   backendProcess = null;
 
@@ -340,7 +379,15 @@ if (!gotLock) {
     const portFree = await isPortAvailable(PORT);
     if (portFree) {
       startBackend();
-      await waitForBackend();
+      const backendReady = await waitForBackend();
+      if (!backendReady) {
+        dialog.showErrorBox(
+          "Backend Failed to Start",
+          "The backend service did not respond within the expected time.\n\nPlease check the logs and restart the application.",
+        );
+        app.quit();
+        return;
+      }
     }
     await createWindow();
     checkForUpdates();

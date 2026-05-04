@@ -332,4 +332,4 @@ class VariableInspector(BaseTool):
                 fact_name = f"ansible_{k}" if not k.startswith("ansible_") else k
                 self._add_var(chain, fact_name, v, "cached facts (host_facts.json)", 10)
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.debug("host_facts_parse_failed", exc_info=True)

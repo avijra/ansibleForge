@@ -500,9 +500,9 @@ export function App() {
             activeView={activeView}
             onSelect={(id) => { session.setActiveId(id); setActiveView("chat"); }}
             onOpenFolder={handleOpenFolder}
-            onDelete={session.deleteSession}
+            onDelete={(id) => { chat.cleanupSession(id); session.deleteSession(id); }}
             onReset={handleResetSession}
-            onClearAll={session.clearAllSessions}
+            onClearAll={() => { session.sessions.forEach((s) => chat.cleanupSession(s.id)); session.clearAllSessions(); }}
             onViewChange={setActiveView}
           />
         )}
@@ -566,11 +566,21 @@ export function App() {
                 onApprove={() => chat.approve(session.active!.id)}
                 onReject={() => chat.reject(session.active!.id)}
                 onQuickAction={(prompt) => setDraftPrompt(prompt)}
-                onCancelSecret={() => {
+                onCancelSecret={async () => {
                   const sid = session.active?.id;
                   if (!sid) return;
-                  api.secrets.cancel(sid).catch(() => {});
-                  session.updateStatus(sid, "active");
+                  try {
+                    await api.secrets.cancel(sid);
+                    session.updateStatus(sid, "active");
+                  } catch {
+                    session.addEvent(sid, {
+                      id: `err-${Date.now()}`,
+                      event: "error_recovery",
+                      data: { error: "Failed to cancel secret request. Try sending a new message." },
+                      timestamp: Date.now(),
+                    });
+                    session.updateStatus(sid, "error");
+                  }
                 }}
               />
 

@@ -149,7 +149,7 @@ class TerraformInventoryBridge(BaseTool):
                     outputs = json.loads(outputs_result.stdout)
                     hosts = self._extract_hosts_from_outputs(outputs)
                 except json.JSONDecodeError:
-                    pass
+                    logger.debug("tf_outputs_parse_failed", exc_info=True)
 
         if not hosts:
             return ToolResult.fail(

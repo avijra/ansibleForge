@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ansible_forge.agent.types import SessionStatus
 from ansible_forge.api.endpoints.chat import get_orchestrator
 from ansible_forge.api.middleware.auth import verify_api_key
 
@@ -95,8 +96,8 @@ async def cancel_secret(
     session_vault.cancel_all_pending()
 
     state = orch.get_session(session_id)
-    if state and state.status == "awaiting_secret":
-        state.status = "active"
+    if state and state.status == SessionStatus.AWAITING_SECRET:
+        state.status = SessionStatus.ACTIVE
 
     return SecretResponse(
         session_id=session_id,

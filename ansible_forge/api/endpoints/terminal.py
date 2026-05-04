@@ -65,7 +65,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
                     break
                 await websocket.send_text(data.decode(errors="replace"))
         except (OSError, WebSocketDisconnect):
-            pass
+            logger.debug("pty_read_ended", exc_info=True)
         finally:
             closed = True
 
@@ -84,10 +84,10 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
                     os.kill(pid, signal.SIGWINCH)
                     continue
             except (json.JSONDecodeError, ValueError):
-                pass
+                logger.debug("terminal_msg_parse_failed", exc_info=True)
             os.write(master_fd, raw.encode())
     except WebSocketDisconnect:
-        pass
+        logger.debug("terminal_ws_disconnected", session_id=session_id)
     finally:
         closed = True
         reader_task.cancel()
@@ -95,6 +95,17 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
             os.kill(pid, signal.SIGTERM)
         with contextlib.suppress(OSError):
             os.close(master_fd)
-        with contextlib.suppress(ChildProcessError):
-            os.waitpid(pid, os.WNOHANG)
+        try:
+            _pid, _ = os.waitpid(pid, os.WNOHANG)
+            if _pid == 0:
+                await asyncio.sleep(2)
+                try:
+                    os.kill(pid, 0)
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
         logger.debug("terminal_closed", session_id=session_id)

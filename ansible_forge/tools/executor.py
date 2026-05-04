@@ -20,7 +20,7 @@ from ansible_forge.tools.secret_check import find_missing_secrets
 logger = get_logger(__name__)
 
 _DEFAULT_PLAYBOOK_TIMEOUT = 3600
-_MAX_PLAYBOOK_TIMEOUT = 7200
+_MAX_PLAYBOOK_TIMEOUT = 86400
 
 _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
@@ -87,17 +87,42 @@ def _format_live_event(event: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _kill_runner(runner: Any) -> None:
-    """Terminate ansible-runner's subprocess tree on timeout."""
+def _sigkill_after_delay(pid: int, delay: float = 10.0) -> None:
+    """Background thread: wait, then SIGKILL if still alive."""
     import contextlib
+    import time as _time
+
+    _time.sleep(delay)
+    try:
+        os.kill(pid, 0)
+        logger.warning("sigkill_escalation", pid=pid)
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _kill_runner(runner: Any) -> None:
+    """Terminate ansible-runner's subprocess tree, escalating to SIGKILL."""
+    import contextlib
+    import threading
 
     with contextlib.suppress(Exception):
         if hasattr(runner, "process") and runner.process and runner.process.pid:
             pid = runner.process.pid
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                logger.debug("sigterm_pgid_failed", pid=pid, exc_info=True)
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
+
+            t = threading.Thread(target=_sigkill_after_delay, args=(pid,), daemon=True)
+            t.start()
 
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
@@ -175,10 +200,10 @@ class Executor(BaseTool):
                     "description": (
                         "Max seconds to wait for the playbook to finish. "
                         "Default: 3600 (1 hour). Estimate from task complexity. "
-                        "Max: 7200 (2 hours)."
+                        "Max: 86400 (24 hours)."
                     ),
                     "minimum": 60,
-                    "maximum": 7200,
+                    "maximum": 86400,
                 },
                 "become": {
                     "type": "boolean",
@@ -376,14 +401,14 @@ class Executor(BaseTool):
         except asyncio.CancelledError:
             runner.canceled = True
             _kill_runner(runner)
-            thread.join(timeout=10)
+            await loop.run_in_executor(None, lambda: thread.join(timeout=10))
             logger.info("playbook_cancelled", playbook=playbook)
             raise
         except TimeoutError:
             runner.cancel_callback = lambda: None
             runner.canceled = True
             _kill_runner(runner)
-            thread.join(timeout=10)
+            await loop.run_in_executor(None, lambda: thread.join(timeout=10))
             mins = effective_timeout // 60
             return ToolResult.fail(
                 f"Playbook timed out after {mins} minute(s). "

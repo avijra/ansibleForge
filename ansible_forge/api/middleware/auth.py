@@ -12,6 +12,9 @@ from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from ansible_forge.config import get_settings
+from ansible_forge.logging import get_logger
+
+logger = get_logger(__name__)
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _bearer = HTTPBearer(auto_error=False)
@@ -78,6 +81,6 @@ async def verify_api_key(
             payload = _verify_hs256_jwt(bearer.credentials, settings.jwt_secret)
             return payload.get("sub", "jwt-user")
         except (ValueError, Exception):
-            pass
+            logger.debug("jwt_verify_failed", exc_info=True)
 
     raise HTTPException(status_code=401, detail="Invalid or missing credentials")

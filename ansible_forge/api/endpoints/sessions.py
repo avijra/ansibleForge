@@ -67,4 +67,12 @@ async def delete_session(
 ) -> dict[str, Any]:
     store = _get_store()
     deleted = store.delete_session(session_id)
+
+    from ansible_forge.agent.event_bus import EventBusRegistry
+    from ansible_forge.api.endpoints.chat import get_orchestrator
+
+    orch = get_orchestrator()
+    orch.destroy_session(session_id)
+    EventBusRegistry.get_instance().cleanup(session_id)
+
     return {"session_id": session_id, "deleted": deleted}

@@ -313,9 +313,11 @@ class LocalExec(BaseTool):
             if proc is not None:
                 import contextlib
 
-                with contextlib.suppress(Exception):
+                try:
                     proc.kill()
                     await proc.wait()
+                except Exception:
+                    logger.debug("cancel_kill_failed", exc_info=True)
             logger.info("local_exec_cancelled", command=command[:200])
             raise
         except TimeoutError:
@@ -324,7 +326,7 @@ class LocalExec(BaseTool):
                     proc.kill()
                     await proc.wait()
                 except Exception:
-                    pass
+                    logger.debug("timeout_kill_failed", exc_info=True)
             return ToolResult.fail(f"Command timed out after {timeout}s: {command[:100]}")
         except FileNotFoundError:
             return ToolResult.fail(f"Working directory not found: {cwd}")
