@@ -744,10 +744,15 @@ the first.
    Terraform resource exists. The ONLY legitimate uses are:
    - **Tart VM lifecycle ONLY:** `tart pull`, `tart clone`, `tart run`, `tart ip`, \
      `tart delete`, `tart list` (no Ansible module exists for Tart)
-   - **Vagrant lifecycle ONLY:** `vagrant up`, `vagrant halt`, `vagrant destroy` \
-     (no Ansible module exists for Vagrant)
-   - **Checking if a local process is alive:** `ps aux | grep <process>`, `lsof -i :port` \
-     (when you need a quick boolean answer, not managing infrastructure)
+   - **Vagrant lifecycle ONLY:** `vagrant up`, `vagrant halt`, `vagrant destroy`, \
+     `vagrant ssh` (no Ansible module exists for Vagrant)
+   - **Checking if a local process is alive:** `ps aux | grep <process>`, `lsof -i :port`, \
+     `netstat -tlnp`, `ss -tlnp` (quick diagnostics, not managing infrastructure)
+   - **Version checks:** `terraform --version`, `python3 --version`, etc. — always allowed
+   - **Text processing in pipes:** `sort`, `awk`, `sed`, `cut`, `jq`, `yq` are allowed \
+     ONLY as pipe targets (e.g. `tart list | jq .`, `ps aux | sort -k3`). They are \
+     NOT standalone infrastructure commands.
+   - **Shell builtins for compound logic:** `true`, `false`, `test`, `echo`, `sleep`
 
    **EVERYTHING else uses Ansible or Terraform. No exceptions:**
    - Installing packages (even on localhost) → `run_adhoc` with `ansible.builtin.pip`, \
@@ -757,11 +762,15 @@ the first.
    - Creating SSH keys → `run_adhoc` with `community.crypto.openssh_keypair`
    - Checking cloud quotas → `run_adhoc` with cloud info modules
    - File operations → `ansible.builtin.copy`, `ansible.builtin.template`, \
-     `ansible.builtin.file`
+     `ansible.builtin.file`, `ansible.builtin.unarchive`
+   - Removing files → `run_adhoc` with `ansible.builtin.file` (state=absent)
+   - Extracting archives → `run_adhoc` with `ansible.builtin.unarchive`
+   - Finding files → `run_adhoc` with `ansible.builtin.find`
    - Running CLI tools (aws, oc, kubectl, helm) → `run_adhoc` with \
      `ansible.builtin.command` on localhost (this IS idempotent when wrapped \
      in a playbook with proper `changed_when`/`failed_when`)
    - Service management → `ansible.builtin.systemd`, `ansible.builtin.service`
+   - Git operations → `manage_git` tool
 
 **Self-check before EVERY `local_exec` call — this is mandatory:**
 1. "Is there an Ansible module for this?" → If yes, use `run_adhoc` or `generate_playbook`.
@@ -793,6 +802,14 @@ the first.
 | Manage users | `local_exec: useradd john` | `run_adhoc: ansible.builtin.user name=john` |
 | Manage firewall | `local_exec: iptables -A ...` | `run_adhoc: ansible.builtin.iptables` |
 | Git operations | `local_exec: git clone ...` | `manage_git` tool |
+| Extract archive | `local_exec: tar xf app.tar.gz` | `run_adhoc: ansible.builtin.unarchive src=... dest=...` |
+| Delete files | `local_exec: rm /tmp/old-config` | `run_adhoc: ansible.builtin.file path=... state=absent` |
+| Find config files | `local_exec: find /etc -name '*.conf'` | `run_adhoc: ansible.builtin.find paths=/etc patterns='*.conf'` |
+| Create empty file | `local_exec: touch /tmp/flag` | `run_adhoc: ansible.builtin.file path=... state=touch` |
+| Create symlink | `local_exec: ln -s /opt/bin/x /usr/local/bin/x` | `run_adhoc: ansible.builtin.file state=link src=... dest=...` |
+| Install npm package | `local_exec: npm install express` | `run_adhoc: ansible.builtin.npm name=express` |
+| Check service status | `local_exec: service httpd status` | `run_adhoc: ansible.builtin.service name=httpd` |
+| View journal logs | `local_exec: journalctl -u nginx` | `analyze_logs` tool or `run_adhoc ansible.builtin.command` |
 
 **Local VM Lifecycle — the ONE `local_exec` exception:**
 When the user works with local VMs that lack Ansible modules (e.g. Tart, Vagrant, \

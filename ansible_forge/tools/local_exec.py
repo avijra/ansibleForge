@@ -27,6 +27,8 @@ _DANGEROUS_PATTERNS = [
     re.compile(r"\b:(){ :\|:& };:"),
 ]
 
+_VERSION_RE = re.compile(r"^\s*\S+\s+(?:--?version|-V|version)\s*$")
+
 _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\baws\s+ec2\b"), "run_adhoc with amazon.aws.ec2_instance_info / ec2_vpc_net_info"),
     (re.compile(r"\baws\s+s3\b"), "run_adhoc with amazon.aws.s3_bucket or amazon.aws.s3_object"),
@@ -42,15 +44,22 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bkubectl\s+"), "run_adhoc with kubernetes.core.k8s_info / k8s module"),
     (re.compile(r"\bhelm\s+"), "run_adhoc with kubernetes.core.helm / helm_info module"),
     (re.compile(r"\bpip3?\s+install\b"), "run_adhoc with ansible.builtin.pip module"),
+    (re.compile(r"\bpip3?\s+"), "run_adhoc with ansible.builtin.pip or ansible.builtin.command on localhost"),
     (re.compile(r"\bbrew\s+install\b"), "run_adhoc with ansible.builtin.homebrew module"),
+    (re.compile(r"\bbrew\s+"), "run_adhoc with ansible.builtin.homebrew or ansible.builtin.command on localhost"),
     (re.compile(r"\bapt\s+install\b|\bapt-get\s+install\b"), "run_adhoc with ansible.builtin.apt module"),
+    (re.compile(r"\bapt(?:-get)?\s+"), "run_adhoc with ansible.builtin.apt or ansible.builtin.command on localhost"),
     (re.compile(r"\bdnf\s+install\b|\byum\s+install\b"), "run_adhoc with ansible.builtin.dnf / yum module"),
+    (re.compile(r"\bdnf\s+|\byum\s+"), "run_adhoc with ansible.builtin.dnf/yum or ansible.builtin.command on localhost"),
+    (re.compile(r"\bnpm\s+install\b"), "run_adhoc with ansible.builtin.npm module"),
+    (re.compile(r"\bnpm\s+"), "run_adhoc with ansible.builtin.npm or ansible.builtin.command on localhost"),
     (re.compile(r"\bsystemctl\s+"), "run_adhoc with ansible.builtin.systemd module"),
-    (re.compile(r"\bcurl\s+.*https?://"), "run_adhoc with ansible.builtin.uri (API) or ansible.builtin.get_url (download)"),
+    (re.compile(r"\bservice\s+"), "run_adhoc with ansible.builtin.service module"),
+    (re.compile(r"\bcurl\s+"), "run_adhoc with ansible.builtin.uri (API) or ansible.builtin.get_url (download)"),
     (re.compile(r"\bwget\s+"), "run_adhoc with ansible.builtin.get_url module"),
     (re.compile(r"\bssh-keygen\b"), "run_adhoc with community.crypto.openssh_keypair module"),
     (re.compile(r"\bssh-keyscan\b"), "run_adhoc with ansible.builtin.known_hosts module"),
-    (re.compile(r"\bssh\s+"), "run_adhoc with ansible.builtin.ping or test_connectivity tool"),
+    (re.compile(r"^\s*ssh\s+"), "run_adhoc with ansible.builtin.ping or test_connectivity tool"),
     (re.compile(r"\bdocker\s+(?!ps|inspect)"), "run_adhoc with community.docker.* modules"),
     (re.compile(r"\bterraform\s+"), "terraform_exec tool (not local_exec)"),
     (re.compile(r"\btofu\s+"), "terraform_exec tool (not local_exec)"),
@@ -63,9 +72,17 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bmkdir\b"), "run_adhoc with ansible.builtin.file module (state=directory)"),
     (re.compile(r"\bchmod\b"), "run_adhoc with ansible.builtin.file module (mode parameter)"),
     (re.compile(r"\bchown\b"), "run_adhoc with ansible.builtin.file module (owner/group)"),
+    (re.compile(r"\bchgrp\b"), "run_adhoc with ansible.builtin.file module (group parameter)"),
     (re.compile(r"\bcp\b"), "run_adhoc with ansible.builtin.copy module"),
     (re.compile(r"\bmv\b"), "run_adhoc with ansible.builtin.command (or copy+file absent)"),
+    (re.compile(r"\brm\s+"), "run_adhoc with ansible.builtin.file module (state=absent)"),
     (re.compile(r"\bcat\b"), "read_file tool or run_adhoc with ansible.builtin.slurp"),
+    (re.compile(r"\btouch\s+"), "run_adhoc with ansible.builtin.file module (state=touch)"),
+    (re.compile(r"\bln\s+"), "run_adhoc with ansible.builtin.file module (state=link)"),
+    (re.compile(r"\btar\s+"), "run_adhoc with ansible.builtin.unarchive module"),
+    (re.compile(r"\bunzip\s+"), "run_adhoc with ansible.builtin.unarchive module"),
+    (re.compile(r"\bfind\s+"), "run_adhoc with ansible.builtin.find module"),
+    (re.compile(r"\bstat\s+"), "run_adhoc with ansible.builtin.stat module"),
     (re.compile(r"\bping\s+"), "test_connectivity tool or run_adhoc with ansible.builtin.wait_for"),
     (re.compile(r"\bdig\s+"), "run_adhoc with community.general.dig lookup or ansible.builtin.command"),
     (re.compile(r"\bnslookup\b"), "run_adhoc with community.general.dig lookup"),
@@ -75,6 +92,7 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bfree\b"), "collect_facts tool (ansible_memtotal_mb)"),
     (re.compile(r"\buptime\b"), "collect_facts tool (ansible_uptime_seconds)"),
     (re.compile(r"\bwhoami\b"), "collect_facts tool (ansible_user_id)"),
+    (re.compile(r"\bdu\s+"), "collect_facts (ansible_mounts) or run_adhoc ansible.builtin.command"),
     (re.compile(r"\bscp\b"), "run_adhoc with ansible.builtin.copy (push) or ansible.builtin.fetch (pull)"),
     (re.compile(r"\brsync\b"), "run_adhoc with ansible.posix.synchronize module"),
     (re.compile(r"\bsudo\b"), "run_adhoc with become: true"),
@@ -84,7 +102,10 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\biptables\b"), "run_adhoc with ansible.builtin.iptables module"),
     (re.compile(r"\bfirewall-cmd\b"), "run_adhoc with ansible.posix.firewalld module"),
     (re.compile(r"\bsemanage\b|\bsetsebool\b"), "run_adhoc with ansible.posix.seboolean / selinux module"),
-    (re.compile(r"\bgit\s+(?:clone|pull|push|commit)\b"), "manage_git tool"),
+    (re.compile(r"\bmount\s+"), "run_adhoc with ansible.posix.mount module"),
+    (re.compile(r"\bumount\s+"), "run_adhoc with ansible.posix.mount module (state=absent)"),
+    (re.compile(r"\bjournalctl\b"), "analyze_logs tool or run_adhoc with ansible.builtin.command"),
+    (re.compile(r"\bgit\s+"), "manage_git tool"),
 ]
 
 _ALLOWED_PATTERNS = [
@@ -97,7 +118,7 @@ _ALLOWED_PATTERNS = [
     re.compile(r"\bpkill\b"),
     re.compile(r"\bdocker\s+(?:ps|inspect)\b"),
     re.compile(r"\bsw_vers\b"),
-    re.compile(r"\bwc\s+"),
+    re.compile(r"\bwc\b"),
     re.compile(r"\bhead\s+"),
     re.compile(r"\btail\s+"),
     re.compile(r"\bgrep\s+"),
@@ -107,6 +128,25 @@ _ALLOWED_PATTERNS = [
     re.compile(r"\bwhich\s+"),
     re.compile(r"\benv\b"),
     re.compile(r"\bprintenv\b"),
+    re.compile(r"\bsort\b"),
+    re.compile(r"\bawk\b"),
+    re.compile(r"\bsed\s+"),
+    re.compile(r"\bcut\s+"),
+    re.compile(r"\buniq\b"),
+    re.compile(r"\btr\s+"),
+    re.compile(r"\bxargs\b"),
+    re.compile(r"\btee\s+"),
+    re.compile(r"\bjq\b"),
+    re.compile(r"\byq\b"),
+    re.compile(r"\bkill\s+"),
+    re.compile(r"\btrue\b"),
+    re.compile(r"\bfalse\b"),
+    re.compile(r"\btest\s+"),
+    re.compile(r"\bnetstat\b"),
+    re.compile(r"\bss\s+"),
+    re.compile(r"\bprintf\s+"),
+    re.compile(r"\bbasename\b"),
+    re.compile(r"\bdirname\b"),
 ]
 
 _SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
@@ -156,6 +196,9 @@ class LocalExec(BaseTool):
         """Check a single command segment. Returns redirect message or None."""
         stripped = segment.strip()
         if not stripped:
+            return None
+
+        if _VERSION_RE.match(stripped):
             return None
 
         for pattern, redirect in _ANSIBLE_REDIRECT:
