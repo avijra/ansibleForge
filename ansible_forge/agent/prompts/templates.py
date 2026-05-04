@@ -67,8 +67,8 @@ If the error mentions "Broken pipe" or SSH auth failure, secrets may be missing 
 - "secrets not in the vault" → use `request_secret` to collect each missing secret, then retry
 - Broken pipe / Errno 32 → this is almost NEVER a crashed runner. It's usually SSH auth failing \
 because credentials are missing. Check if your inventory uses {{ variables }} and whether those \
-secrets are available. Use `local_exec` to test SSH directly: \
-`ssh -o ConnectTimeout=5 user@host echo ok`. If it's a permission issue, re-request the secret.
+secrets are available. Use `test_connectivity` or `run_adhoc` with `ansible.builtin.ping` to \
+verify SSH access. If it's a permission issue, re-request the secret via `request_secret`.
 - Permission denied → add `become: true` to the task, regenerate, retry
 - Module not found → use web_search to find the correct FQCN, then regenerate and retry
 - File not found → create the missing file, then retry
