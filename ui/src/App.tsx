@@ -22,7 +22,7 @@ import { useLLMSettings } from "@/hooks/useLLMSettings";
 import { useKeyboard } from "@/hooks/useKeyboard";
 import { useAnsibleContext } from "@/hooks/useAnsibleContext";
 import { useResizable } from "@/hooks/useResizable";
-import { useElectronIPC } from "@/hooks/useElectronIPC";
+import { useElectronIPC, useUpdateStatus } from "@/hooks/useElectronIPC";
 import { api, request } from "@/api/client";
 import type { AgentEvent, SessionListItem, WorkspaceFile } from "@/api/types";
 
@@ -461,9 +461,27 @@ export function App() {
   );
 
   const hasActiveSession = session.active != null;
+  const updateStatus = useUpdateStatus();
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
+      {updateStatus.status === "downloading" && (
+        <div className="shrink-0 bg-blue-900/80 px-3 py-1 text-center text-xs text-blue-200 font-mono">
+          Downloading update{updateStatus.version ? ` v${updateStatus.version}` : ""}
+          {updateStatus.percent != null && ` — ${updateStatus.percent}%`}
+          ...
+        </div>
+      )}
+      {updateStatus.status === "ready" && (
+        <div className="shrink-0 bg-emerald-900/80 px-3 py-1 text-center text-xs text-emerald-200 font-mono">
+          Update v{updateStatus.version} ready — restart Tuyere to apply
+        </div>
+      )}
+      {updateStatus.status === "error" && (
+        <div className="shrink-0 bg-red-900/60 px-3 py-1 text-center text-xs text-red-300 font-mono">
+          Update failed{updateStatus.message ? `: ${updateStatus.message}` : ""}
+        </div>
+      )}
       <Header
         health={health}
         llmSettings={llm.settings}
@@ -543,6 +561,7 @@ export function App() {
               <ActivityFeed
                 events={session.active!.events}
                 isStreaming={chat.isStreaming}
+                sessionStatus={session.active!.status}
                 isPendingApproval={isPendingApproval ?? false}
                 onApprove={() => chat.approve(session.active!.id)}
                 onReject={() => chat.reject(session.active!.id)}

@@ -181,12 +181,13 @@ async def chat(
                     break
                 yield {
                     "event": item["event"],
+                    "id": str(item.get("seq", "")),
                     "data": json.dumps(item["data"]),
                 }
         finally:
             bus.unsubscribe(subscriber)
 
-    return EventSourceResponse(event_stream())
+    return EventSourceResponse(event_stream(), ping=15)
 
 
 @router.get("/chat/{session_id}/stream")
@@ -212,12 +213,13 @@ async def reconnect_stream(
                     break
                 yield {
                     "event": item["event"],
+                    "id": str(item.get("seq", "")),
                     "data": json.dumps(item["data"]),
                 }
         finally:
             bus.unsubscribe(subscriber)
 
-    return EventSourceResponse(event_stream())
+    return EventSourceResponse(event_stream(), ping=15)
 
 
 @router.get("/chat/{session_id}/status", response_model=SessionStatusResponse)

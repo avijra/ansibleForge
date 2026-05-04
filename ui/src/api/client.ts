@@ -179,11 +179,14 @@ export const api = {
 
 let eventCounter = 0;
 
+export let lastSeq = 0;
+
 export function reconnectStream(
   sessionId: string,
   fromSeq: number,
   onEvent: (event: AgentEvent) => void,
   onDone: () => void,
+  onDropped: () => void,
 ): AbortController {
   const controller = new AbortController();
 
@@ -193,15 +196,16 @@ export function reconnectStream(
   })
     .then(async (res) => {
       if (!res.ok) {
-        onDone();
+        onDropped();
         return;
       }
       const reader = res.body?.getReader();
-      if (!reader) { onDone(); return; }
+      if (!reader) { onDropped(); return; }
 
       const decoder = new TextDecoder();
       let buffer = "";
       let currentEvent: AgentEventType | null = null;
+      let receivedDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -211,12 +215,16 @@ export function reconnectStream(
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("event: ")) {
+          if (line.startsWith("id: ")) {
+            const seq = parseInt(line.slice(4).trim(), 10);
+            if (!isNaN(seq)) lastSeq = seq;
+          } else if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim() as AgentEventType;
           } else if (line.startsWith("data: ") && currentEvent) {
             try {
               const data = JSON.parse(line.slice(6));
               if (currentEvent === "done") {
+                receivedDone = true;
                 onDone();
               } else {
                 onEvent({
@@ -231,10 +239,10 @@ export function reconnectStream(
           }
         }
       }
-      onDone();
+      if (!receivedDone) onDropped(); else onDone();
     })
     .catch((err) => {
-      if (err.name !== "AbortError") onDone();
+      if (err.name !== "AbortError") onDropped();
     });
 
   return controller;
@@ -246,9 +254,12 @@ export function streamChat(
   onEvent: (event: AgentEvent) => void,
   onError: (error: Error) => void,
   onDone: (sessionId: string) => void,
+  onDropped: (sessionId: string) => void,
   projectPath?: string,
 ): AbortController {
   const controller = new AbortController();
+
+  lastSeq = 0;
 
   fetch(`${BASE}/chat`, {
     method: "POST",
@@ -299,7 +310,10 @@ export function streamChat(
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("event: ")) {
+          if (line.startsWith("id: ")) {
+            const seq = parseInt(line.slice(4).trim(), 10);
+            if (!isNaN(seq)) lastSeq = seq;
+          } else if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim() as AgentEventType;
           } else if (line.startsWith("data: ") && currentEvent) {
             try {
@@ -331,7 +345,7 @@ export function streamChat(
       }
 
       if (!receivedDone && lastSessionId) {
-        onDone(lastSessionId);
+        onDropped(lastSessionId);
       }
     })
     .catch((err) => {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Loader2, MessageSquare } from "lucide-react";
-import type { AgentEvent } from "@/api/types";
+import { CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff } from "lucide-react";
+import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { DiffReview } from "@/components/review/DiffReview";
 import { MessageEvent } from "./events/MessageEvent";
@@ -104,23 +104,33 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
 
   const lastTool = [...events].reverse().find((e) => e.event === "tool_call");
   const lastProgress = [...events].reverse().find((e) => e.event === "progress");
+  const lastApprovalGranted = [...events].reverse().find((e) => e.event === "approval_granted");
 
   const activeTool = lastTool ? friendlyToolName((lastTool.data.tool as string) || "") : null;
   const statusMsg = lastProgress ? (lastProgress.data.message as string) : null;
+
+  const justResumed =
+    lastApprovalGranted &&
+    (!lastTool || lastApprovalGranted.timestamp > lastTool.timestamp) &&
+    (!lastProgress || lastApprovalGranted.timestamp > lastProgress.timestamp);
+
+  const hasAnyInfo = stepCount > 0 || toolCalls > 0 || activeTool || statusMsg;
 
   return (
     <div className="rounded-lg border border-emerald-900/40 bg-black/50 px-3 py-2 font-mono" role="status" aria-live="polite">
       <div className="flex items-center gap-2">
         <Loader2 className="h-3 w-3 text-emerald-600 animate-spin shrink-0" />
         <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 min-w-0">
-          {stepCount > 0 && (
+          {!hasAnyInfo && <span className="text-emerald-500">Agent is thinking...</span>}
+          {justResumed && hasAnyInfo && <span className="text-emerald-500">Resuming...</span>}
+          {!justResumed && stepCount > 0 && (
             <>
               <span>step {stepCount}</span>
               {toolCalls > 0 && <span className="text-emerald-900">·</span>}
             </>
           )}
-          {toolCalls > 0 && <span>{toolCalls} tool calls</span>}
-          {activeTool && (
+          {!justResumed && toolCalls > 0 && <span>{toolCalls} tool calls</span>}
+          {!justResumed && activeTool && (
             <>
               <span className="text-emerald-900">·</span>
               <span className="text-emerald-500 truncate">{activeTool}</span>
@@ -128,7 +138,7 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
           )}
         </div>
       </div>
-      {statusMsg && (
+      {!justResumed && statusMsg && (
         <div className="mt-1 text-[11px] text-emerald-600/80 truncate pl-5">
           {statusMsg}
         </div>
@@ -137,9 +147,46 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   );
 }
 
+function SessionCompletedBanner({ events }: { events: AgentEvent[] }) {
+  const stepCount = events.filter((e) => e.event === "step_start").length;
+  const toolCalls = events.filter((e) => e.event === "tool_call").length;
+  const hasError = events.some(
+    (e) => e.event === "error_recovery" || (e.event === "tool_result" && e.data.status === "error"),
+  );
+
+  return (
+    <div className="rounded-lg border border-emerald-900/30 bg-emerald-950/20 px-3 py-2 font-mono">
+      <div className="flex items-center gap-2">
+        <CheckCircle2 className={`h-3 w-3 shrink-0 ${hasError ? "text-amber-500" : "text-emerald-500"}`} />
+        <span className="text-[10px] text-emerald-600">
+          {hasError ? "Task completed with issues" : "Task completed"}
+          {stepCount > 0 && <span className="text-emerald-700 ml-1.5">· {stepCount} steps · {toolCalls} tool calls</span>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SessionErrorBanner({ events }: { events: AgentEvent[] }) {
+  const lastError = [...events].reverse().find((e) => e.event === "error_recovery");
+  const errorMsg = lastError
+    ? (lastError.data.error as string) || "An unexpected error occurred."
+    : "Something went wrong. Try sending a new message.";
+
+  return (
+    <div className="rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-2 font-mono">
+      <div className="flex items-center gap-2">
+        <WifiOff className="h-3 w-3 text-red-500 shrink-0" />
+        <span className="text-[10px] text-red-400 truncate">{errorMsg}</span>
+      </div>
+    </div>
+  );
+}
+
 interface ActivityFeedProps {
   events: AgentEvent[];
   isStreaming: boolean;
+  sessionStatus: Session["status"];
   isPendingApproval: boolean;
   onApprove: () => void;
   onReject: () => void;
@@ -181,6 +228,7 @@ function PinnedMessage({
 export function ActivityFeed({
   events,
   isStreaming,
+  sessionStatus,
   isPendingApproval,
   onApprove,
   onReject,
@@ -227,15 +275,22 @@ export function ActivityFeed({
   }, [events]);
 
   const showActivityTicker = useMemo(() => {
+    const terminalStates = new Set(["completed", "error", "rejected"]);
+    if (terminalStates.has(sessionStatus)) return false;
+
+    const waitingStates = new Set(["awaiting_approval", "awaiting_secret"]);
+    if (waitingStates.has(sessionStatus)) return false;
+
     if (isStreaming) return true;
+
     if (events.length === 0) return false;
     const lastEvent = events[events.length - 1];
     const midExecTypes = new Set([
       "tool_call", "step_start", "tool_result", "progress",
-      "approval_granted", "checkpoint", "error_recovery",
+      "approval_granted", "checkpoint",
     ]);
     return midExecTypes.has(lastEvent.event);
-  }, [isStreaming, events]);
+  }, [isStreaming, events, sessionStatus]);
 
   const scrollToMessage = useCallback(() => {
     lastMsgRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -358,6 +413,14 @@ export function ActivityFeed({
   const showPinned =
     msgOffScreen && hasItemsAfterLastMessage && lastMessageEvent != null;
 
+  const statusBar = showActivityTicker ? (
+    <LiveActivityStatus events={events} />
+  ) : sessionStatus === "completed" && events.length > 0 ? (
+    <SessionCompletedBanner events={events} />
+  ) : sessionStatus === "error" && events.length > 0 ? (
+    <SessionErrorBanner events={events} />
+  ) : null;
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div
@@ -366,13 +429,17 @@ export function ActivityFeed({
         className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
       >
         {renderItems}
-        {showActivityTicker && <LiveActivityStatus events={events} />}
       </div>
       {showPinned && (
         <PinnedMessage
           event={lastMessageEvent!}
           onScrollTo={scrollToMessage}
         />
+      )}
+      {statusBar && (
+        <div className="shrink-0 border-t border-zinc-800/50 px-4 py-2">
+          {statusBar}
+        </div>
       )}
     </div>
   );

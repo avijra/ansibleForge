@@ -128,11 +128,54 @@ function checkForUpdates(): void {
         .then((result: { response: number }) => {
           if (result.response === 0) {
             autoUpdater.downloadUpdate();
+            mainWindow?.webContents.send("update-status", {
+              status: "downloading",
+              version: info.version,
+            });
+          }
+        });
+    });
+
+    autoUpdater.on(
+      "download-progress",
+      (progress: { percent: number; transferred: number; total: number }) => {
+        mainWindow?.webContents.send("update-status", {
+          status: "downloading",
+          percent: Math.round(progress.percent),
+        });
+        mainWindow?.setProgressBar(progress.percent / 100);
+      },
+    );
+
+    autoUpdater.on("update-downloaded", (info: { version: string }) => {
+      mainWindow?.setProgressBar(-1);
+      mainWindow?.webContents.send("update-status", {
+        status: "ready",
+        version: info.version,
+      });
+      dialog
+        .showMessageBox({
+          type: "info",
+          title: "Update Ready",
+          message: `Tuyere v${info.version} has been downloaded.`,
+          detail: "It will be installed the next time you quit the app. Restart now?",
+          buttons: ["Restart Now", "Later"],
+          defaultId: 0,
+          cancelId: 1,
+        })
+        .then((result: { response: number }) => {
+          if (result.response === 0) {
+            autoUpdater.quitAndInstall();
           }
         });
     });
 
     autoUpdater.on("error", (err: Error) => {
+      mainWindow?.setProgressBar(-1);
+      mainWindow?.webContents.send("update-status", {
+        status: "error",
+        message: err.message,
+      });
       console.log(`Auto-update check failed: ${err.message}`);
     });
 

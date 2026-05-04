@@ -69,6 +69,8 @@ _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
         "Playbook still executing. Complex deployments can take several minutes.",
         "Playbook continues running. Will report results when it finishes.",
         "Playbook in progress. Long-running tasks (installs, cluster ops) are expected to take time.",
+        "Playbook still running — this is normal for infrastructure deployments.",
+        "Playbook executing. Agent is alive and monitoring progress.",
     ],
     "collect_facts": [
         "Gathering host facts (OS, packages, network, services)...",
@@ -99,6 +101,19 @@ _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
         "Command in progress. Some operations take time to complete.",
         "Still running. Will report results when the command finishes.",
     ],
+    "local_exec": [
+        "Running local command...",
+        "Command still executing. Waiting for output.",
+        "Command in progress.",
+        "Still running. Some operations take time to complete.",
+    ],
+    "terraform_exec": [
+        "Terraform operation running...",
+        "Terraform still executing. Infrastructure changes can take several minutes.",
+        "Terraform in progress. Cloud resource provisioning takes time.",
+        "Terraform still working. Large infrastructure changes may take 10-30 minutes.",
+        "Terraform operation ongoing — agent is alive and monitoring.",
+    ],
 }
 
 _DEFAULT_PROGRESS_MESSAGES = [
@@ -106,6 +121,7 @@ _DEFAULT_PROGRESS_MESSAGES = [
     "Still processing. Will report what I find.",
     "Operation in progress.",
     "Still running. Will share results when done.",
+    "Agent alive — operation continues.",
 ]
 
 _LLM_THINKING_MESSAGES = [
@@ -847,13 +863,16 @@ class Orchestrator:
                     self._execute_tool(state, tc.name, tc.arguments)
                 )
                 progress_tick = 0
+                total_elapsed = 0.0
                 msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
                 while not task.done():
-                    done, _ = await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL)
+                    interval = _PROGRESS_INTERVAL if total_elapsed < 60 else 15
+                    done, _ = await asyncio.wait({task}, timeout=interval)
                     if done:
                         break
                     progress_tick += 1
-                    elapsed = progress_tick * _PROGRESS_INTERVAL
+                    total_elapsed += interval
+                    elapsed = int(total_elapsed)
                     hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
                     elapsed_str = (
                         f"{elapsed // 60}m {elapsed % 60}s"
