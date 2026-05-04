@@ -983,30 +983,41 @@ class Orchestrator:
                 ))
 
                 if result.status == ToolStatus.NEEDS_APPROVAL:
-                    state.status = "awaiting_approval"
-                    yield AgentEvent("approval_required", {
-                        "session_id": state.session_id,
-                        "output": result.output,
-                        "data": result.data,
-                    })
+                    auto_approved = False
+                    if tc.name == "execute_playbook" and self._is_localhost_only_playbook(tc, state):
+                        auto_approved = True
+                        pb = tc.arguments.get("playbook", "")
+                        if pb:
+                            state._approved_playbooks.add(pb)
+                        yield AgentEvent("approval_granted", {"session_id": state.session_id})
 
-                    approval = self._approval_gate.create_request(
-                        session_id=state.session_id,
-                        description=f"Execute {tc.name}",
-                        diff_summary=result.output,
-                        metadata=result.data,
-                    )
+                    if not auto_approved:
+                        state.status = "awaiting_approval"
+                        yield AgentEvent("approval_required", {
+                            "session_id": state.session_id,
+                            "output": result.output,
+                            "data": result.data,
+                        })
 
-                    status = await approval.wait(timeout=600)
-                    if state._generation != my_generation:
-                        return
-                    if status == ApprovalStatus.APPROVED:
+                        approval = self._approval_gate.create_request(
+                            session_id=state.session_id,
+                            description=f"Execute {tc.name}",
+                            diff_summary=result.output,
+                            metadata=result.data,
+                        )
+
+                        status = await approval.wait(timeout=600)
+                        if state._generation != my_generation:
+                            return
+
+                    if auto_approved or status == ApprovalStatus.APPROVED:
                         state.status = "active"
                         if tc.name == "execute_playbook":
                             pb = tc.arguments.get("playbook", "")
                             if pb:
                                 state._approved_playbooks.add(pb)
-                        yield AgentEvent("approval_granted", {"session_id": state.session_id})
+                        if not auto_approved:
+                            yield AgentEvent("approval_granted", {"session_id": state.session_id})
                         if state._rejected_output and state._rejected_tool == tc.name:
                             self._capture_correction(state, tc.name, result)
                     else:
@@ -1601,6 +1612,44 @@ class Orchestrator:
         return self._secret_vault.for_session(session_id).delete(name)
 
     @staticmethod
+    def _is_localhost_only_playbook(tc: Any, state: SessionState) -> bool:
+        """Return True if the playbook targets only localhost (safe to auto-approve)."""
+        inv_path = tc.arguments.get("inventory", "")
+        if not inv_path:
+            return False
+        try:
+            from pathlib import Path
+
+            import yaml
+
+            inv_file = Path(inv_path)
+            if not inv_file.exists():
+                return False
+            content = inv_file.read_text()
+            if inv_file.suffix in (".yml", ".yaml"):
+                data = yaml.safe_load(content) or {}
+                hosts = set()
+                for _, group_data in data.items():
+                    if isinstance(group_data, dict):
+                        group_hosts = group_data.get("hosts", {})
+                        if isinstance(group_hosts, dict):
+                            hosts.update(group_hosts.keys())
+                return hosts and hosts <= {"localhost", "127.0.0.1"}
+            if inv_file.suffix in (".ini", ""):
+                return "localhost" in content and all(
+                    line.strip().startswith("[")
+                    or line.strip().startswith("#")
+                    or line.strip() == ""
+                    or "localhost" in line
+                    or "127.0.0.1" in line
+                    for line in content.splitlines()
+                    if line.strip()
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _requires_unapproved_apply_gate(tc: Any, state: SessionState) -> bool:
         """Return True if this tool call is an apply-mode execution that hasn't
         been through a prior check-mode approval in this session."""
@@ -1609,7 +1658,12 @@ class Orchestrator:
         if tc.arguments.get("mode") != "apply":
             return False
         playbook = tc.arguments.get("playbook", "")
-        return playbook not in state._approved_playbooks
+        if playbook in state._approved_playbooks:
+            return False
+        if Orchestrator._is_localhost_only_playbook(tc, state):
+            state._approved_playbooks.add(playbook)
+            return False
+        return True
 
     def approve_session(self, session_id: str) -> bool:
         return self._approval_gate.approve(session_id)

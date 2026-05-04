@@ -82,6 +82,10 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
             opts.updateStatus(sessionId, "awaiting_secret");
             markStreaming(sessionId, false);
           }
+          if (event.event === "approval_granted") {
+            opts.updateStatus(sessionId, "active");
+            markStreaming(sessionId, true);
+          }
         },
         (error) => {
           opts.addEvent(sessionId, {
@@ -136,6 +140,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       try {
         await api.approve(sid);
         opts.updateStatus(sessionId, "active");
+        markStreaming(sessionId, true);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const is404 = msg.includes("404");
@@ -149,7 +154,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
         }
       }
     },
-    [opts]
+    [opts, markStreaming]
   );
 
   const reject = useCallback(
