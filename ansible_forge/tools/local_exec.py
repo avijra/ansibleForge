@@ -106,6 +106,43 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bumount\s+"), "run_adhoc with ansible.posix.mount module (state=absent)"),
     (re.compile(r"\bjournalctl\b"), "analyze_logs tool or run_adhoc with ansible.builtin.command"),
     (re.compile(r"\bgit\s+"), "manage_git tool"),
+    # Database CLIs
+    (re.compile(r"\bmysql\b|\bmariadb\b"), "run_adhoc with community.mysql.mysql_db / mysql_user / mysql_query"),
+    (re.compile(r"\bpsql\b|\bpg_dump\b|\bpg_restore\b"), "run_adhoc with community.postgresql.postgresql_db / postgresql_user / postgresql_query"),
+    (re.compile(r"\bmongo\b|\bmongosh\b|\bmongodump\b|\bmongorestore\b"), "run_adhoc with community.mongodb.mongodb_shell / mongodb_user"),
+    (re.compile(r"\bredis-cli\b"), "run_adhoc with community.general.redis or ansible.builtin.command"),
+    # Container / orchestration
+    (re.compile(r"\bpodman\s+"), "run_adhoc with containers.podman.* modules"),
+    (re.compile(r"\bdocker[\s-]compose\b"), "run_adhoc with community.docker.docker_compose_v2 module"),
+    (re.compile(r"\bcrictl\s+"), "run_adhoc with kubernetes.core.k8s module"),
+    (re.compile(r"\bskopeo\s+"), "run_adhoc with community.docker.docker_image_info or ansible.builtin.command"),
+    # Destructive system commands
+    (re.compile(r"\breboot\b"), "run_adhoc with ansible.builtin.reboot module"),
+    (re.compile(r"\bshutdown\b|\bpoweroff\b|\bhalt\b"), "run_adhoc with ansible.builtin.reboot or ansible.builtin.command"),
+    # Interactive editors
+    (re.compile(r"\bvi\b|\bvim\b|\bnano\b|\bed\b"), "write_file tool or run_adhoc with ansible.builtin.lineinfile / blockinfile / template"),
+    # Archive / compression
+    (re.compile(r"\bgzip\b|\bgunzip\b|\bbzip2\b|\bxz\b"), "run_adhoc with ansible.builtin.unarchive or community.general.archive"),
+    (re.compile(r"\bzip\s+"), "run_adhoc with community.general.archive module"),
+    # System administration
+    (re.compile(r"\bsysctl\s+"), "run_adhoc with ansible.posix.sysctl module"),
+    (re.compile(r"\bmodprobe\b|\blsmod\b"), "run_adhoc with community.general.modprobe module"),
+    (re.compile(r"\btimedatectl\b"), "run_adhoc with community.general.timezone module"),
+    (re.compile(r"\bhostnamectl\b"), "run_adhoc with ansible.builtin.hostname module"),
+    (re.compile(r"\bnmcli\b|\bifconfig\b"), "collect_facts tool or run_adhoc with ansible.builtin.command"),
+    (re.compile(r"\bip\s+(?:addr|route|link)\b"), "collect_facts tool or run_adhoc with ansible.builtin.command"),
+    (re.compile(r"\bparted\b|\bfdisk\b"), "run_adhoc with community.general.parted module"),
+    (re.compile(r"\blvcreate\b|\bvgcreate\b|\bpvcreate\b"), "run_adhoc with community.general.lvg / lvol module"),
+    (re.compile(r"\bmkswap\b|\bswapon\b|\bswapoff\b"), "run_adhoc with ansible.posix.mount module"),
+    (re.compile(r"\bmdadm\b"), "run_adhoc with ansible.builtin.command (RAID management)"),
+    # Crypto / certificates
+    (re.compile(r"\bopenssl\s+"), "run_adhoc with community.crypto.* modules (x509_certificate, openssl_privatekey, etc.)"),
+    (re.compile(r"\bcertbot\b"), "run_adhoc with community.crypto.acme_certificate module"),
+    (re.compile(r"\bnft\b|\bnftables\b"), "run_adhoc with ansible.builtin.command or firewall module"),
+    (re.compile(r"\bfail2ban-client\b"), "run_adhoc with ansible.builtin.command or template config"),
+    # Language package managers
+    (re.compile(r"\bgem\s+install\b"), "run_adhoc with community.general.gem module"),
+    (re.compile(r"\bpython3?\s+\S+\.py\b"), "run_adhoc with ansible.builtin.script module"),
 ]
 
 _ALLOWED_PATTERNS = [

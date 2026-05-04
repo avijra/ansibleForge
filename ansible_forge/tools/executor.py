@@ -115,6 +115,10 @@ class Executor(BaseTool):
                     "minimum": 60,
                     "maximum": 7200,
                 },
+                "become": {
+                    "type": "boolean",
+                    "description": "Whether to use privilege escalation (sudo). Default: false. Use when playbook needs root but doesn't set become internally.",
+                },
                 "verbosity": {
                     "type": "integer",
                     "description": "Verbosity level 0-4 (default: 0)",
@@ -211,6 +215,7 @@ class Executor(BaseTool):
         start_at_task: str = "",
         forks: int = 0,
         timeout: int = 0,
+        become: bool = False,
         verbosity: int = 0,
         **kwargs: Any,
     ) -> ToolResult:
@@ -235,6 +240,8 @@ class Executor(BaseTool):
             cmdline_args.extend(["--start-at-task", start_at_task])
         if forks and forks > 0:
             cmdline_args.extend(["--forks", str(forks)])
+        if become:
+            cmdline_args.append("--become")
 
         merged_vars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")

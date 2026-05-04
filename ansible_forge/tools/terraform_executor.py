@@ -17,6 +17,29 @@ from ansible_forge.tools.binary_resolver import resolve_terraform_or_download_as
 
 logger = get_logger(__name__)
 
+_MAX_TF_TIMEOUT = 7200
+
+_DEFAULT_TF_TIMEOUTS: dict[str, int] = {
+    "init": 120,
+    "validate": 120,
+    "fmt": 120,
+    "plan": 600,
+    "apply": 1800,
+    "destroy": 1800,
+    "import": 120,
+    "output": 60,
+    "state": 60,
+    "workspace": 60,
+}
+
+
+def _effective_timeout(action: str, user_timeout: int) -> int:
+    default = _DEFAULT_TF_TIMEOUTS.get(action, 600)
+    if user_timeout and user_timeout > 0:
+        return min(user_timeout, _MAX_TF_TIMEOUT)
+    return default
+
+
 _PROVIDER_ENV_VARS: dict[str, list[str]] = {
     "aws": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"],
     "azure": ["ARM_CLIENT_ID", "ARM_CLIENT_SECRET", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID"],
@@ -54,7 +77,7 @@ class TerraformExecutor(BaseTool):
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["init", "plan", "apply", "destroy", "import", "output", "state", "validate", "fmt"],
+                    "enum": ["init", "plan", "apply", "destroy", "import", "output", "state", "validate", "fmt", "workspace"],
                     "description": "Terraform action to execute",
                 },
                 "var_file": {
@@ -81,6 +104,20 @@ class TerraformExecutor(BaseTool):
                 "auto_approve": {
                     "type": "boolean",
                     "description": "Skip interactive approval for apply/destroy (default: false — uses approval gate)",
+                },
+                "workspace_name": {
+                    "type": "string",
+                    "description": "Workspace name for workspace action (select/new/delete). Omit for list.",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds to wait. Defaults: init/validate/fmt=120, plan=600, "
+                        "apply/destroy=1800, import=120. Set higher for large infrastructure "
+                        "(e.g. EKS/RDS creation can take 30+ min). Max: 7200 (2 hours)."
+                    ),
+                    "minimum": 60,
+                    "maximum": 7200,
                 },
             },
             "required": ["workspace_path", "action"],
@@ -142,6 +179,8 @@ class TerraformExecutor(BaseTool):
         import_address: str = "",
         import_id: str = "",
         auto_approve: bool = False,
+        timeout: int = 0,
+        workspace_name: str = "",
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not action:
@@ -181,10 +220,12 @@ class TerraformExecutor(BaseTool):
             import_address=import_address,
             import_id=import_id,
             auto_approve=auto_approve,
+            timeout=timeout,
+            workspace_name=workspace_name,
         )
 
-    async def _do_init(self, tf: str, tf_dir: Path, env: dict, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["init", "-no-color"], env, timeout=120)
+    async def _do_init(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["init", "-no-color"], env, timeout=_effective_timeout("init", timeout))
         if rc != 0:
             return ToolResult.fail(f"terraform init failed:\n{err.strip() or out.strip()}")
         return ToolResult.ok(
@@ -192,8 +233,8 @@ class TerraformExecutor(BaseTool):
             stdout=out[-3000:],
         )
 
-    async def _do_validate(self, tf: str, tf_dir: Path, env: dict, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["validate", "-no-color", "-json"], env)
+    async def _do_validate(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["validate", "-no-color", "-json"], env, timeout=_effective_timeout("validate", timeout))
         if rc != 0:
             return ToolResult.fail(f"Terraform validation failed:\n{out.strip() or err.strip()}")
         try:
@@ -206,8 +247,8 @@ class TerraformExecutor(BaseTool):
         except json.JSONDecodeError:
             return ToolResult.ok(output=out.strip())
 
-    async def _do_fmt(self, tf: str, tf_dir: Path, env: dict, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["fmt", "-no-color", "-diff"], env)
+    async def _do_fmt(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["fmt", "-no-color", "-diff"], env, timeout=_effective_timeout("fmt", timeout))
         if rc != 0:
             return ToolResult.fail(f"terraform fmt failed: {err}")
         return ToolResult.ok(
@@ -216,7 +257,7 @@ class TerraformExecutor(BaseTool):
 
     async def _do_import(
         self, tf: str, tf_dir: Path, env: dict,
-        import_address: str = "", import_id: str = "", **_: Any,
+        import_address: str = "", import_id: str = "", timeout: int = 0, **_: Any,
     ) -> ToolResult:
         if not import_address or not import_id:
             return ToolResult.fail(
@@ -226,7 +267,7 @@ class TerraformExecutor(BaseTool):
         rc, out, err = await self._run_terraform(
             tf, tf_dir,
             ["import", "-no-color", "-input=false", import_address, import_id],
-            env, timeout=120,
+            env, timeout=_effective_timeout("import", timeout),
         )
         if rc != 0:
             return ToolResult.fail(
@@ -240,7 +281,7 @@ class TerraformExecutor(BaseTool):
 
     async def _do_plan(
         self, tf: str, tf_dir: Path, env: dict,
-        var_file: str = "", variables: dict | None = None, target: str = "", **_: Any,
+        var_file: str = "", variables: dict | None = None, target: str = "", timeout: int = 0, **_: Any,
     ) -> ToolResult:
         args = ["plan", "-no-color", "-input=false"]
         if var_file:
@@ -251,7 +292,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=300)
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("plan", timeout))
         combined = out + "\n" + err
 
         if rc != 0:
@@ -283,7 +324,7 @@ class TerraformExecutor(BaseTool):
     async def _do_apply(
         self, tf: str, tf_dir: Path, env: dict,
         var_file: str = "", variables: dict | None = None, target: str = "",
-        auto_approve: bool = False, **_: Any,
+        auto_approve: bool = False, timeout: int = 0, **_: Any,
     ) -> ToolResult:
         if not auto_approve:
             return ToolResult(
@@ -304,7 +345,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=600)
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("apply", timeout))
         combined = out + "\n" + err
 
         if rc != 0:
@@ -328,7 +369,7 @@ class TerraformExecutor(BaseTool):
     async def _do_destroy(
         self, tf: str, tf_dir: Path, env: dict,
         var_file: str = "", variables: dict | None = None, target: str = "",
-        auto_approve: bool = False, **_: Any,
+        auto_approve: bool = False, timeout: int = 0, **_: Any,
     ) -> ToolResult:
         if not auto_approve:
             return ToolResult(
@@ -349,7 +390,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=600)
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("destroy", timeout))
         if rc != 0:
             return ToolResult.fail(f"terraform destroy failed:\n{(out + err).strip()[-3000:]}")
 
@@ -359,8 +400,8 @@ class TerraformExecutor(BaseTool):
             destroy_output=out[-3000:],
         )
 
-    async def _do_output(self, tf: str, tf_dir: Path, env: dict, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["output", "-no-color", "-json"], env)
+    async def _do_output(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["output", "-no-color", "-json"], env, timeout=_effective_timeout("output", timeout))
         if rc != 0:
             return ToolResult.fail(f"terraform output failed: {err}")
 
@@ -378,8 +419,8 @@ class TerraformExecutor(BaseTool):
         except json.JSONDecodeError:
             return ToolResult.ok(output=out.strip(), raw=out)
 
-    async def _do_state(self, tf: str, tf_dir: Path, env: dict, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["state", "list", "-no-color"], env)
+    async def _do_state(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["state", "list", "-no-color"], env, timeout=_effective_timeout("state", timeout))
         if rc != 0:
             if "No state file" in err or "no state" in err.lower():
                 return ToolResult.ok(output="No infrastructure has been created yet. Run a plan and apply first.", resources=[])
@@ -414,3 +455,35 @@ class TerraformExecutor(BaseTool):
             resources=resources,
             resource_details=resource_details,
         )
+
+    async def _do_workspace(
+        self, tf: str, tf_dir: Path, env: dict,
+        workspace_name: str = "", timeout: int = 0, **_: Any,
+    ) -> ToolResult:
+        t = _effective_timeout("workspace", timeout)
+        if not workspace_name:
+            rc, out, err = await self._run_terraform(
+                tf, tf_dir, ["workspace", "list", "-no-color"], env, timeout=t,
+            )
+            if rc != 0:
+                return ToolResult.fail(f"terraform workspace list failed: {err}")
+            workspaces = [w.strip().lstrip("* ") for w in out.strip().splitlines() if w.strip()]
+            current = next((w.strip().lstrip("* ") for w in out.strip().splitlines() if w.strip().startswith("*")), "default")
+            return ToolResult.ok(
+                output=f"{len(workspaces)} workspace(s) available, current: {current}",
+                workspaces=workspaces,
+                current=current,
+            )
+
+        rc, out, err = await self._run_terraform(
+            tf, tf_dir, ["workspace", "select", "-no-color", workspace_name], env, timeout=t,
+        )
+        if rc == 0:
+            return ToolResult.ok(output=f"Switched to workspace '{workspace_name}'.")
+
+        rc, out, err = await self._run_terraform(
+            tf, tf_dir, ["workspace", "new", "-no-color", workspace_name], env, timeout=t,
+        )
+        if rc != 0:
+            return ToolResult.fail(f"Failed to select or create workspace '{workspace_name}': {err}")
+        return ToolResult.ok(output=f"Created and switched to new workspace '{workspace_name}'.")

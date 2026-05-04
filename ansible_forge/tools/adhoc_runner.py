@@ -104,6 +104,18 @@ class AdhocRunner(BaseTool):
                     "minimum": 10,
                     "maximum": 7200,
                 },
+                "forks": {
+                    "type": "integer",
+                    "description": "Number of parallel processes (default: 5)",
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "verbosity": {
+                    "type": "integer",
+                    "description": "Verbosity level 0-4 (default: 0)",
+                    "minimum": 0,
+                    "maximum": 4,
+                },
             },
             "required": ["workspace_path", "module", "host_pattern", "inventory"],
         }
@@ -155,6 +167,8 @@ class AdhocRunner(BaseTool):
         become: bool = False,
         extra_vars: dict[str, Any] | None = None,
         timeout: int = 0,
+        forks: int = 0,
+        verbosity: int = 0,
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not module or not inventory:
@@ -174,7 +188,8 @@ class AdhocRunner(BaseTool):
             merged_vars.update(extra_vars)
         self._materialize_ssh_keys(ws, merged_vars)
 
-        if host_pattern != "localhost":
+        local_targets = {"localhost", "127.0.0.1", "::1", "local"}
+        if host_pattern not in local_targets:
             missing = find_missing_secrets(inv_path, merged_vars)
             if missing:
                 return ToolResult.fail(
@@ -192,8 +207,16 @@ class AdhocRunner(BaseTool):
             runner_kwargs["module_args"] = module_args
         if merged_vars:
             runner_kwargs["extravars"] = merged_vars
+
+        cmdline_parts: list[str] = []
         if become:
-            runner_kwargs["cmdline"] = "--become"
+            cmdline_parts.append("--become")
+        if forks and forks > 0:
+            cmdline_parts.extend(["--forks", str(forks)])
+        if cmdline_parts:
+            runner_kwargs["cmdline"] = " ".join(cmdline_parts)
+        if verbosity:
+            runner_kwargs["verbosity"] = verbosity
 
         effective_timeout = min(
             timeout if timeout and timeout > 0 else _DEFAULT_ADHOC_TIMEOUT,

@@ -32,7 +32,7 @@ class GalaxyManager(BaseTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "install", "list", "install_role", "list_roles", "create_requirements"],
+                    "enum": ["search", "install", "list", "install_role", "list_roles", "create_requirements", "install_requirements"],
                     "description": "Galaxy operation to perform",
                 },
                 "collection_name": {
@@ -87,6 +87,8 @@ class GalaxyManager(BaseTool):
             return await self._list_roles()
         if action == "create_requirements":
             return self._create_requirements(requirements or [], workspace_path)
+        if action == "install_requirements":
+            return await self._install_requirements(workspace_path)
         return ToolResult.fail(f"Unknown action: {action}")
 
     async def _search(self, query: str) -> ToolResult:
@@ -226,6 +228,36 @@ class GalaxyManager(BaseTool):
             path=str(out_path),
         )
 
+    async def _install_requirements(self, workspace_path: str) -> ToolResult:
+        if not workspace_path:
+            return ToolResult.fail("workspace_path is required for install_requirements")
+
+        from pathlib import Path
+
+        req_path = Path(workspace_path) / "requirements.yml"
+        if not req_path.exists():
+            return ToolResult.fail(f"requirements.yml not found at {req_path}")
+
+        rc, stdout, stderr = await self._run_galaxy(
+            "collection", "install", "-r", str(req_path), "--force",
+            timeout=600,
+        )
+        role_msg = ""
+        rc2, stdout2, stderr2 = await self._run_galaxy(
+            "role", "install", "-r", str(req_path), "--force",
+            timeout=600,
+        )
+        if rc2 == 0 and stdout2.strip():
+            role_msg = f" Roles: {stdout2.strip()[-500:]}"
+
+        if rc != 0:
+            return ToolResult.fail(
+                f"Failed to install from requirements.yml: {stderr or stdout}"
+            )
+        return ToolResult.ok(
+            output=f"All requirements installed from {req_path}.{role_msg}",
+        )
+
     @staticmethod
     def _default_collections_path() -> str:
         from pathlib import Path
@@ -236,14 +268,24 @@ class GalaxyManager(BaseTool):
         return str(path)
 
     @staticmethod
-    async def _run_galaxy(*args: str) -> tuple[int, str, str]:
+    async def _run_galaxy(*args: str, timeout: int = 300) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
             "ansible-galaxy",
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            return (1, "", f"ansible-galaxy timed out after {timeout}s")
         return (
             proc.returncode or 0,
             stdout_b.decode(errors="replace"),
