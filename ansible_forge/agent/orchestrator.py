@@ -156,6 +156,17 @@ class SessionState:
         self._approved_playbooks: set[str] = set()
         self.plan: dict[str, Any] | None = None
         self._used_experience_ids: list[str] = []
+        self._active_tasks: set[asyncio.Task[Any]] = set()
+
+    def track_task(self, task: asyncio.Task[Any]) -> None:
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
+
+    def cancel_active_work(self) -> None:
+        for task in list(self._active_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
 
     def record_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         sig = f"{name}:{json.dumps(arguments, sort_keys=True)}"
@@ -398,6 +409,7 @@ class Orchestrator:
             state = self.create_session(session_id)
 
         state._generation += 1
+        state.cancel_active_work()
 
         if state.status == "awaiting_secret":
             session_vault = self._secret_vault.for_session(session_id)
@@ -710,9 +722,11 @@ class Orchestrator:
                         "arguments": tc.arguments,
                         "tool_call_id": tc.id,
                     }))
-                    parallel_tasks[tc.id] = asyncio.create_task(
+                    ptask = asyncio.create_task(
                         self._execute_tool(state, tc.name, tc.arguments)
                     )
+                    state.track_task(ptask)
+                    parallel_tasks[tc.id] = ptask
 
                 progress_tick = 0
                 pending = set(parallel_tasks.values())
@@ -720,6 +734,10 @@ class Orchestrator:
                 while pending:
                     done_set, pending = await asyncio.wait(pending, timeout=_PROGRESS_INTERVAL)
                     if not done_set:
+                        if state._generation != my_generation:
+                            for p in pending:
+                                p.cancel()
+                            return
                         progress_tick += 1
                         elapsed = progress_tick * _PROGRESS_INTERVAL
                         elapsed_str = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
@@ -859,32 +877,74 @@ class Orchestrator:
                         step=state.step_count,
                     )
 
+                live_queue: asyncio.Queue[dict[str, Any]] | None = None
+                if tc.name in ("execute_playbook", "run_adhoc"):
+                    live_queue = asyncio.Queue()
+                    tc.arguments["_live_log_queue"] = live_queue
+
                 task = asyncio.create_task(
                     self._execute_tool(state, tc.name, tc.arguments)
                 )
+                state.track_task(task)
                 progress_tick = 0
                 total_elapsed = 0.0
+                last_progress_at = 0.0
                 msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
                 while not task.done():
-                    interval = _PROGRESS_INTERVAL if total_elapsed < 60 else 15
-                    done, _ = await asyncio.wait({task}, timeout=interval)
+                    poll = 1.0 if live_queue else (
+                        _PROGRESS_INTERVAL if total_elapsed < 60 else 15
+                    )
+                    done, _ = await asyncio.wait({task}, timeout=poll)
+
+                    if live_queue:
+                        while not live_queue.empty():
+                            try:
+                                yield AgentEvent("live_log", live_queue.get_nowait())
+                            except asyncio.QueueEmpty:
+                                break
+
                     if done:
                         break
-                    progress_tick += 1
-                    total_elapsed += interval
-                    elapsed = int(total_elapsed)
-                    hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
-                    elapsed_str = (
-                        f"{elapsed // 60}m {elapsed % 60}s"
-                        if elapsed >= 60
-                        else f"{elapsed}s"
-                    )
-                    yield AgentEvent("progress", {
-                        "tool": tc.name,
-                        "elapsed_seconds": elapsed,
-                        "message": f"[{elapsed_str}] {hint}",
-                    })
+                    if state._generation != my_generation:
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+                        logger.info(
+                            "tool_cancelled_on_supersession",
+                            session_id=state.session_id,
+                            tool=tc.name,
+                        )
+                        return
 
+                    total_elapsed += poll
+                    progress_interval = (
+                        _PROGRESS_INTERVAL if total_elapsed < 60 else 15
+                    )
+                    if total_elapsed - last_progress_at >= progress_interval:
+                        last_progress_at = total_elapsed
+                        progress_tick += 1
+                        elapsed = int(total_elapsed)
+                        hint = msgs[min(progress_tick - 1, len(msgs) - 1)]
+                        elapsed_str = (
+                            f"{elapsed // 60}m {elapsed % 60}s"
+                            if elapsed >= 60
+                            else f"{elapsed}s"
+                        )
+                        yield AgentEvent("progress", {
+                            "tool": tc.name,
+                            "elapsed_seconds": elapsed,
+                            "message": f"[{elapsed_str}] {hint}",
+                        })
+
+                if live_queue:
+                    while not live_queue.empty():
+                        try:
+                            yield AgentEvent("live_log", live_queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+
+                if task.cancelled():
+                    return
                 result = task.result()
 
                 if is_file_writing_tool(tc.name) and result.status != ToolStatus.ERROR:
@@ -1706,6 +1766,7 @@ class Orchestrator:
         state._loop_break_count = 0
         state._consecutive_errors = 0
         state._generation += 1
+        state.cancel_active_work()
         state._last_error_by_tool.clear()
         state._rejected_output = None
         state._rejected_feedback = None
@@ -1717,6 +1778,9 @@ class Orchestrator:
         logger.info("session_reset", session_id=session_id)
 
     def destroy_session(self, session_id: str) -> None:
+        state = self._sessions.get(session_id)
+        if state:
+            state.cancel_active_work()
         self._approval_gate.cleanup(session_id)
         self._secret_vault.destroy_session(session_id)
         self._workspace_mgr.destroy(session_id)

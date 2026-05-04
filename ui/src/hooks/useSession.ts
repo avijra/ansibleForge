@@ -193,6 +193,16 @@ export function useSession() {
             }
           }
 
+          if (event.event === "live_log") {
+            const events = [...s.events];
+            const liveCount = events.filter((e) => e.event === "live_log").length;
+            if (liveCount >= 200) {
+              const firstLiveIdx = events.findIndex((e) => e.event === "live_log");
+              if (firstLiveIdx >= 0) events.splice(firstLiveIdx, 1);
+            }
+            return { ...s, events: [...events, event] };
+          }
+
           if (event.event === "progress") {
             const events = [...s.events];
             const lastIdx = findLastIndex(events, (e) => e.event === "progress");

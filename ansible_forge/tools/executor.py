@@ -22,6 +22,71 @@ logger = get_logger(__name__)
 _DEFAULT_PLAYBOOK_TIMEOUT = 3600
 _MAX_PLAYBOOK_TIMEOUT = 7200
 
+_LIVE_EVENT_TYPES = frozenset({
+    "playbook_on_play_start",
+    "playbook_on_task_start",
+    "runner_on_ok",
+    "runner_on_failed",
+    "runner_on_skipped",
+    "runner_on_unreachable",
+    "playbook_on_stats",
+})
+
+
+def _format_live_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    ev_type = event.get("event", "")
+    ev_data = event.get("event_data", {})
+
+    if ev_type == "playbook_on_play_start":
+        name = ev_data.get("name", "")
+        if not name:
+            play = ev_data.get("play", "")
+            name = play if isinstance(play, str) else ""
+        return {"type": "play_start", "play": name}
+
+    if ev_type == "playbook_on_task_start":
+        task = ev_data.get("name", "") or ev_data.get("task", "")
+        return {"type": "task_start", "task": task}
+
+    if ev_type == "runner_on_ok":
+        res = ev_data.get("res", {})
+        return {
+            "type": "task_ok",
+            "host": ev_data.get("host", ""),
+            "task": ev_data.get("task", ""),
+            "changed": res.get("changed", False),
+        }
+
+    if ev_type == "runner_on_failed":
+        res = ev_data.get("res", {})
+        msg = res.get("msg", "") or res.get("stderr", "")
+        return {
+            "type": "task_failed",
+            "host": ev_data.get("host", ""),
+            "task": ev_data.get("task", ""),
+            "error": str(msg)[:500],
+        }
+
+    if ev_type == "runner_on_skipped":
+        return {
+            "type": "task_skipped",
+            "host": ev_data.get("host", ""),
+            "task": ev_data.get("task", ""),
+        }
+
+    if ev_type == "runner_on_unreachable":
+        return {
+            "type": "host_unreachable",
+            "host": ev_data.get("host", ""),
+            "task": ev_data.get("task", ""),
+        }
+
+    if ev_type == "playbook_on_stats":
+        return {"type": "stats", "stats": ev_data}
+
+    return None
+
+
 def _kill_runner(runner: Any) -> None:
     """Terminate ansible-runner's subprocess tree on timeout."""
     import contextlib
@@ -254,12 +319,30 @@ class Executor(BaseTool):
         self._materialize_ssh_keys(ws, merged_vars)
         self._clean_stale_env(ws)
 
+        live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
+
         runner_kwargs: dict[str, Any] = {
             "private_data_dir": str(ws / ".tuyere"),
             "project_dir": str(ws),
             "playbook": playbook,
             "verbosity": verbosity,
         }
+
+        if live_queue is not None:
+            import contextlib as _ctxlib
+
+            loop_ref = asyncio.get_event_loop()
+
+            def _on_event(event: dict[str, Any]) -> bool:
+                ev_type = event.get("event", "")
+                if ev_type in _LIVE_EVENT_TYPES:
+                    formatted = _format_live_event(event)
+                    if formatted:
+                        with _ctxlib.suppress(Exception):
+                            loop_ref.call_soon_threadsafe(live_queue.put_nowait, formatted)
+                return True
+
+            runner_kwargs["event_handler"] = _on_event
         if cmdline_args:
             runner_kwargs["cmdline"] = " ".join(cmdline_args)
         if merged_vars:
@@ -290,6 +373,12 @@ class Executor(BaseTool):
                 loop.run_in_executor(None, thread.join),
                 timeout=effective_timeout,
             )
+        except asyncio.CancelledError:
+            runner.canceled = True
+            _kill_runner(runner)
+            thread.join(timeout=10)
+            logger.info("playbook_cancelled", playbook=playbook)
+            raise
         except TimeoutError:
             runner.cancel_callback = lambda: None
             runner.canceled = True

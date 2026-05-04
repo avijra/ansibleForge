@@ -166,6 +166,9 @@ class TerraformExecutor(BaseTool):
                 timeout=timeout + 10,
             )
             return result.returncode, result.stdout, result.stderr
+        except asyncio.CancelledError:
+            logger.info("terraform_cancelled", args=args[:3])
+            raise
         except (TimeoutError, subprocess.TimeoutExpired):
             return 1, "", f"Terraform command timed out after {timeout}s"
 

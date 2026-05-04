@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff } from "lucide-react";
+import { CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff, Circle, XCircle as XC, MinusCircle } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { DiffReview } from "@/components/review/DiffReview";
@@ -31,7 +31,7 @@ function groupEventsIntoSteps(events: AgentEvent[]): (AgentEvent | StepGroup)[] 
 
   const STEP_EVENTS = new Set([
     "step_start", "thinking", "tool_call", "tool_result",
-    "progress", "checkpoint", "error_recovery",
+    "progress", "live_log", "checkpoint", "error_recovery",
     "approval_granted", "approval_rejected",
   ]);
 
@@ -98,6 +98,46 @@ function isStepGroup(item: AgentEvent | StepGroup): item is StepGroup {
   return "stepNum" in item && "events" in item;
 }
 
+function LiveTaskIcon({ type }: { type: string }) {
+  switch (type) {
+    case "task_ok":
+      return <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />;
+    case "task_failed":
+    case "host_unreachable":
+      return <XC className="h-3 w-3 text-red-400 shrink-0" />;
+    case "task_skipped":
+      return <MinusCircle className="h-3 w-3 text-zinc-600 shrink-0" />;
+    case "task_start":
+    case "play_start":
+      return <Circle className="h-3 w-3 text-blue-400 shrink-0 animate-pulse" />;
+    default:
+      return <Circle className="h-3 w-3 text-zinc-600 shrink-0" />;
+  }
+}
+
+function formatLiveEvent(data: Record<string, unknown>): string {
+  const type = data.type as string;
+  const task = (data.task as string) || "";
+  const host = (data.host as string) || "";
+  const changed = data.changed as boolean;
+
+  if (type === "play_start") return (data.play as string) || "Play starting";
+  if (type === "task_start") return task || "Task starting";
+  if (type === "task_ok") {
+    const label = changed ? "changed" : "ok";
+    return host ? `${task} (${host}) — ${label}` : `${task} — ${label}`;
+  }
+  if (type === "task_failed") {
+    const err = (data.error as string) || "failed";
+    const short = err.length > 80 ? err.slice(0, 77) + "..." : err;
+    return host ? `${task} (${host}) FAILED: ${short}` : `${task} FAILED: ${short}`;
+  }
+  if (type === "task_skipped") return host ? `${task} (${host}) — skipped` : `${task} — skipped`;
+  if (type === "host_unreachable") return `${host || "host"} — unreachable`;
+  if (type === "stats") return "Playbook finished";
+  return task || "...";
+}
+
 function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const stepCount = events.filter((e) => e.event === "step_start").length;
   const toolCalls = events.filter((e) => e.event === "tool_call").length;
@@ -109,12 +149,18 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const activeTool = lastTool ? friendlyToolName((lastTool.data.tool as string) || "") : null;
   const statusMsg = lastProgress ? (lastProgress.data.message as string) : null;
 
+  const recentLiveLogs = useMemo(() => {
+    const logs = events.filter((e) => e.event === "live_log");
+    return logs.slice(-5);
+  }, [events]);
+
   const justResumed =
     lastApprovalGranted &&
     (!lastTool || lastApprovalGranted.timestamp > lastTool.timestamp) &&
     (!lastProgress || lastApprovalGranted.timestamp > lastProgress.timestamp);
 
   const hasAnyInfo = stepCount > 0 || toolCalls > 0 || activeTool || statusMsg;
+  const hasLiveLogs = recentLiveLogs.length > 0;
 
   return (
     <div className="rounded-lg border border-emerald-900/40 bg-black/50 px-3 py-2 font-mono" role="status" aria-live="polite">
@@ -138,9 +184,29 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
           )}
         </div>
       </div>
-      {!justResumed && statusMsg && (
+      {!justResumed && statusMsg && !hasLiveLogs && (
         <div className="mt-1 text-[11px] text-emerald-600/80 truncate pl-5">
           {statusMsg}
+        </div>
+      )}
+      {hasLiveLogs && (
+        <div className="mt-1.5 space-y-0.5 pl-1">
+          {recentLiveLogs.map((ev) => (
+            <div key={ev.id} className="flex items-center gap-1.5 text-[10px] min-w-0">
+              <LiveTaskIcon type={ev.data.type as string} />
+              <span className={
+                (ev.data.type as string) === "task_failed" || (ev.data.type as string) === "host_unreachable"
+                  ? "text-red-400 truncate"
+                  : (ev.data.type as string) === "task_skipped"
+                    ? "text-zinc-600 truncate"
+                    : (ev.data.type as string) === "play_start" || (ev.data.type as string) === "task_start"
+                      ? "text-blue-400 truncate"
+                      : "text-emerald-600 truncate"
+              }>
+                {formatLiveEvent(ev.data)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -287,7 +353,7 @@ export function ActivityFeed({
     const lastEvent = events[events.length - 1];
     const midExecTypes = new Set([
       "tool_call", "step_start", "tool_result", "progress",
-      "approval_granted", "checkpoint",
+      "live_log", "approval_granted", "checkpoint",
     ]);
     return midExecTypes.has(lastEvent.event);
   }, [isStreaming, events, sessionStatus]);

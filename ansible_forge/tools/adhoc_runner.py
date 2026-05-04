@@ -15,6 +15,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import _LIVE_EVENT_TYPES, _format_live_event
 from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
@@ -197,12 +198,30 @@ class AdhocRunner(BaseTool):
                     f"Use request_secret to collect them from the user before retrying."
                 )
 
+        live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
+
         runner_kwargs: dict[str, Any] = {
             "private_data_dir": str(ws / ".tuyere"),
             "module": module,
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
         }
+
+        if live_queue is not None:
+            import contextlib as _ctxlib
+
+            loop_ref = asyncio.get_event_loop()
+
+            def _on_event(event: dict[str, Any]) -> bool:
+                ev_type = event.get("event", "")
+                if ev_type in _LIVE_EVENT_TYPES:
+                    formatted = _format_live_event(event)
+                    if formatted:
+                        with _ctxlib.suppress(Exception):
+                            loop_ref.call_soon_threadsafe(live_queue.put_nowait, formatted)
+                return True
+
+            runner_kwargs["event_handler"] = _on_event
         if module_args:
             runner_kwargs["module_args"] = module_args
         if merged_vars:
@@ -233,6 +252,12 @@ class AdhocRunner(BaseTool):
                 loop.run_in_executor(None, thread.join),
                 timeout=effective_timeout,
             )
+        except asyncio.CancelledError:
+            runner.canceled = True
+            _kill_runner(runner)
+            thread.join(timeout=10)
+            logger.info("adhoc_cancelled", module=module, host_pattern=host_pattern)
+            raise
         except TimeoutError:
             runner.canceled = True
             _kill_runner(runner)

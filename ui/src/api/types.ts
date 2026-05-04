@@ -119,6 +119,7 @@ export type AgentEventType =
   | "user_message"
   | "plan"
   | "progress"
+  | "live_log"
   | "error_recovery"
   | "max_steps"
   | "done";

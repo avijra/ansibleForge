@@ -2,7 +2,10 @@ import { useState, useMemo } from "react";
 import {
   CheckCircle2,
   XCircle,
+  Circle,
   Clock,
+  Loader2,
+  MinusCircle,
   WifiOff,
   ChevronDown,
   ChevronRight,
@@ -823,6 +826,121 @@ interface ExecutionTimelineProps {
   inventory: Record<string, string>;
 }
 
+function LiveTaskIcon({ type }: { type: string }) {
+  switch (type) {
+    case "task_ok":
+      return <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />;
+    case "task_failed":
+    case "host_unreachable":
+      return <XCircle className="h-3 w-3 text-red-400 shrink-0" />;
+    case "task_skipped":
+      return <MinusCircle className="h-3 w-3 text-zinc-600 shrink-0" />;
+    case "task_start":
+      return <Circle className="h-3 w-3 text-blue-400 shrink-0 animate-pulse" />;
+    case "play_start":
+      return <Play className="h-3 w-3 text-blue-400 shrink-0" />;
+    default:
+      return <Circle className="h-3 w-3 text-zinc-600 shrink-0" />;
+  }
+}
+
+function formatLiveTask(data: Record<string, unknown>): string {
+  const type = data.type as string;
+  const task = (data.task as string) || "";
+  const host = (data.host as string) || "";
+  const changed = data.changed as boolean;
+
+  if (type === "play_start") return (data.play as string) || "Play starting";
+  if (type === "task_start") return task || "Starting task";
+  if (type === "task_ok") {
+    const label = changed ? "changed" : "ok";
+    return host ? `${task} (${host}) — ${label}` : `${task} — ${label}`;
+  }
+  if (type === "task_failed") {
+    const err = (data.error as string) || "failed";
+    const short = err.length > 60 ? err.slice(0, 57) + "..." : err;
+    return host ? `${task} (${host}) FAILED: ${short}` : `${task}: ${short}`;
+  }
+  if (type === "task_skipped") return host ? `${task} (${host}) — skipped` : `${task} — skipped`;
+  if (type === "host_unreachable") return `${host || "host"} — unreachable`;
+  if (type === "stats") return "Playbook complete";
+  return task || "...";
+}
+
+function LiveRunSection({ events }: { events: AgentEvent[] }) {
+  const liveLogs = useMemo(
+    () => events.filter((e) => e.event === "live_log"),
+    [events]
+  );
+
+  const lastToolCall = useMemo(() => {
+    const calls = events.filter(
+      (e) => e.event === "tool_call" &&
+        ((e.data.tool as string) === "execute_playbook" || (e.data.tool as string) === "run_adhoc")
+    );
+    return calls[calls.length - 1];
+  }, [events]);
+
+  const lastToolResult = useMemo(() => {
+    const results = events.filter(
+      (e) => e.event === "tool_result" &&
+        ((e.data.tool as string) === "execute_playbook" || (e.data.tool as string) === "run_adhoc")
+    );
+    return results[results.length - 1];
+  }, [events]);
+
+  const isRunning = lastToolCall && (!lastToolResult || lastToolCall.timestamp > lastToolResult.timestamp);
+  if (!isRunning || liveLogs.length === 0) return null;
+
+  const args = lastToolCall.data.arguments as Record<string, unknown> | undefined;
+  const playbook = (args?.playbook as string) || (lastToolCall.data.tool as string) || "playbook";
+
+  const okCount = liveLogs.filter((e) => (e.data.type as string) === "task_ok").length;
+  const failedCount = liveLogs.filter((e) => (e.data.type as string) === "task_failed").length;
+  const changedCount = liveLogs.filter((e) => e.data.changed === true).length;
+
+  return (
+    <div className="border-b border-zinc-800/50">
+      <div className="flex items-center gap-2 px-3 py-2 bg-blue-950/20 border-b border-blue-900/20">
+        <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin shrink-0" />
+        <span className="text-xs font-medium text-blue-300 truncate">{playbook}</span>
+        <span className="text-[10px] text-blue-400/60 ml-auto whitespace-nowrap">
+          running
+        </span>
+      </div>
+      {(okCount > 0 || failedCount > 0) && (
+        <div className="flex gap-3 px-3 py-1.5 text-[10px] bg-zinc-950/50">
+          {okCount > 0 && <span className="text-emerald-600">{okCount} ok</span>}
+          {changedCount > 0 && <span className="text-amber-600">{changedCount} changed</span>}
+          {failedCount > 0 && <span className="text-red-400">{failedCount} failed</span>}
+        </div>
+      )}
+      <div className="max-h-48 overflow-y-auto">
+        {liveLogs.slice(-30).map((ev) => (
+          <div
+            key={ev.id}
+            className="flex items-center gap-2 px-3 py-1 text-[11px] hover:bg-zinc-900/30"
+          >
+            <LiveTaskIcon type={ev.data.type as string} />
+            <span className={cn(
+              "truncate",
+              (ev.data.type as string) === "task_failed" || (ev.data.type as string) === "host_unreachable"
+                ? "text-red-400"
+                : (ev.data.type as string) === "task_skipped"
+                  ? "text-zinc-600"
+                  : (ev.data.type as string) === "play_start" || (ev.data.type as string) === "task_start"
+                    ? "text-blue-400"
+                    : "text-zinc-400"
+            )}>
+              {formatLiveTask(ev.data)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function ExecutionTimeline({
   events,
   isStreaming,
@@ -834,8 +952,12 @@ export function ExecutionTimeline({
     () => events.filter((e) => e.event === "tool_result").length,
     [events]
   );
+  const hasLiveLogs = useMemo(
+    () => events.some((e) => e.event === "live_log"),
+    [events]
+  );
 
-  if (runs.length === 0 && toolResultCount === 0) {
+  if (runs.length === 0 && toolResultCount === 0 && !hasLiveLogs) {
     const pbCount = Object.keys(playbooks).length;
     const invCount = Object.keys(inventory).length;
     const hasArtifacts = pbCount > 0 || invCount > 0;
@@ -863,6 +985,7 @@ export function ExecutionTimeline({
 
   return (
     <div className="min-w-0 w-full">
+      {isStreaming && <LiveRunSection events={events} />}
       {runs.length > 0 && (
         <div className="divide-y divide-zinc-800/50">
           {runs.map((run, i) => (

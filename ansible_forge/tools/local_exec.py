@@ -297,6 +297,7 @@ class LocalExec(BaseTool):
 
         logger.info("local_exec_start", command=command[:200], cwd=cwd, timeout=timeout)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -308,12 +309,22 @@ class LocalExec(BaseTool):
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
+        except asyncio.CancelledError:
+            if proc is not None:
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    await proc.wait()
+            logger.info("local_exec_cancelled", command=command[:200])
+            raise
         except TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
             return ToolResult.fail(f"Command timed out after {timeout}s: {command[:100]}")
         except FileNotFoundError:
             return ToolResult.fail(f"Working directory not found: {cwd}")

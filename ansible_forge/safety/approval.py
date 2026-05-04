@@ -95,4 +95,7 @@ class ApprovalGate:
         return False
 
     def cleanup(self, session_id: str) -> None:
-        self._pending.pop(session_id, None)
+        req = self._pending.pop(session_id, None)
+        if req and req.status == ApprovalStatus.PENDING:
+            req.status = ApprovalStatus.EXPIRED
+            req._event.set()
