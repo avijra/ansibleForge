@@ -226,6 +226,17 @@ export function ActivityFeed({
     return () => observer.disconnect();
   }, [events]);
 
+  const showActivityTicker = useMemo(() => {
+    if (isStreaming) return true;
+    if (events.length === 0) return false;
+    const lastEvent = events[events.length - 1];
+    const midExecTypes = new Set([
+      "tool_call", "step_start", "tool_result", "progress",
+      "approval_granted", "checkpoint", "error_recovery",
+    ]);
+    return midExecTypes.has(lastEvent.event);
+  }, [isStreaming, events]);
+
   const scrollToMessage = useCallback(() => {
     lastMsgRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
@@ -355,7 +366,7 @@ export function ActivityFeed({
         className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
       >
         {renderItems}
-        {isStreaming && <LiveActivityStatus events={events} />}
+        {showActivityTicker && <LiveActivityStatus events={events} />}
       </div>
       {showPinned && (
         <PinnedMessage
