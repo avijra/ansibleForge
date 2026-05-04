@@ -453,18 +453,16 @@ export function ActivityFeed({
       case "approval_required": {
         const thisApprovalIdx = approvalCounter++;
         const resolution = approvalResolutions.get(thisApprovalIdx);
-        if (!resolution) {
-          if (lastMessageId) hasItemsAfterLastMessage = true;
-          renderItems.push(
-            <DiffReview
-              key={event.id}
-              event={event}
-              isPending={isPendingApproval}
-              onApprove={onApprove}
-              onReject={onReject}
-            />
-          );
-        }
+        if (!resolution && lastMessageId) hasItemsAfterLastMessage = true;
+        renderItems.push(
+          <DiffReview
+            key={event.id}
+            event={event}
+            isPending={isPendingApproval && !resolution}
+            onApprove={onApprove}
+            onReject={onReject}
+          />
+        );
         break;
       }
       case "max_steps":

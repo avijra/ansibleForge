@@ -1168,6 +1168,13 @@ class Orchestrator:
                     )
 
             if early_return:
+                state.status = "completed"
+                yield AgentEvent("message", {
+                    "content": (
+                        "The requested action was not approved and has been cancelled. "
+                        "Let me know how you'd like to proceed."
+                    ),
+                })
                 return
 
             for msg in deferred_user_msgs:
