@@ -311,8 +311,6 @@ class LocalExec(BaseTool):
             )
         except asyncio.CancelledError:
             if proc is not None:
-                import contextlib
-
                 try:
                     proc.kill()
                     await proc.wait()

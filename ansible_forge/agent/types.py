@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     ERROR = "error"

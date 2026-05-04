@@ -96,10 +96,8 @@ def _sigkill_after_delay(pid: int, delay: float = 10.0) -> None:
     try:
         os.kill(pid, 0)
         logger.warning("sigkill_escalation", pid=pid)
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
