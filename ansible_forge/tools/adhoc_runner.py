@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+import signal
 import stat
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,21 @@ from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
+
+_DEFAULT_ADHOC_TIMEOUT = 300
+_MAX_ADHOC_TIMEOUT = 7200
+
+
+def _kill_runner(runner: Any) -> None:
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        if hasattr(runner, "process") and runner.process and runner.process.pid:
+            pid = runner.process.pid
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
@@ -33,6 +49,7 @@ class AdhocRunner(BaseTool):
             "Run an ad-hoc Ansible module command against one or more hosts without "
             "writing a playbook. Useful for quick one-off tasks like restarting a "
             "service, checking disk space, managing packages, or running shell commands. "
+            "Set timeout based on expected duration — default 5 minutes, max 2 hours. "
             "Requires workspace with inventory already configured."
         )
 
@@ -75,6 +92,16 @@ class AdhocRunner(BaseTool):
                     "type": "object",
                     "description": "Extra variables to pass",
                     "additionalProperties": {},
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds to wait. Default: 300 (5 min). Set higher "
+                        "for long-running commands (e.g. installers, builds). "
+                        "Max: 7200 (2 hours)."
+                    ),
+                    "minimum": 10,
+                    "maximum": 7200,
                 },
             },
             "required": ["workspace_path", "module", "host_pattern", "inventory"],
@@ -126,6 +153,7 @@ class AdhocRunner(BaseTool):
         inventory: str = "",
         become: bool = False,
         extra_vars: dict[str, Any] | None = None,
+        timeout: int = 0,
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not module or not inventory:
@@ -166,19 +194,34 @@ class AdhocRunner(BaseTool):
         if become:
             runner_kwargs["cmdline"] = "--become"
 
+        effective_timeout = min(
+            timeout if timeout and timeout > 0 else _DEFAULT_ADHOC_TIMEOUT,
+            _MAX_ADHOC_TIMEOUT,
+        )
+
         loop = asyncio.get_event_loop()
+        thread, runner = await loop.run_in_executor(
+            None,
+            functools.partial(ansible_runner.run_async, **runner_kwargs),
+        )
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=120,
+            await asyncio.wait_for(
+                loop.run_in_executor(None, thread.join),
+                timeout=effective_timeout,
             )
         except TimeoutError:
+            runner.canceled = True
+            _kill_runner(runner)
+            thread.join(timeout=10)
+            mins = effective_timeout // 60
+            secs = effective_timeout % 60
+            time_str = f"{mins}m{secs}s" if secs else f"{mins} minute(s)"
             return ToolResult.fail(
-                "Command timed out after 2 minutes. "
-                "The host may be unresponsive or the command is taking longer than expected."
+                f"Command timed out after {time_str}. "
+                f"If this operation legitimately needs more time, retry with a "
+                f"higher timeout parameter."
             )
+        result = runner
 
         host_results: dict[str, Any] = {}
         for event in result.events:

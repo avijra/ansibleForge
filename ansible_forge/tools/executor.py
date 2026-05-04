@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+import signal
 import stat
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,22 @@ from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
+
+_DEFAULT_PLAYBOOK_TIMEOUT = 3600
+_MAX_PLAYBOOK_TIMEOUT = 7200
+
+def _kill_runner(runner: Any) -> None:
+    """Terminate ansible-runner's subprocess tree on timeout."""
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        if hasattr(runner, "process") and runner.process and runner.process.pid:
+            pid = runner.process.pid
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
@@ -33,8 +50,10 @@ class Executor(BaseTool):
             "Execute an Ansible playbook using ansible-runner. Supports two modes: "
             "'check' (dry-run with --check --diff to preview changes without applying) "
             "and 'apply' (actually execute changes on target hosts). Supports limit, "
-            "tags, skip_tags, start_at_task, forks, and verbosity for full CLI parity. "
-            "Always prefer 'check' mode first so the user can review before applying."
+            "tags, skip_tags, start_at_task, forks, timeout, and verbosity for full CLI "
+            "parity. Set timeout based on expected duration — default is 1 hour, max 2 "
+            "hours. Estimate timeout from task complexity and host count. "
+            "Always prefer 'check' mode first."
         )
 
     @property
@@ -85,6 +104,16 @@ class Executor(BaseTool):
                     "description": "Number of parallel processes (default: 5)",
                     "minimum": 1,
                     "maximum": 50,
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds to wait for the playbook to finish. "
+                        "Default: 3600 (1 hour). Estimate from task complexity. "
+                        "Max: 7200 (2 hours)."
+                    ),
+                    "minimum": 60,
+                    "maximum": 7200,
                 },
                 "verbosity": {
                     "type": "integer",
@@ -181,6 +210,7 @@ class Executor(BaseTool):
         skip_tags: str = "",
         start_at_task: str = "",
         forks: int = 0,
+        timeout: int = 0,
         verbosity: int = 0,
         **kwargs: Any,
     ) -> ToolResult:
@@ -238,19 +268,33 @@ class Executor(BaseTool):
                         f"Use request_secret to collect them from the user before retrying."
                     )
 
+        effective_timeout = min(
+            timeout if timeout and timeout > 0 else _DEFAULT_PLAYBOOK_TIMEOUT,
+            _MAX_PLAYBOOK_TIMEOUT,
+        )
+
         loop = asyncio.get_event_loop()
+        thread, runner = await loop.run_in_executor(
+            None,
+            functools.partial(ansible_runner.run_async, **runner_kwargs),
+        )
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=300,
+            await asyncio.wait_for(
+                loop.run_in_executor(None, thread.join),
+                timeout=effective_timeout,
             )
         except TimeoutError:
+            runner.cancel_callback = lambda: None
+            runner.canceled = True
+            _kill_runner(runner)
+            thread.join(timeout=10)
+            mins = effective_timeout // 60
             return ToolResult.fail(
-                "Deployment timed out after 5 minutes. "
-                "This usually means a host is unreachable or SSH is misconfigured."
+                f"Playbook timed out after {mins} minute(s). "
+                f"Consider increasing the timeout parameter if the operation "
+                f"legitimately needs more time."
             )
+        result = runner
 
         captured_events = (
             "runner_on_ok", "runner_on_failed", "runner_on_skipped",

@@ -54,7 +54,7 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bdocker\s+(?!ps|inspect)"), "run_adhoc with community.docker.* modules"),
     (re.compile(r"\bterraform\s+"), "terraform_exec tool (not local_exec)"),
     (re.compile(r"\btofu\s+"), "terraform_exec tool (not local_exec)"),
-    (re.compile(r"\bopenshift-install\b"), "run_adhoc with ansible.builtin.command on localhost (wrap with async, environment, changed_when)"),
+    (re.compile(r"\bopenshift-install\b"), "execute_playbook wrapping ansible.builtin.command with proper timeout"),
     (re.compile(r"\boc\s+(?:get|create|apply|delete|adm)\b"), "run_adhoc with kubernetes.core.k8s / k8s_info module"),
     (re.compile(r"\bansible-galaxy\b"), "manage_galaxy tool (not local_exec)"),
     (re.compile(r"\bansible-playbook\b"), "execute_playbook tool (not local_exec)"),
