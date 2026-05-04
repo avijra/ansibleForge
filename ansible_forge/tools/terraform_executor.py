@@ -1,4 +1,4 @@
-"""Execute Terraform commands — init, plan, apply, destroy, output, state."""
+"""Execute Terraform commands — init, plan, apply, destroy, import, output, state."""
 
 from __future__ import annotations
 
@@ -36,10 +36,11 @@ class TerraformExecutor(BaseTool):
         return (
             "Execute Terraform commands in the workspace. Supports: init (download providers), "
             "plan (preview changes), apply (create/modify infrastructure, requires approval), "
-            "destroy (tear down infrastructure, requires approval), output (read outputs for "
-            "Ansible handoff), state (inspect current state), validate (check syntax), and "
-            "fmt (format HCL files). Cloud credentials are injected from the SecretVault "
-            "automatically — the user provides them via request_secret."
+            "destroy (tear down infrastructure, requires approval), import (adopt existing "
+            "resources into state), output (read outputs for Ansible handoff), state (inspect "
+            "current state), validate (check syntax), and fmt (format HCL files). Cloud "
+            "credentials are injected from the SecretVault automatically — the user provides "
+            "them via request_secret."
         )
 
     @property
@@ -53,7 +54,7 @@ class TerraformExecutor(BaseTool):
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["init", "plan", "apply", "destroy", "output", "state", "validate", "fmt"],
+                    "enum": ["init", "plan", "apply", "destroy", "import", "output", "state", "validate", "fmt"],
                     "description": "Terraform action to execute",
                 },
                 "var_file": {
@@ -68,6 +69,14 @@ class TerraformExecutor(BaseTool):
                 "target": {
                     "type": "string",
                     "description": "Target specific resource for plan/apply/destroy (e.g. 'aws_instance.web')",
+                },
+                "import_address": {
+                    "type": "string",
+                    "description": "Terraform resource address for import (e.g. 'aws_instance.web')",
+                },
+                "import_id": {
+                    "type": "string",
+                    "description": "Cloud resource ID to import (e.g. 'i-0abc123def456')",
                 },
                 "auto_approve": {
                     "type": "boolean",
@@ -130,6 +139,8 @@ class TerraformExecutor(BaseTool):
         var_file: str = "",
         variables: dict[str, Any] | None = None,
         target: str = "",
+        import_address: str = "",
+        import_id: str = "",
         auto_approve: bool = False,
         **kwargs: Any,
     ) -> ToolResult:
@@ -167,6 +178,8 @@ class TerraformExecutor(BaseTool):
             var_file=var_file,
             variables=variables,
             target=target,
+            import_address=import_address,
+            import_id=import_id,
             auto_approve=auto_approve,
         )
 
@@ -199,6 +212,30 @@ class TerraformExecutor(BaseTool):
             return ToolResult.fail(f"terraform fmt failed: {err}")
         return ToolResult.ok(
             output="Terraform files formatted." if not out.strip() else f"Formatted:\n{out[:2000]}",
+        )
+
+    async def _do_import(
+        self, tf: str, tf_dir: Path, env: dict,
+        import_address: str = "", import_id: str = "", **_: Any,
+    ) -> ToolResult:
+        if not import_address or not import_id:
+            return ToolResult.fail(
+                "import requires both import_address (e.g. 'aws_instance.web') "
+                "and import_id (e.g. 'i-0abc123def456')."
+            )
+        rc, out, err = await self._run_terraform(
+            tf, tf_dir,
+            ["import", "-no-color", "-input=false", import_address, import_id],
+            env, timeout=120,
+        )
+        if rc != 0:
+            return ToolResult.fail(
+                f"terraform import failed:\n{(err.strip() or out.strip())[-3000:]}"
+            )
+        return ToolResult.ok(
+            output=f"Resource '{import_address}' imported as '{import_id}'. "
+            f"Run terraform plan to verify the configuration matches.",
+            stdout=out[-3000:],
         )
 
     async def _do_plan(

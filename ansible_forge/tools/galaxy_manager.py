@@ -1,4 +1,4 @@
-"""Search, install, and manage Ansible Galaxy collections."""
+"""Search, install, and manage Ansible Galaxy collections and roles."""
 
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ class GalaxyManager(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Manage Ansible Galaxy collections: search for collections, install them, "
-            "list installed collections, or create a requirements.yml file."
+            "Manage Ansible Galaxy collections and roles: search, install, list, "
+            "or create a requirements.yml file. Supports both collections (FQCN) "
+            "and roles (namespace.role_name)."
         )
 
     @property
@@ -31,12 +32,12 @@ class GalaxyManager(BaseTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "install", "list", "create_requirements"],
+                    "enum": ["search", "install", "list", "install_role", "list_roles", "create_requirements"],
                     "description": "Galaxy operation to perform",
                 },
                 "collection_name": {
                     "type": "string",
-                    "description": "Collection FQCN (e.g. 'community.general') for install/search",
+                    "description": "Collection FQCN (e.g. 'community.general') or role name (e.g. 'geerlingguy.docker') for install/search",
                 },
                 "version": {
                     "type": "string",
@@ -52,7 +53,7 @@ class GalaxyManager(BaseTool):
                         },
                         "required": ["name"],
                     },
-                    "description": "List of collections for create_requirements",
+                    "description": "List of collections/roles for create_requirements",
                 },
                 "workspace_path": {
                     "type": "string",
@@ -80,6 +81,10 @@ class GalaxyManager(BaseTool):
             return await self._install(collection_name, version)
         if action == "list":
             return await self._list_installed()
+        if action == "install_role":
+            return await self._install_role(collection_name, version)
+        if action == "list_roles":
+            return await self._list_roles()
         if action == "create_requirements":
             return self._create_requirements(requirements or [], workspace_path)
         return ToolResult.fail(f"Unknown action: {action}")
@@ -156,6 +161,36 @@ class GalaxyManager(BaseTool):
         except (json.JSONDecodeError, AttributeError):
             return ToolResult.ok(output=stdout)
 
+    async def _install_role(self, role_name: str, version: str) -> ToolResult:
+        if not role_name:
+            return ToolResult.fail("collection_name (role name) is required for install_role")
+
+        target = f"{role_name},{version}" if version else role_name
+        rc, stdout, stderr = await self._run_galaxy("role", "install", target, "--force")
+
+        if rc != 0:
+            return ToolResult.fail(f"Role install failed: {stderr or stdout}")
+        return ToolResult.ok(output=f"Role '{target}' installed successfully.")
+
+    async def _list_roles(self) -> ToolResult:
+        rc, stdout, stderr = await self._run_galaxy("role", "list")
+        if rc != 0:
+            return ToolResult.fail(f"Could not list installed roles: {stderr}")
+
+        roles: list[dict[str, str]] = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("-") and "," in line:
+                parts = line.lstrip("- ").split(",", 1)
+                roles.append({
+                    "name": parts[0].strip(),
+                    "version": parts[1].strip() if len(parts) > 1 else "unknown",
+                })
+        return ToolResult.ok(
+            output=f"{len(roles)} role(s) installed.",
+            roles=roles,
+        )
+
     @staticmethod
     def _create_requirements(
         requirements: list[dict[str, str]], workspace_path: str
@@ -167,12 +202,19 @@ class GalaxyManager(BaseTool):
 
         import yaml
 
-        content = {"collections": []}
+        content: dict[str, list[dict[str, str]]] = {"collections": [], "roles": []}
         for req in requirements:
             entry: dict[str, str] = {"name": req["name"]}
             if req.get("version"):
                 entry["version"] = req["version"]
-            content["collections"].append(entry)
+            if req.get("type") == "role":
+                content["roles"].append(entry)
+            else:
+                content["collections"].append(entry)
+        if not content["roles"]:
+            del content["roles"]
+        if not content["collections"]:
+            del content["collections"]
 
         out_path = Path(workspace_path) / "requirements.yml"
         out_path.parent.mkdir(parents=True, exist_ok=True)

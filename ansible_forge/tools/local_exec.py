@@ -1,9 +1,10 @@
 """Local command execution tool — last-resort shell commands on the host.
 
-This tool exists ONLY for operations that have no Ansible module or Terraform
-resource equivalent.  A guardrail layer inspects every command and rejects
-those that should use run_adhoc / generate_playbook / terraform_exec instead,
-returning an actionable error with the correct Ansible module to use.
+DEFAULT-DENY architecture: every command is split on shell operators
+(&&, ||, ;, |) and each segment must either match the narrow allow-list
+or be rejected.  Redirect patterns (Ansible/Terraform equivalents) are
+checked BEFORE the allow-list — a compound command cannot sneak a
+redirectable segment past the guardrail by prepending an allowed one.
 """
 
 from __future__ import annotations
@@ -52,37 +53,63 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bssh\s+"), "run_adhoc with ansible.builtin.ping or test_connectivity tool"),
     (re.compile(r"\bdocker\s+(?!ps|inspect)"), "run_adhoc with community.docker.* modules"),
     (re.compile(r"\bterraform\s+"), "terraform_exec tool (not local_exec)"),
+    (re.compile(r"\btofu\s+"), "terraform_exec tool (not local_exec)"),
     (re.compile(r"\bopenshift-install\b"), "run_adhoc with ansible.builtin.command on localhost (wrap with async, environment, changed_when)"),
     (re.compile(r"\boc\s+(?:get|create|apply|delete|adm)\b"), "run_adhoc with kubernetes.core.k8s / k8s_info module"),
     (re.compile(r"\bansible-galaxy\b"), "manage_galaxy tool (not local_exec)"),
     (re.compile(r"\bansible-playbook\b"), "execute_playbook tool (not local_exec)"),
     (re.compile(r"\bansible\s+"), "run_adhoc tool (not local_exec)"),
+    (re.compile(r"\bls\b"), "run_adhoc with ansible.builtin.find or read_file tool"),
+    (re.compile(r"\bmkdir\b"), "run_adhoc with ansible.builtin.file module (state=directory)"),
+    (re.compile(r"\bchmod\b"), "run_adhoc with ansible.builtin.file module (mode parameter)"),
+    (re.compile(r"\bchown\b"), "run_adhoc with ansible.builtin.file module (owner/group)"),
+    (re.compile(r"\bcp\b"), "run_adhoc with ansible.builtin.copy module"),
+    (re.compile(r"\bmv\b"), "run_adhoc with ansible.builtin.command (or copy+file absent)"),
+    (re.compile(r"\bcat\b"), "read_file tool or run_adhoc with ansible.builtin.slurp"),
+    (re.compile(r"\bping\s+"), "test_connectivity tool or run_adhoc with ansible.builtin.wait_for"),
+    (re.compile(r"\bdig\s+"), "run_adhoc with community.general.dig lookup or ansible.builtin.command"),
+    (re.compile(r"\bnslookup\b"), "run_adhoc with community.general.dig lookup"),
+    (re.compile(r"\buname\b"), "collect_facts tool (ansible_kernel, ansible_architecture)"),
+    (re.compile(r"\bhostname\b"), "collect_facts tool (ansible_hostname)"),
+    (re.compile(r"\bdf\b"), "collect_facts tool (ansible_mounts) or run_adhoc ansible.builtin.command"),
+    (re.compile(r"\bfree\b"), "collect_facts tool (ansible_memtotal_mb)"),
+    (re.compile(r"\buptime\b"), "collect_facts tool (ansible_uptime_seconds)"),
+    (re.compile(r"\bwhoami\b"), "collect_facts tool (ansible_user_id)"),
+    (re.compile(r"\bscp\b"), "run_adhoc with ansible.builtin.copy (push) or ansible.builtin.fetch (pull)"),
+    (re.compile(r"\brsync\b"), "run_adhoc with ansible.posix.synchronize module"),
+    (re.compile(r"\bsudo\b"), "run_adhoc with become: true"),
+    (re.compile(r"\bcrontab\b"), "run_adhoc with ansible.builtin.cron module"),
+    (re.compile(r"\buseradd\b|\badduser\b"), "run_adhoc with ansible.builtin.user module"),
+    (re.compile(r"\bgroupadd\b"), "run_adhoc with ansible.builtin.group module"),
+    (re.compile(r"\biptables\b"), "run_adhoc with ansible.builtin.iptables module"),
+    (re.compile(r"\bfirewall-cmd\b"), "run_adhoc with ansible.posix.firewalld module"),
+    (re.compile(r"\bsemanage\b|\bsetsebool\b"), "run_adhoc with ansible.posix.seboolean / selinux module"),
+    (re.compile(r"\bgit\s+(?:clone|pull|push|commit)\b"), "manage_git tool"),
 ]
 
 _ALLOWED_PATTERNS = [
     re.compile(r"\btart\s+"),
     re.compile(r"\bvagrant\s+"),
-    re.compile(r"^\s*ps\s+"),
     re.compile(r"\bps\s+aux\b"),
+    re.compile(r"^\s*ps\s+"),
     re.compile(r"\blsof\s+"),
-    re.compile(r"\bpgrep\b|\bpkill\b"),
-    re.compile(r"\bping\s+"),
-    re.compile(r"\buname\b"),
-    re.compile(r"\bsw_vers\b"),
-    re.compile(r"\bwhich\b"),
-    re.compile(r"\bwhoami\b"),
-    re.compile(r"\bls\b"),
-    re.compile(r"\bcat\s+/etc/os-release"),
-    re.compile(r"\bdf\b"),
-    re.compile(r"\bfree\b"),
-    re.compile(r"\buptime\b"),
-    re.compile(r"\bhostname\b"),
+    re.compile(r"\bpgrep\b"),
+    re.compile(r"\bpkill\b"),
     re.compile(r"\bdocker\s+(?:ps|inspect)\b"),
-    re.compile(r"\bmkdir\b"),
-    re.compile(r"--version\b"),
-    re.compile(r"\bdig\s+"),
-    re.compile(r"\bnslookup\b"),
+    re.compile(r"\bsw_vers\b"),
+    re.compile(r"\bwc\s+"),
+    re.compile(r"\bhead\s+"),
+    re.compile(r"\btail\s+"),
+    re.compile(r"\bgrep\s+"),
+    re.compile(r"\bsleep\s+"),
+    re.compile(r"\becho\s+"),
+    re.compile(r"\bdate\b"),
+    re.compile(r"\bwhich\s+"),
+    re.compile(r"\benv\b"),
+    re.compile(r"\bprintenv\b"),
 ]
+
+_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 MAX_OUTPUT_BYTES = 256_000
 DEFAULT_TIMEOUT = 120
@@ -97,12 +124,10 @@ class LocalExec(BaseTool):
     def description(self) -> str:
         return (
             "LAST RESORT — run a shell command on the local machine. "
-            "ONLY for: Tart/Vagrant VM lifecycle, checking running processes "
-            "(ps, lsof), or quick diagnostics (ping, uname). "
-            "REJECTED for: AWS/Azure/GCP CLI calls, package installs (pip/brew/apt), "
-            "curl/wget downloads, kubectl/helm, ssh commands, terraform, or anything "
-            "with an Ansible module equivalent. Use run_adhoc, generate_playbook, "
-            "or terraform_exec instead."
+            "DEFAULT-DENY: only Tart/Vagrant VM lifecycle and local process "
+            "diagnostics (ps, lsof, pgrep) are allowed. Everything else is "
+            "BLOCKED and redirected to the correct Ansible module or Terraform "
+            "resource. Use run_adhoc, generate_playbook, or terraform_exec instead."
         )
 
     @property
@@ -127,13 +152,36 @@ class LocalExec(BaseTool):
         }
 
     @staticmethod
-    def _check_ansible_redirect(command: str) -> str | None:
-        for allow in _ALLOWED_PATTERNS:
-            if allow.search(command):
-                return None
+    def _check_segment(segment: str) -> str | None:
+        """Check a single command segment. Returns redirect message or None."""
+        stripped = segment.strip()
+        if not stripped:
+            return None
+
         for pattern, redirect in _ANSIBLE_REDIRECT:
-            if pattern.search(command):
+            if pattern.search(stripped):
                 return redirect
+
+        for allow in _ALLOWED_PATTERNS:
+            if allow.search(stripped):
+                return None
+
+        return (
+            "BLOCKED (default-deny): this command is not in the local_exec "
+            "allow-list. Use run_adhoc with the appropriate Ansible module, "
+            "or generate_playbook / terraform_exec. local_exec only permits "
+            "Tart/Vagrant VM commands and process diagnostics (ps, lsof, pgrep)."
+        )
+
+    @staticmethod
+    def _check_command(command: str) -> str | None:
+        """Split compound commands and check every segment.
+        Returns the first rejection reason, or None if all segments pass."""
+        segments = _SPLIT_RE.split(command)
+        for seg in segments:
+            result = LocalExec._check_segment(seg)
+            if result is not None:
+                return result
         return None
 
     async def execute(self, **kwargs: Any) -> ToolResult:
@@ -147,19 +195,17 @@ class LocalExec(BaseTool):
                     "Command blocked by safety filter: matches dangerous pattern."
                 )
 
-        redirect = self._check_ansible_redirect(command)
-        if redirect:
+        rejection = self._check_command(command)
+        if rejection:
             logger.warning(
-                "local_exec_redirected",
+                "local_exec_blocked",
                 command=command[:200],
-                redirect=redirect,
+                reason=rejection[:200],
             )
             return ToolResult.fail(
-                f"BLOCKED: This command has an Ansible/Terraform equivalent. "
-                f"Use {redirect} instead. "
-                f"local_exec is only for Tart/Vagrant VM lifecycle and process "
-                f"diagnostics (ps, lsof, ping). The TOOL HIERARCHY rule requires "
-                f"Ansible modules first, Terraform second, local_exec dead last."
+                f"BLOCKED: {rejection}. "
+                f"The TOOL HIERARCHY rule requires Ansible modules first, "
+                f"Terraform second, local_exec dead last."
             )
 
         timeout = min(kwargs.get("timeout", DEFAULT_TIMEOUT), 600)

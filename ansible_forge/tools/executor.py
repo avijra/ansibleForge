@@ -32,7 +32,8 @@ class Executor(BaseTool):
         return (
             "Execute an Ansible playbook using ansible-runner. Supports two modes: "
             "'check' (dry-run with --check --diff to preview changes without applying) "
-            "and 'apply' (actually execute changes on target hosts). "
+            "and 'apply' (actually execute changes on target hosts). Supports limit, "
+            "tags, skip_tags, start_at_task, forks, and verbosity for full CLI parity. "
             "Always prefer 'check' mode first so the user can review before applying."
         )
 
@@ -70,6 +71,20 @@ class Executor(BaseTool):
                 "tags": {
                     "type": "string",
                     "description": "Comma-separated tags to run",
+                },
+                "skip_tags": {
+                    "type": "string",
+                    "description": "Comma-separated tags to skip",
+                },
+                "start_at_task": {
+                    "type": "string",
+                    "description": "Start execution at a specific task name",
+                },
+                "forks": {
+                    "type": "integer",
+                    "description": "Number of parallel processes (default: 5)",
+                    "minimum": 1,
+                    "maximum": 50,
                 },
                 "verbosity": {
                     "type": "integer",
@@ -163,6 +178,9 @@ class Executor(BaseTool):
         extra_vars: dict[str, Any] | None = None,
         limit: str = "",
         tags: str = "",
+        skip_tags: str = "",
+        start_at_task: str = "",
+        forks: int = 0,
         verbosity: int = 0,
         **kwargs: Any,
     ) -> ToolResult:
@@ -181,6 +199,12 @@ class Executor(BaseTool):
             cmdline_args.extend(["--limit", limit])
         if tags:
             cmdline_args.extend(["--tags", tags])
+        if skip_tags:
+            cmdline_args.extend(["--skip-tags", skip_tags])
+        if start_at_task:
+            cmdline_args.extend(["--start-at-task", start_at_task])
+        if forks and forks > 0:
+            cmdline_args.extend(["--forks", str(forks)])
 
         merged_vars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")
