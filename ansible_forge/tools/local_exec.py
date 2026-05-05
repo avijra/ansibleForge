@@ -14,10 +14,16 @@ import os
 import re
 from typing import Any
 
+from ansible_forge.config import get_settings
 from ansible_forge.logging import get_logger
+from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 
 logger = get_logger(__name__)
+
+_BACKEND_PORT = get_settings().port
+_BACKEND_PID = os.getpid()
+_BACKEND_PPID = os.getppid()
 
 _DANGEROUS_PATTERNS = [
     re.compile(r"\brm\s+-[^\s]*r[^\s]*\s+/\s*$"),
@@ -91,6 +97,35 @@ _ALLOWED_PATTERNS = [
 ]
 
 _ESCAPE_HATCH_THRESHOLD = 2
+
+
+def _is_self_harm(command: str) -> bool:
+    """Return True if the command would kill or disrupt the Tuyere backend."""
+    pid_str = str(_BACKEND_PID)
+    ppid_str = str(_BACKEND_PPID)
+    port_str = str(_BACKEND_PORT)
+
+    kill_pid = re.compile(
+        rf"\bkill\s+(?:-\w+\s+)*(?:{re.escape(pid_str)}|{re.escape(ppid_str)})\b"
+    )
+    if kill_pid.search(command):
+        return True
+
+    kill_via_port = re.compile(
+        rf"(?:\blsof\b.*-[^\s]*i\s*:\s*{re.escape(port_str)}\b.*\b(?:kill|xargs\s+kill)\b)"
+        rf"|(?:\bkill\b.*\$\(.*\blsof\b.*:\s*{re.escape(port_str)}\b)"
+        rf"|(?:\bkill\b.*`.*\blsof\b.*:\s*{re.escape(port_str)}\b)"
+        rf"|(?:\bfuser\b.*{re.escape(port_str)}/tcp.*-k)"
+        rf"|(?:\bfuser\b.*-k.*{re.escape(port_str)}/tcp)"
+    )
+    if kill_via_port.search(command):
+        return True
+
+    process_kill_by_name = re.compile(
+        r"\b(?:pkill|killall)\b.*\b(?:ansibleforge|ansible.forge|tuyere|uvicorn)\b",
+        re.IGNORECASE,
+    )
+    return bool(process_kill_by_name.search(command))
 
 _SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
@@ -177,6 +212,15 @@ class LocalExec(BaseTool):
                     "Command blocked by safety filter: matches dangerous pattern."
                 )
 
+        if _is_self_harm(command):
+            return ToolResult.fail(
+                f"BLOCKED: this command would kill the Tuyere backend process "
+                f"(PID {_BACKEND_PID}, port {_BACKEND_PORT}). "
+                f"Port {_BACKEND_PORT} is YOUR OWN backend — killing it kills the app. "
+                f"ansible-runner does NOT need port {_BACKEND_PORT}; "
+                f"it runs as a subprocess, not a server."
+            )
+
         exec_fail_count: int = kwargs.get("_exec_fail_count", 0)
 
         rejection = self._check_command(command)
@@ -202,12 +246,22 @@ class LocalExec(BaseTool):
                     f"threshold={_ESCAPE_HATCH_THRESHOLD})."
                 )
 
-        timeout = min(kwargs.get("timeout", DEFAULT_TIMEOUT), 600)
+        timeout = max(10, min(kwargs.get("timeout", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT, 600))
         cwd = kwargs.get("working_directory") or kwargs.get("_workspace_path")
 
         env = os.environ.copy()
         env["LC_ALL"] = "C.UTF-8"
         env["LANG"] = "C.UTF-8"
+
+        session_id = kwargs.get("_session_id")
+        if session_id:
+            try:
+                vault = SecretVault.get_instance().for_session(session_id)
+                for key, value in vault.get_all().items():
+                    if key.isupper() or key.startswith("AWS_") or key.startswith("ARM_") or key.startswith("GOOGLE_"):
+                        env[key] = str(value)
+            except Exception:
+                logger.debug("vault_inject_failed", exc_info=True)
 
         logger.info("local_exec_start", command=command[:200], cwd=cwd, timeout=timeout)
 

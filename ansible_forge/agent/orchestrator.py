@@ -960,7 +960,7 @@ class Orchestrator:
                             }))
                         else:
                             state._consecutive_errors = 0
-                            if tc.name in self._EXECUTION_TOOLS:
+                            if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                                 state._exec_fail_count = 0
                                 state._searched_since_exec_fail = False
 
@@ -1423,7 +1423,7 @@ class Orchestrator:
                         }))
                     else:
                         state._consecutive_errors = 0
-                        if tc.name in self._EXECUTION_TOOLS:
+                        if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                             state._exec_fail_count = 0
                             state._searched_since_exec_fail = False
 
@@ -2096,7 +2096,7 @@ class Orchestrator:
 
         if tc.name == "terraform_exec":
             action = tc.arguments.get("action", "")
-            if action in ("apply", "destroy"):
+            if action in ("apply", "destroy", "import"):
                 return True
 
         return False

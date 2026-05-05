@@ -179,7 +179,12 @@ hidden_imports = [
     "ansible_runner",
     "ansible_runner.runner",
     "ansible_runner.config",
-    "ansible_runner.config._ansible_runner",
+    "ansible_runner.config._base",
+    "ansible_runner.config.runner",
+    "ansible_runner.config.command",
+    "ansible_runner.config.inventory",
+    "ansible_runner.config.ansible_cfg",
+    "ansible_runner.config.doc",
     # --- ansible-lint ---
     "ansiblelint",
     "ansiblelint.__main__",
@@ -189,7 +194,7 @@ hidden_imports = [
     "ansiblelint.constants",
     "ansiblelint.errors",
     "ansiblelint.file_utils",
-    "ansiblelint.formatter",
+    "ansiblelint.formatters",
     "ansiblelint.rules",
     "ansiblelint.runner",
     "ansiblelint.skip_utils",
@@ -221,6 +226,8 @@ hidden_imports = [
     "email.mime.text",
     "email.mime.multipart",
     "json",
+    "cryptography",
+    "cryptography.fernet",
     "multiprocessing",
 ]
 

@@ -22,6 +22,7 @@ from ansible_forge.tools.executor import (
     clean_stale_env,
 )
 from ansible_forge.tools.secret_check import find_missing_secrets
+from ansible_forge.workspace.project_layout import ensure_ansible_cfg
 
 logger = get_logger(__name__)
 
@@ -219,6 +220,7 @@ class AdhocRunner(BaseTool):
             merged_vars.update(extra_vars)
         self._materialize_ssh_keys(ws, merged_vars)
         clean_stale_env(ws)
+        ensure_ansible_cfg(ws)
 
         if host_pattern not in local_targets:
             missing = find_missing_secrets(inv_path, merged_vars)
@@ -335,8 +337,9 @@ class AdhocRunner(BaseTool):
             return ToolResult.fail(
                 f"No hosts responded for pattern '{host_pattern}'. "
                 f"{detail} "
-                f"Check inventory and host_pattern. For localhost operations, "
-                f"use execute_playbook with 'hosts: localhost' instead."
+                f"Check that the inventory file contains matching hosts and "
+                f"the host_pattern is correct. If targeting localhost, ensure "
+                f"the inventory has 'ansible_connection=local' set."
             )
 
         ok = sum(1 for r in host_results.values() if r["status"] == "ok")
