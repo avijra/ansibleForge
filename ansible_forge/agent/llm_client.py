@@ -179,7 +179,7 @@ class LLMClient:
         before_sleep=lambda rs: logger.info(
             "stream_rate_limit_retry",
             attempt=rs.attempt_number,
-            wait=f"{rs.next_action.sleep:.1f}s",
+            wait=f"{getattr(rs.next_action, 'sleep', 0):.1f}s",
         ),
     )
     async def _stream_with_retry(self, **kwargs: Any) -> Any:
@@ -219,7 +219,7 @@ class LLMClient:
         before_sleep=lambda rs: logger.info(
             "rate_limit_retry",
             attempt=rs.attempt_number,
-            wait=f"{rs.next_action.sleep:.1f}s",
+            wait=f"{getattr(rs.next_action, 'sleep', 0):.1f}s",
         ),
     )
     async def _single_call(self, **kwargs: Any) -> Any:
