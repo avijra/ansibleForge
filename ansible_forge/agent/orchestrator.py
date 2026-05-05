@@ -1982,6 +1982,7 @@ class Orchestrator:
 
         arguments["_session_id"] = state.session_id
         arguments["_workspace_path"] = str(state.workspace.path)
+        arguments["_exec_fail_count"] = state._exec_fail_count
 
         if tool_name == "execute_playbook":
             result = self._pre_validate_playbook(arguments)
@@ -2080,19 +2081,25 @@ class Orchestrator:
 
     @staticmethod
     def _requires_unapproved_apply_gate(tc: Any, state: SessionState) -> bool:
-        """Return True if this tool call is an apply-mode execution that hasn't
-        been through a prior check-mode approval in this session."""
-        if tc.name != "execute_playbook":
-            return False
-        if tc.arguments.get("mode") != "apply":
-            return False
-        playbook = tc.arguments.get("playbook", "")
-        if playbook in state._approved_playbooks:
-            return False
-        if Orchestrator._is_localhost_only_playbook(tc, state):
-            state._approved_playbooks.add(playbook)
-            return False
-        return True
+        """Return True if this tool call is a mutating execution that hasn't
+        been through a prior approval in this session."""
+        if tc.name == "execute_playbook":
+            if tc.arguments.get("mode") != "apply":
+                return False
+            playbook = tc.arguments.get("playbook", "")
+            if playbook in state._approved_playbooks:
+                return False
+            if Orchestrator._is_localhost_only_playbook(tc, state):
+                state._approved_playbooks.add(playbook)
+                return False
+            return True
+
+        if tc.name == "terraform_exec":
+            action = tc.arguments.get("action", "")
+            if action in ("apply", "destroy"):
+                return True
+
+        return False
 
     def approve_session(self, session_id: str) -> bool:
         return self._approval_gate.approve(session_id)

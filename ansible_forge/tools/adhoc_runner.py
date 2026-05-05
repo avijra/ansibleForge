@@ -15,7 +15,12 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import _LIVE_EVENT_TYPES, _format_live_event
+from ansible_forge.tools.executor import (
+    _LIVE_EVENT_TYPES,
+    _format_live_event,
+    _sigkill_after_delay,
+    clean_stale_env,
+)
 from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
@@ -36,16 +41,22 @@ def _adhoc_envvars() -> dict[str, str]:
 
 
 def _kill_runner(runner: Any) -> None:
-    """Terminate ansible-runner's subprocess tree on timeout."""
+    """Terminate ansible-runner's subprocess tree, escalating to SIGKILL."""
     import contextlib
+    import threading
 
     with contextlib.suppress(Exception):
         if hasattr(runner, "process") and runner.process and runner.process.pid:
             pid = runner.process.pid
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                logger.debug("sigterm_pgid_failed", pid=pid, exc_info=True)
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
+
+            t = threading.Thread(target=_sigkill_after_delay, args=(pid,), daemon=True)
+            t.start()
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
@@ -187,9 +198,17 @@ class AdhocRunner(BaseTool):
             return ToolResult.fail("workspace_path, module, and inventory are required")
 
         ws = Path(workspace_path)
+        local_targets = {"localhost", "127.0.0.1", "::1", "local"}
         inv_path = self._resolve_inventory(ws, inventory)
         if not inv_path.exists():
-            return ToolResult.fail(f"Inventory not found: {inv_path}")
+            if host_pattern in local_targets:
+                inv_path.parent.mkdir(parents=True, exist_ok=True)
+                inv_path.write_text(
+                    "[local]\nlocalhost ansible_connection=local\n"
+                )
+                logger.info("auto_created_localhost_inventory", path=str(inv_path))
+            else:
+                return ToolResult.fail(f"Inventory not found: {inv_path}")
 
         merged_vars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")
@@ -199,8 +218,8 @@ class AdhocRunner(BaseTool):
         if extra_vars:
             merged_vars.update(extra_vars)
         self._materialize_ssh_keys(ws, merged_vars)
+        clean_stale_env(ws)
 
-        local_targets = {"localhost", "127.0.0.1", "::1", "local"}
         if host_pattern not in local_targets:
             missing = find_missing_secrets(inv_path, merged_vars)
             if missing:

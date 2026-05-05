@@ -1,10 +1,10 @@
-"""Local command execution tool — fallback shell on the host.
+"""Local command execution tool — last-resort shell on the host.
 
-Commands are checked against a BLOCKED list (destructive operations like
-rm -rf /, mkfs, dd) and a REDIRECT list (Ansible/Terraform CLIs that have
-dedicated tools in the app).  Everything else is allowed through — the
-system prompt guides the agent to prefer Ansible modules and Terraform, but
-when those tools fail, local_exec is the safety net that prevents deadlock.
+Commands are checked against a BLOCKED list (destructive operations) and a
+REDIRECT list (Ansible/Terraform CLIs that have dedicated tools).  Redirected
+commands are allowed through ONLY when the agent's execution tools have already
+failed 2+ times in the session (_exec_fail_count escape hatch), preventing
+tool deadlock while keeping Ansible/Terraform as the default path.
 """
 
 from __future__ import annotations
@@ -32,11 +32,65 @@ _DANGEROUS_PATTERNS = [
 
 _VERSION_RE = re.compile(r"^\s*\S+\s+(?:--?version|-V|version)\s*$")
 
-_APP_TOOL_REDIRECT: list[tuple[re.Pattern[str], str]] = [
+_ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\baws\s+ec2\b"), "run_adhoc with amazon.aws.ec2_instance_info / ec2_vpc_net_info"),
+    (re.compile(r"\baws\s+s3\b"), "run_adhoc with amazon.aws.s3_bucket or amazon.aws.s3_object"),
+    (re.compile(r"\baws\s+route53\b"), "run_adhoc with amazon.aws.route53 / route53_info"),
+    (re.compile(r"\baws\s+iam\b"), "run_adhoc with amazon.aws.iam_role / iam_user / iam_policy"),
+    (re.compile(r"\baws\s+elbv?2?\b"), "run_adhoc with amazon.aws.elb_application_lb_info"),
+    (re.compile(r"\baws\s+service-quotas\b"), "run_adhoc with ansible.builtin.command on localhost"),
+    (re.compile(r"\baws\s+sts\b"), "run_adhoc with amazon.aws.sts_caller_identity"),
+    (re.compile(r"\baws\s+configure\b"), "request_secret for AWS credentials"),
+    (re.compile(r"\baws\s+"), "run_adhoc with the appropriate amazon.aws.* module"),
+    (re.compile(r"\baz\s+"), "run_adhoc with the appropriate azure.azcollection.* module"),
+    (re.compile(r"\bgcloud\s+"), "run_adhoc with the appropriate google.cloud.* module"),
+    (re.compile(r"\bkubectl\s+"), "run_adhoc with kubernetes.core.k8s_info / k8s module"),
+    (re.compile(r"\bhelm\s+"), "run_adhoc with kubernetes.core.helm / helm_info module"),
+    (re.compile(r"\bpip3?\s+install\b"), "run_adhoc with ansible.builtin.pip module"),
+    (re.compile(r"\bbrew\s+install\b"), "run_adhoc with ansible.builtin.homebrew module"),
+    (re.compile(r"\bapt\s+install\b|\bapt-get\s+install\b"), "run_adhoc with ansible.builtin.apt module"),
+    (re.compile(r"\bdnf\s+install\b|\byum\s+install\b"), "run_adhoc with ansible.builtin.dnf / yum module"),
+    (re.compile(r"\bsystemctl\s+"), "run_adhoc with ansible.builtin.systemd module"),
+    (re.compile(r"\bcurl\s+.*https?://"), "run_adhoc with ansible.builtin.uri or ansible.builtin.get_url"),
+    (re.compile(r"\bwget\s+"), "run_adhoc with ansible.builtin.get_url module"),
+    (re.compile(r"\bssh-keygen\b"), "run_adhoc with community.crypto.openssh_keypair module"),
+    (re.compile(r"\bssh-keyscan\b"), "run_adhoc with ansible.builtin.known_hosts module"),
+    (re.compile(r"\bssh\s+"), "run_adhoc with ansible.builtin.ping or test_connectivity tool"),
+    (re.compile(r"\bdocker\s+(?!ps|inspect)"), "run_adhoc with community.docker.* modules"),
+    (re.compile(r"\bterraform\s+"), "terraform_exec tool (not local_exec)"),
+    (re.compile(r"\bopenshift-install\b"), "run_adhoc with ansible.builtin.command on localhost"),
+    (re.compile(r"\boc\s+(?:get|create|apply|delete|adm)\b"), "run_adhoc with kubernetes.core.k8s / k8s_info module"),
     (re.compile(r"\bansible-galaxy\b"), "manage_galaxy tool (not local_exec)"),
     (re.compile(r"\bansible-playbook\b"), "execute_playbook tool (not local_exec)"),
     (re.compile(r"\bansible\s+(?!--version)"), "run_adhoc tool (not local_exec)"),
 ]
+
+_ALLOWED_PATTERNS = [
+    re.compile(r"\btart\s+"),
+    re.compile(r"\bvagrant\s+"),
+    re.compile(r"^\s*ps\s+"),
+    re.compile(r"\bps\s+aux\b"),
+    re.compile(r"\blsof\s+"),
+    re.compile(r"\bpgrep\b|\bpkill\b"),
+    re.compile(r"\bping\s+"),
+    re.compile(r"\buname\b"),
+    re.compile(r"\bsw_vers\b"),
+    re.compile(r"\bwhich\b"),
+    re.compile(r"\bwhoami\b"),
+    re.compile(r"\bls\b"),
+    re.compile(r"\bcat\s+/etc/os-release"),
+    re.compile(r"\bdf\b"),
+    re.compile(r"\bfree\b"),
+    re.compile(r"\buptime\b"),
+    re.compile(r"\bhostname\b"),
+    re.compile(r"\bdocker\s+(?:ps|inspect)\b"),
+    re.compile(r"\bmkdir\b"),
+    re.compile(r"--version\b"),
+    re.compile(r"\bdig\s+"),
+    re.compile(r"\bnslookup\b"),
+]
+
+_ESCAPE_HATCH_THRESHOLD = 2
 
 _SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
@@ -52,10 +106,15 @@ class LocalExec(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Run a shell command on the local machine. Prefer Ansible modules "
-            "(run_adhoc / execute_playbook) and terraform_exec when they work, "
-            "but use this tool as fallback when those fail or for CLI tools "
-            "like aws, kubectl, openshift-install, oc, helm, etc."
+            "LAST RESORT — run a shell command on the local machine. "
+            "ONLY for: Tart/Vagrant VM lifecycle, checking running processes "
+            "(ps, lsof, pgrep), checking versions (--version), DNS lookups "
+            "(dig, nslookup), and system info (uname, hostname, df). "
+            "For ALL cloud/infrastructure CLI commands (aws, kubectl, helm, "
+            "terraform, openshift-install, curl, wget), use the dedicated "
+            "Ansible/Terraform tools first — they are more reliable and auditable. "
+            "This tool will BLOCK commands that have Ansible/Terraform equivalents "
+            "and redirect you to the correct tool."
         )
 
     @property
@@ -88,7 +147,11 @@ class LocalExec(BaseTool):
         if _VERSION_RE.match(stripped):
             return None
 
-        for pattern, redirect in _APP_TOOL_REDIRECT:
+        for pattern in _ALLOWED_PATTERNS:
+            if pattern.search(stripped):
+                return None
+
+        for pattern, redirect in _ANSIBLE_REDIRECT:
             if pattern.search(stripped):
                 return redirect
 
@@ -114,17 +177,30 @@ class LocalExec(BaseTool):
                     "Command blocked by safety filter: matches dangerous pattern."
                 )
 
+        exec_fail_count: int = kwargs.get("_exec_fail_count", 0)
+
         rejection = self._check_command(command)
         if rejection:
-            logger.warning(
-                "local_exec_blocked",
-                command=command[:200],
-                reason=rejection[:200],
-            )
-            return ToolResult.fail(
-                f"BLOCKED: {rejection}. "
-                f"Use the dedicated tool instead of local_exec for this."
-            )
+            if exec_fail_count >= _ESCAPE_HATCH_THRESHOLD:
+                logger.warning(
+                    "local_exec_escape_hatch",
+                    command=command[:200],
+                    redirect=rejection[:200],
+                    exec_fail_count=exec_fail_count,
+                )
+            else:
+                logger.warning(
+                    "local_exec_blocked",
+                    command=command[:200],
+                    reason=rejection[:200],
+                )
+                return ToolResult.fail(
+                    f"BLOCKED: {rejection}. "
+                    f"Use the dedicated tool instead of local_exec for this. "
+                    f"local_exec is only allowed as a fallback after Ansible/Terraform "
+                    f"tools have failed (current exec_fail_count={exec_fail_count}, "
+                    f"threshold={_ESCAPE_HATCH_THRESHOLD})."
+                )
 
         timeout = min(kwargs.get("timeout", DEFAULT_TIMEOUT), 600)
         cwd = kwargs.get("working_directory") or kwargs.get("_workspace_path")

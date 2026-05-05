@@ -17,6 +17,7 @@ from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 from ansible_forge.tools.secret_check import find_missing_secrets
+from ansible_forge.workspace.project_layout import ensure_ansible_cfg
 
 logger = get_logger(__name__)
 
@@ -135,6 +136,29 @@ def _kill_runner(runner: Any) -> None:
 
             t = threading.Thread(target=_sigkill_after_delay, args=(pid,), daemon=True)
             t.start()
+
+
+def clean_stale_env(ws: Path) -> None:
+    """Remove env artifacts left by prior ansible-runner invocations.
+
+    ansible-runner's ``dump_artifacts`` writes parameters like *cmdline*
+    and *extravars* to ``env/`` **only when the file does not already
+    exist**.  On subsequent runs, if the caller omits a parameter (e.g.
+    ``cmdline`` is empty in apply mode), runner falls back to reading
+    the stale file — which may still contain ``--check --diff`` from a
+    previous dry-run.  Cleaning these files before every run ensures
+    the correct flags are always used.
+    """
+    env_dir = ws / ".tuyere" / "env"
+    if not env_dir.exists():
+        return
+    for artifact in ("cmdline", "extravars"):
+        path = env_dir / artifact
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                logger.debug("clean_stale_env_unlink_failed", path=str(path), exc_info=True)
 
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
@@ -272,23 +296,7 @@ class Executor(BaseTool):
 
     @staticmethod
     def _clean_stale_env(ws: Path) -> None:
-        """Remove env artifacts left by prior ansible-runner invocations.
-
-        ansible-runner's ``dump_artifacts`` writes parameters like *cmdline*
-        and *extravars* to ``env/`` **only when the file does not already
-        exist**.  On subsequent runs, if the caller omits a parameter (e.g.
-        ``cmdline`` is empty in apply mode), runner falls back to reading
-        the stale file — which may still contain ``--check --diff`` from a
-        previous dry-run.  Cleaning these files before every run ensures
-        the correct flags are always used.
-        """
-        env_dir = ws / ".tuyere" / "env"
-        if not env_dir.exists():
-            return
-        for artifact in ("cmdline", "extravars"):
-            path = env_dir / artifact
-            if path.exists():
-                path.unlink()
+        clean_stale_env(ws)
 
     @staticmethod
     def _resolve_inventory(ws: Path, inventory: str) -> Path:
@@ -355,6 +363,7 @@ class Executor(BaseTool):
 
         self._materialize_ssh_keys(ws, merged_vars)
         self._clean_stale_env(ws)
+        ensure_ansible_cfg(ws)
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
@@ -387,14 +396,18 @@ class Executor(BaseTool):
             runner_kwargs["extravars"] = merged_vars
         if inventory:
             inv_path = self._resolve_inventory(ws, inventory)
-            if inv_path.exists():
-                runner_kwargs["inventory"] = str(inv_path)
-                missing = find_missing_secrets(inv_path, merged_vars)
-                if missing:
-                    return ToolResult.fail(
-                        f"Inventory references secrets not in the vault: {', '.join(missing)}. "
-                        f"Use request_secret to collect them from the user before retrying."
-                    )
+            if not inv_path.exists():
+                return ToolResult.fail(
+                    f"Inventory not found: {inv_path}. "
+                    f"Use manage_inventory to create it first."
+                )
+            runner_kwargs["inventory"] = str(inv_path)
+            missing = find_missing_secrets(inv_path, merged_vars)
+            if missing:
+                return ToolResult.fail(
+                    f"Inventory references secrets not in the vault: {', '.join(missing)}. "
+                    f"Use request_secret to collect them from the user before retrying."
+                )
 
         effective_timeout = min(
             timeout if timeout and timeout > 0 else _DEFAULT_PLAYBOOK_TIMEOUT,
