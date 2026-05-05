@@ -3,6 +3,7 @@ import {
   Brain,
   CheckCircle2,
   ChevronRight,
+  FileText,
   GitBranch,
   Lightbulb,
   RefreshCw,
@@ -45,7 +46,7 @@ interface GraphEdge {
   type: string;
 }
 
-type Tab = "overview" | "recipes" | "errors" | "graph";
+type Tab = "overview" | "recipes" | "errors" | "memory";
 
 const TYPE_META: Record<string, { icon: typeof Brain; color: string; label: string }> = {
   recipe: { icon: ScrollText, color: "text-emerald-400", label: "Recipes" },
@@ -85,6 +86,7 @@ export function KnowledgeView() {
   const [errors, setErrors] = useState<RecentError[]>([]);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
+  const [workspaceMemory, setWorkspaceMemory] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -100,9 +102,14 @@ export function KnowledgeView() {
       setEdges(graphRes.edges);
     } catch {
       // API may not be ready
-    } finally {
-      setLoading(false);
     }
+    try {
+      const memRes = await request<{ content: string }>("/knowledge/workspace-memory");
+      setWorkspaceMemory(memRes.content || "");
+    } catch {
+      // Endpoint may not exist yet
+    }
+    setLoading(false);
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -136,7 +143,7 @@ export function KnowledgeView() {
       </div>
 
       <div className="flex border-b border-zinc-800">
-        {(["overview", "recipes", "errors", "graph"] as Tab[]).map((t) => (
+        {(["overview", "recipes", "errors", "memory"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -166,8 +173,8 @@ export function KnowledgeView() {
         {tab === "errors" && (
           <ErrorsTab errors={errors} nodes={errorNodes} reflections={reflections} rules={rules} />
         )}
-        {tab === "graph" && (
-          <GraphTab nodes={nodes} edges={edges} />
+        {tab === "memory" && (
+          <WorkspaceMemoryTab content={workspaceMemory} />
         )}
         {!stats && !loading && (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">
@@ -425,78 +432,42 @@ function ErrorsTab({
   );
 }
 
-function GraphTab({
-  nodes,
-  edges,
-}: {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}) {
-  const typeGroups = nodes.reduce<Record<string, GraphNode[]>>((acc, n) => {
-    acc[n.type] = acc[n.type] || [];
-    acc[n.type].push(n);
-    return acc;
-  }, {});
-
-  const connectionCounts = new Map<string, number>();
-  for (const e of edges) {
-    connectionCounts.set(e.source, (connectionCounts.get(e.source) || 0) + 1);
-    connectionCounts.set(e.target, (connectionCounts.get(e.target) || 0) + 1);
+function WorkspaceMemoryTab({ content }: { content: string }) {
+  if (!content.trim()) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+        <FileText className="h-10 w-10 text-zinc-800 mb-3" />
+        <p className="text-sm text-zinc-500">No workspace memory yet</p>
+        <p className="text-xs text-zinc-700 mt-1 leading-relaxed">
+          The agent stores environment facts, SSH quirks, conventions, and
+          lessons learned here. It builds up automatically across sessions.
+        </p>
+      </div>
+    );
   }
 
   return (
-    <div className="p-3 space-y-4">
+    <div className="p-3 space-y-3">
       <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-        <p className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider mb-1">
-          Knowledge Graph
-        </p>
-        <p className="text-xs text-zinc-400">
-          {nodes.length} nodes, {edges.length} connections across{" "}
-          {Object.keys(typeGroups).length} categories.
-        </p>
+        <div className="flex items-center gap-2 mb-2">
+          <FileText className="h-3.5 w-3.5 text-emerald-400" />
+          <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider">
+            MEMORY.md
+          </span>
+          <span className="ml-auto text-[9px] text-zinc-600">
+            {content.length} / 3,000 chars
+          </span>
+        </div>
+        <div className="h-0.5 bg-zinc-800 rounded-full overflow-hidden mb-3">
+          <div
+            className="h-full bg-emerald-600 rounded-full"
+            style={{ width: `${Math.min((content.length / 3000) * 100, 100)}%` }}
+          />
+        </div>
+        <pre className="text-[11px] font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed">
+          {content}
+        </pre>
       </div>
-
-      {Object.entries(typeGroups).sort((a, b) => b[1].length - a[1].length).map(([type, items]) => {
-        const meta = TYPE_META[type] || { icon: Brain, color: "text-zinc-400", label: type };
-        const Icon = meta.icon;
-        return (
-          <div key={type}>
-            <div className="flex items-center gap-1.5 mb-2">
-              <Icon className={cn("h-3 w-3", meta.color)} />
-              <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                {meta.label} ({items.length})
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {items.slice(0, 30).map((n) => {
-                const connections = connectionCounts.get(n.id) || 0;
-                return (
-                  <span
-                    key={n.id}
-                    className={cn(
-                      "rounded-md border px-2 py-1 text-[10px] transition-colors",
-                      connections > 2
-                        ? "border-zinc-600 bg-zinc-800/80 text-zinc-300"
-                        : "border-zinc-800 bg-zinc-900/50 text-zinc-500"
-                    )}
-                    title={`${n.label} (${connections} connections${n.confidence != null ? `, ${Math.round(n.confidence * 100)}% confidence` : ""})`}
-                  >
-                    {n.label.length > 40 ? n.label.slice(0, 40) + "..." : n.label}
-                    {connections > 0 && (
-                      <span className="ml-1 text-zinc-600">({connections})</span>
-                    )}
-                  </span>
-                );
-              })}
-              {items.length > 30 && (
-                <span className="rounded-md border border-zinc-800 px-2 py-1 text-[10px] text-zinc-600">
-                  +{items.length - 30} more
-                </span>
-              )}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }

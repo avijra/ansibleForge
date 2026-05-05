@@ -108,3 +108,14 @@ async def knowledge_graph_data(_: Any = Depends(verify_api_key)) -> dict[str, An
     except Exception:
         logger.warning("knowledge_graph_data_failed", exc_info=True)
         return {"nodes": [], "edges": []}
+
+
+@router.get("/knowledge/workspace-memory")
+async def get_workspace_memory(_: Any = Depends(verify_api_key)) -> dict[str, str]:
+    try:
+        from ansible_forge.knowledge.workspace_memory import WorkspaceMemory
+        mem = WorkspaceMemory("default")
+        return {"content": mem.read()}
+    except Exception:
+        logger.debug("workspace_memory_read_failed", exc_info=True)
+        return {"content": ""}

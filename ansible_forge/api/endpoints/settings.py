@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from ansible_forge.api.endpoints.health import reset_llm_status_cache
 from ansible_forge.api.middleware.auth import verify_api_key
 from ansible_forge.config import (
+    APPROVED_MODEL_IDS,
+    APPROVED_MODELS,
     clear_runtime_llm,
     effective_llm_model,
     effective_llm_provider,
@@ -29,6 +31,7 @@ class LLMSettingsResponse(BaseModel):
     temperature: float = Field(description="Sampling temperature")
     max_tokens: int = Field(description="Max output tokens")
     source: str = Field(description="'runtime' if overridden, 'env' if using .env defaults")
+    warning: str | None = Field(default=None, description="Warning if using an untested model")
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -38,6 +41,22 @@ class LLMSettingsUpdate(BaseModel):
     api_base: str | None = Field(default=None, description="Custom API base URL (for Ollama, vLLM, etc.)")
     temperature: float | None = Field(default=None, ge=0, le=2, description="Sampling temperature")
     max_tokens: int | None = Field(default=None, ge=1, le=128_000, description="Max output tokens")
+
+
+def _model_warning(model: str) -> str | None:
+    if not model or model in APPROVED_MODEL_IDS:
+        return None
+    return (
+        "This model has not been tested with Tuyere. "
+        "Tool calling, safety rules, and multi-step reliability may be degraded."
+    )
+
+
+@router.get("/settings/llm/models")
+async def get_approved_models(
+    _: Any = Depends(verify_api_key),
+) -> list[dict[str, str]]:
+    return APPROVED_MODELS
 
 
 @router.get("/settings/llm", response_model=LLMSettingsResponse)
@@ -50,15 +69,17 @@ async def get_llm_settings(
 
     has_runtime_key = rt.api_key is not None
     has_env_key = bool(settings.openai_api_key or settings.anthropic_api_key)
+    active_model = effective_llm_model()
 
     return LLMSettingsResponse(
         provider=effective_llm_provider(),
-        model=effective_llm_model(),
+        model=active_model,
         api_key_set=has_runtime_key or has_env_key,
         api_base=rt.api_base,
         temperature=rt.temperature if rt.temperature is not None else settings.llm_temperature,
         max_tokens=rt.max_tokens if rt.max_tokens is not None else settings.llm_max_tokens,
         source="runtime" if is_overridden else "env",
+        warning=_model_warning(active_model),
     )
 
 

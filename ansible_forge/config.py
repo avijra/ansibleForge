@@ -10,6 +10,53 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+APPROVED_MODELS: list[dict[str, str]] = [
+    {
+        "provider": "anthropic",
+        "model": "anthropic/claude-sonnet-4-20250514",
+        "label": "Claude Sonnet 4",
+        "tier": "$$$",
+        "description": "Best overall — reliable tool calling, strong YAML/HCL generation",
+    },
+    {
+        "provider": "deepseek",
+        "model": "deepseek/deepseek-v4-pro",
+        "label": "DeepSeek V4-Pro",
+        "tier": "$$",
+        "description": "Best value — frontier agentic quality, open source (MIT)",
+    },
+    {
+        "provider": "deepseek",
+        "model": "deepseek/deepseek-v4-flash",
+        "label": "DeepSeek V4-Flash",
+        "tier": "$",
+        "description": "Cheapest — fast, good for simpler tasks, self-hostable",
+    },
+    {
+        "provider": "openai",
+        "model": "openai/gpt-4.1",
+        "label": "GPT-4.1",
+        "tier": "$$",
+        "description": "Strong tool calling, competitive pricing",
+    },
+    {
+        "provider": "openai",
+        "model": "openai/gpt-4o",
+        "label": "GPT-4o",
+        "tier": "$$$",
+        "description": "Proven reliability, battle-tested",
+    },
+    {
+        "provider": "anthropic",
+        "model": "anthropic/claude-opus-4-20250514",
+        "label": "Claude Opus 4",
+        "tier": "$$$$",
+        "description": "Maximum quality — complex multi-step deployments",
+    },
+]
+
+APPROVED_MODEL_IDS: frozenset[str] = frozenset(m["model"] for m in APPROVED_MODELS)
+
 
 def _parse_model_list(raw: str) -> list[str]:
     stripped = raw.strip()

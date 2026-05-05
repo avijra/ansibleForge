@@ -64,8 +64,24 @@ class SessionStore:
             conn = self._connect()
             conn.executescript(_CREATE_SQL)
             self._migrate(conn)
+            self._init_fts(conn)
             conn.close()
         logger.info("session_store_initialized", path=str(self._db_path))
+
+    @staticmethod
+    def _init_fts(conn: sqlite3.Connection) -> None:
+        try:
+            conn.executescript("""
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    data,
+    content='events', content_rowid='id'
+);
+CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
+    INSERT INTO events_fts(rowid, data) VALUES (new.id, new.data);
+END;
+""")
+        except sqlite3.OperationalError:
+            logger.debug("session_fts5_setup_skipped", exc_info=True)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -250,3 +266,57 @@ class SessionStore:
             }
             for r in rows
         ]
+
+    def search_events(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        import re as _re
+        keywords = _re.findall(r"\w{3,}", query.lower())
+        if not keywords:
+            return []
+        fts_query = " OR ".join(keywords)
+        results: list[dict[str, Any]] = []
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
+                    "  s.title, s.created_at "
+                    "FROM events_fts f "
+                    "JOIN events e ON e.id = f.rowid "
+                    "JOIN sessions s ON s.session_id = e.session_id "
+                    "WHERE events_fts MATCH ? "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    (fts_query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = conn.execute(
+                    "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
+                    "  s.title, s.created_at "
+                    "FROM events e "
+                    "JOIN sessions s ON s.session_id = e.session_id "
+                    "WHERE e.data LIKE ? "
+                    "ORDER BY e.timestamp DESC "
+                    "LIMIT ?",
+                    (f"%{keywords[0]}%", limit),
+                ).fetchall()
+            conn.close()
+        for r in rows:
+            data_str = r[2]
+            try:
+                data = json.loads(data_str)
+            except (json.JSONDecodeError, TypeError):
+                data = {"raw": data_str[:200]}
+            content = data.get("content", data.get("output", ""))
+            if isinstance(content, str) and len(content) > 300:
+                content = content[:300] + "..."
+            results.append({
+                "session_id": r[0],
+                "event_type": r[1],
+                "excerpt": content,
+                "timestamp": r[3],
+                "session_title": r[4] or "Untitled session",
+                "session_date": time.strftime(
+                    "%Y-%m-%d", time.localtime(r[5])
+                ) if r[5] else "",
+            })
+        return results

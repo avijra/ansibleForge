@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import os
 import signal
@@ -386,6 +387,8 @@ class Executor(BaseTool):
             _MAX_PLAYBOOK_TIMEOUT,
         )
 
+        log_snapshot = _snapshot_log_files(ws)
+
         loop = asyncio.get_event_loop()
         thread, runner = await loop.run_in_executor(
             None,
@@ -438,12 +441,15 @@ class Executor(BaseTool):
             "event_count": len(events),
         }
 
+        detected_logs = _detect_new_log_files(ws, log_snapshot)
+
         result_data = {
             "summary": summary,
             "events": events[:50],
             "mode": mode,
             "playbook": playbook,
             "raw_stdout": raw_stdout,
+            "detected_logs": detected_logs,
         }
 
         if mode == "check":
@@ -467,6 +473,71 @@ class Executor(BaseTool):
             "Deployment failed — check the execution log below for details.",
             **result_data,
         )
+
+
+_LOG_EXTENSIONS = {".log", ".out"}
+_LOG_MAX_PREVIEW = 2000
+_LOG_MAX_FILES = 10
+
+
+def _snapshot_log_files(ws: Path) -> dict[str, float]:
+    snapshot: dict[str, float] = {}
+    try:
+        for ext in _LOG_EXTENSIONS:
+            for f in ws.rglob(f"*{ext}"):
+                if ".tuyere" in f.parts or "node_modules" in f.parts:
+                    continue
+                with contextlib.suppress(OSError):
+                    snapshot[str(f.relative_to(ws))] = f.stat().st_mtime
+    except Exception:
+        pass
+    return snapshot
+
+
+_LOG_MAX_READ = 64 * 1024
+
+
+def _tail_text(path: Path, max_chars: int) -> str:
+    size = path.stat().st_size
+    read_bytes = min(size, max_chars * 4)
+    with path.open("rb") as fh:
+        if size > read_bytes:
+            fh.seek(size - read_bytes)
+        raw = fh.read(read_bytes)
+    text = raw.decode("utf-8", errors="replace")
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+def _detect_new_log_files(
+    ws: Path, before: dict[str, float]
+) -> list[dict[str, str]]:
+    detected: list[dict[str, str]] = []
+    try:
+        for ext in _LOG_EXTENSIONS:
+            for f in ws.rglob(f"*{ext}"):
+                if ".tuyere" in f.parts or "node_modules" in f.parts:
+                    continue
+                try:
+                    real = f.resolve(strict=True)
+                    if not str(real).startswith(str(ws.resolve())):
+                        continue
+                    rel = str(f.relative_to(ws))
+                    mtime = real.stat().st_mtime
+                    fsize = real.stat().st_size
+                    if fsize > _LOG_MAX_READ:
+                        continue
+                    if rel not in before or mtime > before[rel]:
+                        preview = _tail_text(real, _LOG_MAX_PREVIEW)
+                        detected.append({
+                            "path": rel,
+                            "size": str(fsize),
+                            "preview": preview,
+                        })
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return detected[:_LOG_MAX_FILES]
 
 
 _RESULT_KEYS = (

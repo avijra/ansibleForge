@@ -440,18 +440,20 @@ class Orchestrator:
         except Exception:
             logger.debug("mention_context_failed", exc_info=True)
 
-        infra_context = ""
+        ws_memory_context = ""
         try:
-            from ansible_forge.persistence.infrastructure_store import InfrastructureStore
-            infra_context = InfrastructureStore.get_instance().build_infrastructure_context()
+            from ansible_forge.knowledge.workspace_memory import WorkspaceMemory
+            ws_path = str(state.workspace.path) if state.workspace else ""
+            ws_id = ws_path.replace("/", "_").replace("\\", "_").strip("_") or "default"
+            ws_memory_context = WorkspaceMemory(ws_id).inject_context()
         except Exception:
-            logger.debug("infrastructure_context_build_failed", exc_info=True)
+            logger.debug("workspace_memory_inject_failed", exc_info=True)
 
         full_context = f"{user_message}\n\n---\nWorkspace context:\n{context}"
         if mention_context:
             full_context += f"\n{mention_context}"
-        if infra_context:
-            full_context += f"\n---\nFleet memory:\n{infra_context}"
+        if ws_memory_context:
+            full_context += f"\n{ws_memory_context}"
         if exp_context:
             full_context += f"\n{exp_context}"
         state.memory.add_user(full_context)
@@ -928,6 +930,29 @@ class Orchestrator:
                         live_queue = asyncio.Queue()
                         tc.arguments["_live_log_queue"] = live_queue
 
+                    pending_run_id: int | None = None
+                    if tc.name in ("execute_playbook", "run_adhoc", "terraform_exec"):
+                        try:
+                            from ansible_forge.persistence.infrastructure_store import (
+                                InfrastructureStore,
+                            )
+                            _store = InfrastructureStore.get_instance()
+                            _run_label = tc.arguments.get("playbook", tc.arguments.get("module", "unknown"))
+                            if tc.name == "terraform_exec":
+                                _run_label = f"terraform {tc.arguments.get('action', 'unknown')}"
+                            elif tc.name == "run_adhoc":
+                                _args = tc.arguments.get("module_args", "")
+                                _run_label = f"adhoc: {(_args[:80] if _args else tc.arguments.get('module', 'shell'))}"
+                            pending_run_id = _store.record_run(
+                                session_id=state.session_id,
+                                playbook=_run_label,
+                                mode=tc.arguments.get("mode", tc.arguments.get("action", "run")),
+                                hosts=[],
+                                status="running",
+                            )
+                        except Exception:
+                            logger.debug("pending_run_record_failed", tool=tc.name, exc_info=True)
+
                     task = asyncio.create_task(
                         self._execute_tool(state, tc.name, tc.arguments)
                     )
@@ -1103,7 +1128,9 @@ class Orchestrator:
                         )
                     try:
                         clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                        self._capture_experience(tc.name, result, state, clean_args)
+                        self._capture_experience(
+                            tc.name, result, state, clean_args, pending_run_id,
+                        )
                     except Exception:
                         logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
 
@@ -1353,6 +1380,7 @@ class Orchestrator:
     def _capture_experience(
         self, tool_name: str, result: ToolResult, state: SessionState,
         current_args: dict[str, Any] | None = None,
+        pending_run_id: int | None = None,
     ) -> None:
         try:
             if tool_name == "execute_playbook" and result.status == ToolStatus.SUCCESS:
@@ -1362,12 +1390,13 @@ class Orchestrator:
                 self._capture_error_resolution(
                     state, tool_name, prev_info, result, current_args or {},
                 )
-            self._update_infrastructure(tool_name, result, state)
+            self._update_infrastructure(tool_name, result, state, pending_run_id)
         except Exception:
             logger.debug("experience_capture_failed", tool=tool_name, exc_info=True)
 
     def _update_infrastructure(
-        self, tool_name: str, result: ToolResult, state: SessionState
+        self, tool_name: str, result: ToolResult, state: SessionState,
+        pending_run_id: int | None = None,
     ) -> None:
         try:
             from ansible_forge.persistence.infrastructure_store import InfrastructureStore
@@ -1407,22 +1436,29 @@ class Orchestrator:
                 hosts = list({e.get("host", "") for e in events if e.get("host")})
                 status = "success" if result.status == ToolStatus.SUCCESS else "failed"
 
-                store.record_run(
-                    session_id=state.session_id,
-                    playbook=playbook,
-                    mode=mode,
-                    hosts=hosts,
-                    status=status,
-                    event_count=len(events),
-                    summary=data.get("summary"),
-                )
+                if pending_run_id:
+                    store.update_run(
+                        run_id=pending_run_id,
+                        status=status,
+                        hosts=hosts,
+                        event_count=len(events),
+                        summary=data.get("summary"),
+                    )
+                else:
+                    store.record_run(
+                        session_id=state.session_id,
+                        playbook=playbook,
+                        mode=mode,
+                        hosts=hosts,
+                        status=status,
+                        event_count=len(events),
+                        summary=data.get("summary"),
+                    )
 
-                if result.status == ToolStatus.SUCCESS and mode == "apply":
-                    for host in hosts:
-                        store.update_host_status(
-                            host.replace(".", "_").replace(":", "_"),
-                            "configured",
-                        )
+                for host in hosts:
+                    if host:
+                        host_status = "configured" if (result.status == ToolStatus.SUCCESS and mode == "apply") else "reachable"
+                        store.upsert_host(hostname=host, status=host_status)
 
             elif tool_name == "run_adhoc":
                 data = result.data
@@ -1433,30 +1469,52 @@ class Orchestrator:
                 status = "success" if result.status == ToolStatus.SUCCESS else "failed"
                 label = module_args[:80] if module_args else module
 
-                store.record_run(
-                    session_id=state.session_id,
-                    playbook=f"adhoc: {label}",
-                    mode="adhoc",
-                    hosts=hosts,
-                    status=status,
-                    event_count=1,
-                    summary={"module": module},
-                )
+                if pending_run_id:
+                    store.update_run(
+                        run_id=pending_run_id,
+                        status=status,
+                        hosts=hosts,
+                        event_count=1,
+                        summary={"module": module},
+                    )
+                else:
+                    store.record_run(
+                        session_id=state.session_id,
+                        playbook=f"adhoc: {label}",
+                        mode="adhoc",
+                        hosts=hosts,
+                        status=status,
+                        event_count=1,
+                        summary={"module": module},
+                    )
+
+                for host in hosts:
+                    if host:
+                        store.upsert_host(hostname=host, status="reachable")
 
             elif tool_name == "terraform_exec":
                 data = result.data
                 action = data.get("action", "unknown")
                 status = "success" if result.status == ToolStatus.SUCCESS else "failed"
 
-                store.record_run(
-                    session_id=state.session_id,
-                    playbook=f"terraform {action}",
-                    mode=action,
-                    hosts=["localhost"],
-                    status=status,
-                    event_count=1,
-                    summary=data.get("output_summary", {}),
-                )
+                if pending_run_id:
+                    store.update_run(
+                        run_id=pending_run_id,
+                        status=status,
+                        hosts=["localhost"],
+                        event_count=1,
+                        summary=data.get("output_summary", {}),
+                    )
+                else:
+                    store.record_run(
+                        session_id=state.session_id,
+                        playbook=f"terraform {action}",
+                        mode=action,
+                        hosts=["localhost"],
+                        status=status,
+                        event_count=1,
+                        summary=data.get("output_summary", {}),
+                    )
 
             elif tool_name == "verify_state":
                 results = result.data.get("results", [])

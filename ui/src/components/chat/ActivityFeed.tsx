@@ -438,13 +438,35 @@ export function ActivityFeed({
         const completedTools = events
           .filter((e) => e.event === "tool_result" && e.data.status === "success")
           .map((e) => e.data.tool as string);
-        renderItems.push(<PlanEvent key={event.id} event={event} completedTools={completedTools} />);
+        const hasLaterMessage = grouped.slice(idx + 1).some(
+          (g) => !isStepGroup(g) && g.event === "message",
+        );
+        renderItems.push(
+          <PlanEvent
+            key={event.id}
+            event={event}
+            completedTools={completedTools}
+            isStale={hasLaterMessage}
+          />,
+        );
         break;
       }
       case "secret_request": {
         const thisSecretIdx = secretCounter++;
         const resolution = secretResolutions.get(thisSecretIdx);
-        if (!resolution) {
+        if (resolution) {
+          const secretName = (event.data.secret_name as string) || "secret";
+          const wasProvided = resolution === "provided";
+          renderItems.push(
+            <div key={event.id} className={`flex items-center gap-2 rounded-md border px-3 py-1.5 bg-zinc-900/40 ${wasProvided ? "border-emerald-800/20" : "border-zinc-800/40"}`}>
+              <CheckCircle2 className={`h-3.5 w-3.5 ${wasProvided ? "text-emerald-400" : "text-zinc-500"}`} />
+              <span className={`text-xs font-medium ${wasProvided ? "text-emerald-400" : "text-zinc-500"}`}>
+                {wasProvided ? "Secret stored" : "Secret skipped"}
+              </span>
+              <code className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${wasProvided ? "bg-emerald-900/30 text-emerald-500/80" : "bg-zinc-800/60 text-zinc-600"}`}>{secretName}</code>
+            </div>,
+          );
+        } else {
           if (lastMessageId) hasItemsAfterLastMessage = true;
           renderItems.push(<SecretRequestEvent key={event.id} event={event} onSkip={onCancelSecret} />);
         }
@@ -453,16 +475,48 @@ export function ActivityFeed({
       case "approval_required": {
         const thisApprovalIdx = approvalCounter++;
         const resolution = approvalResolutions.get(thisApprovalIdx);
-        if (!resolution && lastMessageId) hasItemsAfterLastMessage = true;
-        renderItems.push(
-          <DiffReview
-            key={event.id}
-            event={event}
-            isPending={isPendingApproval && !resolution}
-            onApprove={onApprove}
-            onReject={onReject}
-          />
-        );
+
+        if (resolution) {
+          const prevItem = renderItems[renderItems.length - 1];
+          const prevIsGroup = prevItem && typeof prevItem === "object" && (prevItem as React.ReactElement).key?.toString().startsWith("approval-group-");
+          if (prevIsGroup) {
+            const prevEl = prevItem as React.ReactElement<{ "data-count": number; "data-approved": number; "data-rejected": number }>;
+            const count = (prevEl.props["data-count"] || 1) + 1;
+            const approved = (prevEl.props["data-approved"] || 0) + (resolution === "approved" ? 1 : 0);
+            const rejected = (prevEl.props["data-rejected"] || 0) + (resolution === "rejected" ? 1 : 0);
+            renderItems[renderItems.length - 1] = (
+              <div key={`approval-group-${thisApprovalIdx}`} data-count={count} data-approved={approved} data-rejected={rejected}
+                className="flex items-center gap-2 rounded-md border border-emerald-800/20 px-3 py-1.5 bg-zinc-900/40">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="text-xs font-medium text-emerald-400">{approved} approved</span>
+                {rejected > 0 && <span className="text-xs font-medium text-red-400">{rejected} rejected</span>}
+              </div>
+            );
+          } else {
+            renderItems.push(
+              <div key={`approval-group-${thisApprovalIdx}`} data-count={1} data-approved={resolution === "approved" ? 1 : 0} data-rejected={resolution === "rejected" ? 1 : 0}
+                className={`flex items-center gap-2 rounded-md border px-3 py-1.5 bg-zinc-900/40 ${resolution === "rejected" ? "border-red-800/20" : "border-emerald-800/20"}`}>
+                {resolution === "rejected"
+                  ? <XC className="h-3.5 w-3.5 text-red-400" />
+                  : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                <span className={`text-xs font-medium ${resolution === "rejected" ? "text-red-400" : "text-emerald-400"}`}>
+                  {resolution === "rejected" ? "Rejected" : "Approved"}
+                </span>
+              </div>,
+            );
+          }
+        } else {
+          if (lastMessageId) hasItemsAfterLastMessage = true;
+          renderItems.push(
+            <DiffReview
+              key={event.id}
+              event={event}
+              isPending={isPendingApproval}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
+          );
+        }
         break;
       }
       case "max_steps":

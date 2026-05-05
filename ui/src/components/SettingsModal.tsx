@@ -1,15 +1,23 @@
 import {
-  X,
-  Key,
-  RotateCcw,
-  Check,
   AlertCircle,
-  Loader2,
+  AlertTriangle,
+  Check,
+  ChevronDown,
   Cpu,
   Globe,
+  Key,
+  Loader2,
+  RotateCcw,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import type { HealthResponse, LLMSettings, LLMSettingsUpdate } from "@/api/types";
+import { api } from "@/api/client";
+import type {
+  ApprovedModel,
+  HealthResponse,
+  LLMSettings,
+  LLMSettingsUpdate,
+} from "@/api/types";
 import { cn } from "@/lib/utils";
 
 interface SettingsModalProps {
@@ -21,6 +29,13 @@ interface SettingsModalProps {
   onLLMReset: () => Promise<void>;
   onClose: () => void;
 }
+
+const TIER_LABELS: Record<string, string> = {
+  $: "~$0.02/session",
+  $$: "~$0.20–$0.60/session",
+  $$$: "~$0.80–$1.50/session",
+  $$$$: "~$5/session",
+};
 
 export function SettingsModal({
   health,
@@ -38,7 +53,13 @@ export function SettingsModal({
   const [temperature, setTemperature] = useState(0.1);
   const [maxTokens, setMaxTokens] = useState(16384);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [approvedModels, setApprovedModels] = useState<ApprovedModel[]>([]);
+
+  useEffect(() => {
+    api.llmSettings.models().then(setApprovedModels).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!llmSettings) return;
@@ -47,7 +68,20 @@ export function SettingsModal({
     setApiBase(llmSettings.api_base || "");
     setTemperature(llmSettings.temperature);
     setMaxTokens(llmSettings.max_tokens);
-  }, [llmSettings]);
+
+    const isApproved = approvedModels.some(
+      (m) => m.model === llmSettings.model
+    );
+    if (llmSettings.model && !isApproved && llmSettings.source === "runtime") {
+      setShowCustom(true);
+    }
+  }, [llmSettings, approvedModels]);
+
+  const selectModel = (m: ApprovedModel) => {
+    setProvider(m.provider);
+    setModel(m.model);
+    setShowCustom(false);
+  };
 
   const handleSave = async () => {
     if (!provider.trim() || !model.trim()) return;
@@ -76,6 +110,7 @@ export function SettingsModal({
   const handleReset = async () => {
     await onLLMReset();
     setApiKey("");
+    setShowCustom(false);
   };
 
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -93,14 +128,30 @@ export function SettingsModal({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
+  const isCustomModel =
+    model.trim() !== "" &&
+    !approvedModels.some((m) => m.model === model.trim());
+
+  const needsApiBase =
+    provider === "deepseek" || provider === "ollama" || showCustom;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Model Configuration">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Model Configuration"
+    >
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div ref={dialogRef} tabIndex={-1} className="relative flex w-full max-w-md max-h-[85vh] flex-col rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl outline-none">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative flex w-full max-w-md max-h-[85vh] flex-col rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl outline-none"
+      >
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
           <h2 className="text-sm font-semibold">Model Configuration</h2>
           <button
@@ -113,61 +164,110 @@ export function SettingsModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
-          {/* Recommended models */}
-          <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/30 px-3.5 py-3 space-y-2">
-            <p className="text-[11px] font-medium text-zinc-300">Recommended Models</p>
-            <p className="text-[10px] leading-relaxed text-zinc-500">
-              For best results use <span className="text-zinc-300 font-mono">deepseek/deepseek-v4-flash</span> (DeepSeek V4 Flash).
-              Other good options:
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { provider: "deepseek", model: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" },
-                { provider: "groq", model: "groq/llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
-                { provider: "ollama", model: "ollama/qwen2.5:32b", label: "Qwen 2.5 32B" },
-                { provider: "mistral", model: "mistral/mistral-large-latest", label: "Mistral Large" },
-                { provider: "openrouter", model: "openrouter/deepseek/deepseek-chat-v3-0324", label: "DeepSeek via OpenRouter" },
-              ].map((m) => (
-                <button
-                  key={m.model}
-                  onClick={() => { setProvider(m.provider); setModel(m.model); }}
-                  className="rounded-md border border-zinc-700/50 bg-zinc-900/50 px-2 py-1 text-[10px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 transition-colors"
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
+          {/* Guidance */}
+          <p className="text-[11px] leading-relaxed text-zinc-400">
+            Choose a model. Tuyere works best with these tested models. Start
+            with{" "}
+            <span className="text-zinc-200 font-medium">Claude Sonnet 4</span>{" "}
+            for the best balance of quality and cost, or{" "}
+            <span className="text-zinc-200 font-medium">DeepSeek V4-Pro</span>{" "}
+            if cost matters most.
+          </p>
+
+          {/* Model cards */}
+          <div className="space-y-1.5">
+            {approvedModels.map((m) => (
+              <button
+                key={m.model}
+                onClick={() => selectModel(m)}
+                className={cn(
+                  "w-full rounded-lg border px-3.5 py-3 text-left transition-all",
+                  model === m.model
+                    ? "border-zinc-500 bg-zinc-800/80 ring-1 ring-zinc-500/30"
+                    : "border-zinc-700/50 bg-zinc-800/20 hover:border-zinc-600 hover:bg-zinc-800/40"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-200">
+                      {m.label}
+                    </span>
+                    <span className="rounded bg-zinc-700/50 px-1.5 py-0.5 text-[9px] font-mono text-zinc-400">
+                      {m.tier}
+                    </span>
+                  </div>
+                  {model === m.model && (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  )}
+                </div>
+                <p className="mt-1 text-[10px] text-zinc-500">
+                  {m.description}
+                </p>
+                <p className="mt-0.5 text-[9px] text-zinc-600">
+                  {TIER_LABELS[m.tier] || m.tier} &middot;{" "}
+                  <span className="font-mono">{m.model}</span>
+                </p>
+              </button>
+            ))}
           </div>
 
-          {/* Provider */}
-          <Field
-            label="Provider"
-            hint="e.g. deepseek, openai, anthropic, groq, mistral, ollama, openrouter, together_ai, google, azure"
-            icon={<Globe className="h-3.5 w-3.5" />}
+          {/* Custom model toggle */}
+          <button
+            onClick={() => setShowCustom(!showCustom)}
+            className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
           >
-            <input
-              type="text"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder="deepseek"
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 transition-transform",
+                showCustom && "rotate-180"
+              )}
             />
-          </Field>
+            Use a custom model
+          </button>
 
-          {/* Model */}
-          <Field
-            label="Model"
-            hint="The full model identifier, e.g. deepseek/deepseek-chat, groq/llama-3.3-70b-versatile, ollama/qwen2.5:32b"
-            icon={<Cpu className="h-3.5 w-3.5" />}
-          >
-            <input
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={provider ? `${provider}/model-name` : "deepseek/deepseek-chat"}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
-            />
-          </Field>
+          {showCustom && (
+            <div className="space-y-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+              <div className="flex items-start gap-2 text-[11px] text-amber-300/80">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Custom models have not been tested with Tuyere. Tool calling,
+                  safety rules, and multi-step reliability may be degraded.
+                </span>
+              </div>
+
+              <Field
+                label="Provider"
+                hint="e.g. deepseek, openai, anthropic, ollama, together_ai, google"
+                icon={<Globe className="h-3.5 w-3.5" />}
+              >
+                <input
+                  type="text"
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value)}
+                  placeholder="provider-name"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+                />
+              </Field>
+
+              <Field
+                label="Model"
+                hint="The full model identifier, e.g. provider/model-name"
+                icon={<Cpu className="h-3.5 w-3.5" />}
+              >
+                <input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={
+                    provider
+                      ? `${provider}/model-name`
+                      : "provider/model-name"
+                  }
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+                />
+              </Field>
+            </div>
+          )}
 
           {/* API Key */}
           <Field
@@ -193,27 +293,35 @@ export function SettingsModal({
             )}
           </Field>
 
-          {/* API Base URL (optional, for self-hosted / Ollama / vLLM) */}
-          <Field
-            label="API Base URL (optional)"
-            hint="Only needed for self-hosted models like Ollama, vLLM, or custom endpoints"
-            icon={<Globe className="h-3.5 w-3.5" />}
-          >
-            <input
-              type="text"
-              value={apiBase}
-              onChange={(e) => setApiBase(e.target.value)}
-              placeholder="http://localhost:11434"
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
-            />
-          </Field>
+          {/* API Base URL — contextual */}
+          {needsApiBase && (
+            <Field
+              label="API Base URL (optional)"
+              hint="Only needed for self-hosted models like Ollama, vLLM, or custom endpoints"
+              icon={<Globe className="h-3.5 w-3.5" />}
+            >
+              <input
+                type="text"
+                value={apiBase}
+                onChange={(e) => setApiBase(e.target.value)}
+                placeholder="http://localhost:11434"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950 py-2.5 pl-9 pr-3 text-sm font-mono text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+              />
+            </Field>
+          )}
 
           {/* Advanced toggle */}
           <button
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+            className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
           >
-            {showAdvanced ? "▾" : "▸"} Advanced parameters
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 transition-transform",
+                showAdvanced && "rotate-180"
+              )}
+            />
+            Advanced parameters
           </button>
 
           {showAdvanced && (
@@ -221,7 +329,9 @@ export function SettingsModal({
               <div>
                 <label className="mb-1 flex items-center justify-between text-[11px] text-zinc-400">
                   <span>Temperature</span>
-                  <span className="font-mono text-zinc-300">{temperature.toFixed(2)}</span>
+                  <span className="font-mono text-zinc-300">
+                    {temperature.toFixed(2)}
+                  </span>
                 </label>
                 <input
                   type="range"
@@ -246,10 +356,28 @@ export function SettingsModal({
                   min={1}
                   max={128000}
                   value={maxTokens}
-                  onChange={(e) => setMaxTokens(parseInt(e.target.value) || 16384)}
+                  onChange={(e) =>
+                    setMaxTokens(parseInt(e.target.value) || 16384)
+                  }
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
                 />
               </div>
+            </div>
+          )}
+
+          {/* Warning for custom model */}
+          {isCustomModel && !showCustom && model.trim() && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              Untested model — reliability may be degraded.
+            </div>
+          )}
+
+          {/* Server warning from API */}
+          {llmSettings?.warning && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {llmSettings.warning}
             </div>
           )}
 
@@ -264,7 +392,10 @@ export function SettingsModal({
           {/* Active config summary */}
           {llmSettings && llmSettings.source === "runtime" && (
             <div className="rounded-lg border border-zinc-700 bg-zinc-800/30 px-3 py-2.5 text-[11px] text-zinc-300">
-              Active: <span className="font-mono font-medium">{llmSettings.provider}/{llmSettings.model}</span>
+              Active:{" "}
+              <span className="font-mono font-medium">
+                {llmSettings.provider}/{llmSettings.model}
+              </span>
             </div>
           )}
 
@@ -276,10 +407,15 @@ export function SettingsModal({
               <>
                 <Row label="Backend" value={health.status} />
                 <Row label="Version" value={health.version} />
-                <Row label="Tools" value={`${health.tools_available.length} available`} />
+                <Row
+                  label="Tools"
+                  value={`${health.tools_available.length} available`}
+                />
               </>
             ) : (
-              <p className="text-zinc-500">Unable to connect to the backend.</p>
+              <p className="text-zinc-500">
+                Unable to connect to the backend.
+              </p>
             )}
           </div>
         </div>
@@ -339,7 +475,10 @@ function Field({
   const id = useId();
   return (
     <div>
-      <label htmlFor={id} className="mb-1.5 block text-xs font-medium text-zinc-300">
+      <label
+        htmlFor={id}
+        className="mb-1.5 block text-xs font-medium text-zinc-300"
+      >
         {label}
       </label>
       <div className="relative">
@@ -349,7 +488,9 @@ function Field({
         {children}
       </div>
       {hint && (
-        <p className="mt-1 text-[10px] leading-relaxed text-zinc-600">{hint}</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-zinc-600">
+          {hint}
+        </p>
       )}
     </div>
   );

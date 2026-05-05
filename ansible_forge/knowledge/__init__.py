@@ -1,1 +1,1 @@
-"""Knowledge graph subsystem for cross-session learning."""
+"""Knowledge subsystem for cross-session learning."""

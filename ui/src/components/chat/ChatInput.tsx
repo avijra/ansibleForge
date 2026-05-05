@@ -219,7 +219,7 @@ export function ChatInput({
           rows={1}
           aria-label="Chat message input"
           className={cn(
-            "flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-600 outline-none",
+            "flex-1 resize-none bg-transparent font-mono text-sm text-zinc-100 placeholder-zinc-600 outline-none",
             "min-h-[20px] max-h-32"
           )}
           style={{

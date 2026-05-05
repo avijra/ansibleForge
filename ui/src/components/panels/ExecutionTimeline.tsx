@@ -34,6 +34,12 @@ interface AnsibleSummary {
   event_count: number;
 }
 
+interface DetectedLog {
+  path: string;
+  size: string;
+  preview: string;
+}
+
 interface ExecutionRun {
   id: string;
   tool: string;
@@ -44,6 +50,7 @@ interface ExecutionRun {
   timestamp: number;
   playbook?: string;
   rawStdout?: string;
+  detectedLogs?: DetectedLog[];
 }
 
 type StatusFilter = "ok" | "changed" | "failed" | "skipped" | "unreachable";
@@ -120,6 +127,7 @@ function extractRuns(events: AgentEvent[]): ExecutionRun[] {
       timestamp: ev.timestamp,
       playbook,
       rawStdout: (data.raw_stdout as string) || undefined,
+      detectedLogs: (data.detected_logs as DetectedLog[] | undefined) || undefined,
     });
   }
   return runs;
@@ -401,7 +409,7 @@ function RecapBar({ stats }: { stats: Record<string, Record<string, number>> }) 
   );
 }
 
-type ViewMode = "structured" | "raw";
+type ViewMode = "structured" | "raw" | "logs";
 
 function RunSection({
   run,
@@ -511,6 +519,21 @@ function RunSection({
                 <Terminal className="h-3 w-3" />
                 Raw
               </button>
+              {run.detectedLogs && run.detectedLogs.length > 0 && (
+                <button
+                  onClick={() => setViewMode("logs")}
+                  className={cn(
+                    "flex items-center gap-1 px-2 py-1 text-[10px] font-medium transition-colors border-l border-zinc-800",
+                    viewMode === "logs"
+                      ? "bg-zinc-800 text-zinc-200"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  )}
+                  title="Log files detected during execution"
+                >
+                  <ScrollText className="h-3 w-3" />
+                  Logs ({run.detectedLogs.length})
+                </button>
+              )}
             </div>
 
             {viewMode === "structured" && (
@@ -583,11 +606,57 @@ function RunSection({
                 </div>
               )}
             </>
+          ) : viewMode === "logs" ? (
+            <DetectedLogsView logs={run.detectedLogs || []} />
           ) : (
             <RawOutputView stdout={run.rawStdout || ""} />
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function DetectedLogsView({ logs }: { logs: DetectedLog[] }) {
+  const [expandedLog, setExpandedLog] = useState<string | null>(
+    logs.length === 1 ? logs[0].path : null,
+  );
+
+  if (logs.length === 0) {
+    return (
+      <div className="rounded-md bg-zinc-900/50 border border-zinc-800 px-4 py-6 text-center">
+        <ScrollText className="h-5 w-5 text-zinc-600 mx-auto mb-2" />
+        <p className="text-[11px] text-zinc-600">No log files detected</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {logs.map((log) => {
+        const isOpen = expandedLog === log.path;
+        const sizeKB = Math.round(parseInt(log.size, 10) / 1024);
+        return (
+          <div key={log.path} className="rounded-md border border-zinc-800 overflow-hidden">
+            <button
+              onClick={() => setExpandedLog(isOpen ? null : log.path)}
+              className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-zinc-900/50 transition-colors"
+            >
+              {isOpen
+                ? <ChevronDown className="h-3 w-3 text-zinc-500 shrink-0" />
+                : <ChevronRight className="h-3 w-3 text-zinc-500 shrink-0" />}
+              <ScrollText className="h-3 w-3 text-amber-500 shrink-0" />
+              <span className="text-xs font-mono text-zinc-300 truncate">{log.path}</span>
+              <span className="ml-auto text-[10px] text-zinc-600 shrink-0">{sizeKB} KB</span>
+            </button>
+            {isOpen && (
+              <pre className="p-3 text-[11px] font-mono bg-zinc-950 border-t border-zinc-800 overflow-x-auto overflow-y-auto max-h-[50vh] whitespace-pre-wrap text-zinc-400 leading-relaxed">
+                {log.preview}
+              </pre>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

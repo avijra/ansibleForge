@@ -160,6 +160,15 @@ export interface LLMSettings {
   temperature: number;
   max_tokens: number;
   source: "runtime" | "env";
+  warning: string | null;
+}
+
+export interface ApprovedModel {
+  provider: string;
+  model: string;
+  label: string;
+  tier: string;
+  description: string;
 }
 
 export interface LLMSettingsUpdate {

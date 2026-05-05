@@ -325,6 +325,33 @@ class InfrastructureStore:
             conn.close()
         return run_id or 0
 
+    def update_run(
+        self,
+        run_id: int,
+        status: str,
+        hosts: list[str] | None = None,
+        event_count: int | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            parts = ["status=?", "finished_at=?"]
+            params: list[Any] = [status, now]
+            if hosts is not None:
+                parts.append("hosts_json=?")
+                params.append(json.dumps(hosts))
+            if event_count is not None:
+                parts.append("event_count=?")
+                params.append(event_count)
+            if summary is not None:
+                parts.append("summary_json=?")
+                params.append(json.dumps(summary))
+            params.append(run_id)
+            conn.execute(f"UPDATE run_history SET {', '.join(parts)} WHERE id=?", params)
+            conn.commit()
+            conn.close()
+
     def list_runs(self, limit: int = 50, session_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()

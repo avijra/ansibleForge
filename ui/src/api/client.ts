@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   AgentEventType,
+  ApprovedModel,
   ApprovalResponse,
   CollectionResponse,
   ExecuteRequest,
@@ -101,6 +102,7 @@ export const api = {
 
   llmSettings: {
     get: () => request<LLMSettings>("/settings/llm"),
+    models: () => request<ApprovedModel[]>("/settings/llm/models"),
     update: (body: LLMSettingsUpdate) =>
       request<LLMSettings>("/settings/llm", {
         method: "PUT",

@@ -70,15 +70,32 @@ curl http://localhost:8420/api/v1/health
 
 All settings via environment variables or `.env` file:
 
+### Recommended Models
+
+Tuyere is tested and recommended for use with these models only:
+
+| Model | Provider | Cost/Session | Best For |
+|-------|----------|-------------|----------|
+| `anthropic/claude-sonnet-4-20250514` | Anthropic | ~$1 | Best overall |
+| `deepseek/deepseek-v4-pro` | DeepSeek | ~$0.05–$0.20 | Best value, open source (MIT) |
+| `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.02 | Cheapest, self-hostable |
+| `openai/gpt-4.1` | OpenAI | ~$0.60 | Strong tool calling |
+| `openai/gpt-4o` | OpenAI | ~$0.80 | Proven reliability |
+| `anthropic/claude-opus-4-20250514` | Anthropic | ~$5 | Maximum quality, complex deployments |
+
+Other models may work for simple tasks but are not recommended for production infrastructure automation.
+
+### Environment Variables
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANSIBLEFORGE_LLM_PROVIDER` | `anthropic` | LLM provider (openai/anthropic/ollama) |
-| `ANSIBLEFORGE_LLM_MODEL` | `anthropic/claude-sonnet-4-20250514` | Default model |
+| `ANSIBLEFORGE_LLM_PROVIDER` | — | LLM provider (anthropic/deepseek/openai) |
+| `ANSIBLEFORGE_LLM_MODEL` | — | Model identifier (see table above) |
 | `ANSIBLEFORGE_LLM_FALLBACK_MODELS` | `[]` | Comma-separated fallback model chain |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
-| `ANSIBLEFORGE_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
-| `ANSIBLEFORGE_MAX_AGENT_STEPS` | `15` | Max ReAct loop iterations |
+| `ANSIBLEFORGE_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama / self-hosted endpoint |
+| `ANSIBLEFORGE_MAX_AGENT_STEPS` | `200` | Max ReAct loop iterations |
 | `ANSIBLEFORGE_API_KEY` | — | API key for authentication (blank = disabled) |
 | `ANSIBLEFORGE_PORT` | `8420` | Server port |
 

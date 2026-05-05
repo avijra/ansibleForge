@@ -73,6 +73,7 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.lint_runner import LintRunner
     from ansible_forge.tools.local_exec import LocalExec
     from ansible_forge.tools.log_analyzer import LogAnalyzer
+    from ansible_forge.tools.memory_tool import MemoryTool
     from ansible_forge.tools.molecule_runner import MoleculeRunner
     from ansible_forge.tools.playbook_generator import PlaybookGenerator
     from ansible_forge.tools.project_importer import ProjectImporter
@@ -80,6 +81,7 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.rollback_tool import RollbackTool
     from ansible_forge.tools.schedule_manager import ScheduleManager
     from ansible_forge.tools.secret_requester import SecretRequester
+    from ansible_forge.tools.session_search import SessionSearchTool
     from ansible_forge.tools.template_renderer import TemplateRenderer
     from ansible_forge.tools.terraform_executor import TerraformExecutor
     from ansible_forge.tools.terraform_generator import TerraformGenerator
@@ -123,6 +125,8 @@ def create_default_registry() -> ToolRegistry:
         TerraformGenerator,
         TerraformExecutor,
         TerraformInventoryBridge,
+        MemoryTool,
+        SessionSearchTool,
     ):
         registry.register(tool_cls())
 

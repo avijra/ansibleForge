@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { GitBranch, RefreshCw, CheckCircle2, XCircle, Play } from "lucide-react";
+import { GitBranch, RefreshCw, CheckCircle2, XCircle, Play, Loader2 } from "lucide-react";
 import { request } from "@/api/client";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +21,8 @@ function statusIcon(status: string) {
       return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />;
     case "failed":
       return <XCircle className="h-3.5 w-3.5 text-red-400" />;
+    case "running":
+      return <Loader2 className="h-3.5 w-3.5 text-amber-400 animate-spin" />;
     default:
       return <Play className="h-3.5 w-3.5 text-zinc-500" />;
   }
@@ -57,6 +59,13 @@ export function RunsView() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    const hasRunning = runs.some((r) => r.status === "running");
+    if (!hasRunning) return;
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [runs, refresh]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

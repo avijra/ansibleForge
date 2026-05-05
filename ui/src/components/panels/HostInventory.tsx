@@ -182,7 +182,7 @@ function HostCard({ host }: { host: HostInfo }) {
 export function HostInventory({ events }: { events: AgentEvent[] }) {
   const [persisted, setPersisted] = useState<PersistedHost[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showSessionOnly, setShowSessionOnly] = useState(false);
+  const [showSessionOnly, setShowSessionOnly] = useState(true);
 
   const loadPersisted = useCallback(async () => {
     try {

@@ -21,6 +21,7 @@ interface PlanStep {
 interface PlanEventProps {
   event: AgentEvent;
   completedTools?: string[];
+  isStale?: boolean;
 }
 
 function stepIcon(status: string) {
@@ -36,8 +37,8 @@ function stepIcon(status: string) {
   }
 }
 
-export function PlanEvent({ event, completedTools = [] }: PlanEventProps) {
-  const [expanded, setExpanded] = useState(true);
+export function PlanEvent({ event, completedTools = [], isStale = false }: PlanEventProps) {
+  const [expanded, setExpanded] = useState(!isStale);
   const steps: PlanStep[] = (event.data.steps as PlanStep[]) || [];
 
   if (steps.length === 0) return null;

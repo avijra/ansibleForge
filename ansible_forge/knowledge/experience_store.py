@@ -117,7 +117,7 @@ class Experience:
     __slots__ = (
         "id", "type", "trigger", "context", "solution",
         "outcome", "confidence", "created_at", "last_used",
-        "use_count", "session_id",
+        "use_count", "session_id", "tier",
     )
 
     def __init__(
@@ -134,6 +134,7 @@ class Experience:
         last_used: float | None = None,
         use_count: int = 0,
         session_id: str = "",
+        tier: str = "tentative",
     ) -> None:
         self.id = id or uuid.uuid4().hex[:12]
         self.type = type
@@ -146,6 +147,7 @@ class Experience:
         self.last_used = last_used
         self.use_count = use_count
         self.session_id = session_id
+        self.tier = tier
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -184,26 +186,51 @@ class ExperienceStore:
                 conn.executescript(_SYNC_FTS_TRIGGERS)
             except sqlite3.OperationalError:
                 logger.debug("fts5_setup_skipped", exc_info=True)
+            self._migrate_tier(conn)
             conn.close()
         logger.info("experience_store_initialized", path=str(self._db_path))
 
+    @staticmethod
+    def _migrate_tier(conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(experiences)").fetchall()}
+        if "tier" not in cols:
+            conn.execute("ALTER TABLE experiences ADD COLUMN tier TEXT NOT NULL DEFAULT 'tentative'")
+            conn.execute(
+                "UPDATE experiences SET tier = 'proven' "
+                "WHERE use_count >= 3 AND confidence >= 0.7"
+            )
+            conn.execute(
+                "UPDATE experiences SET tier = 'learned' "
+                "WHERE tier = 'tentative' AND use_count >= 1"
+            )
+            conn.commit()
+
+    @staticmethod
+    def _compute_tier(use_count: int, confidence: float) -> str:
+        if use_count >= 3 and confidence >= 0.7:
+            return "proven"
+        if use_count >= 1:
+            return "learned"
+        return "tentative"
+
     def save(self, exp: Experience) -> None:
+        tier = self._compute_tier(exp.use_count, exp.confidence)
         with self._lock:
             conn = self._connect()
             conn.execute(
                 "INSERT INTO experiences "
                 "(id, type, trigger, context_json, solution, outcome, "
-                " confidence, created_at, last_used, use_count, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " confidence, created_at, last_used, use_count, session_id, tier) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET "
                 " solution=excluded.solution, outcome=excluded.outcome, "
                 " confidence=excluded.confidence, last_used=excluded.last_used, "
-                " use_count=excluded.use_count",
+                " use_count=excluded.use_count, tier=excluded.tier",
                 (
                     exp.id, exp.type, exp.trigger,
                     json.dumps(exp.context), exp.solution, exp.outcome,
                     exp.confidence, exp.created_at, exp.last_used,
-                    exp.use_count, exp.session_id,
+                    exp.use_count, exp.session_id, tier,
                 ),
             )
             conn.commit()
@@ -216,6 +243,14 @@ class ExperienceStore:
             conn.execute(
                 "UPDATE experiences SET use_count = use_count + 1, last_used = ? WHERE id = ?",
                 (now, experience_id),
+            )
+            conn.execute(
+                "UPDATE experiences SET tier = CASE "
+                "  WHEN use_count >= 3 AND confidence >= 0.7 THEN 'proven' "
+                "  WHEN use_count >= 1 THEN 'learned' "
+                "  ELSE 'tentative' END "
+                "WHERE id = ?",
+                (experience_id,),
             )
             conn.commit()
             conn.close()
@@ -246,7 +281,7 @@ class ExperienceStore:
                 rows = conn.execute(
                     "SELECT e.id, e.type, e.trigger, e.context_json, "
                     "  e.solution, e.outcome, e.confidence, e.created_at, "
-                    "  e.last_used, e.use_count, e.session_id "
+                    "  e.last_used, e.use_count, e.session_id, e.tier "
                     "FROM experiences_fts f "
                     "JOIN experiences e ON e.rowid = f.rowid "
                     "WHERE experiences_fts MATCH ? "
@@ -275,7 +310,7 @@ class ExperienceStore:
                 rows = conn.execute(
                     "SELECT e.id, e.type, e.trigger, e.context_json, "
                     "  e.solution, e.outcome, e.confidence, e.created_at, "
-                    "  e.last_used, e.use_count, e.session_id "
+                    "  e.last_used, e.use_count, e.session_id, e.tier "
                     "FROM experiences_fts f "
                     "JOIN experiences e ON e.rowid = f.rowid "
                     "WHERE experiences_fts MATCH ? "
@@ -296,7 +331,7 @@ class ExperienceStore:
             conn = self._connect()
             rows = conn.execute(
                 "SELECT id, type, trigger, context_json, solution, outcome, "
-                "confidence, created_at, last_used, use_count, session_id "
+                "confidence, created_at, last_used, use_count, session_id, tier "
                 "FROM experiences WHERE type = ? "
                 "ORDER BY confidence DESC, created_at DESC LIMIT ?",
                 (exp_type, limit),
@@ -326,7 +361,7 @@ class ExperienceStore:
             conn = self._connect()
             rows = conn.execute(
                 f"SELECT id, type, trigger, context_json, solution, outcome, "
-                f"confidence, created_at, last_used, use_count, session_id "
+                f"confidence, created_at, last_used, use_count, session_id, tier "
                 f"FROM experiences WHERE {where} "
                 f"ORDER BY confidence DESC, created_at DESC LIMIT ?",
                 params,
@@ -465,7 +500,7 @@ class ExperienceStore:
             conn = self._connect()
             rows = conn.execute(
                 "SELECT id, type, trigger, context_json, solution, outcome, "
-                "confidence, created_at, last_used, use_count, session_id "
+                "confidence, created_at, last_used, use_count, session_id, tier "
                 "FROM experiences WHERE type != 'rule' "
                 "ORDER BY type, created_at DESC",
             ).fetchall()
@@ -485,6 +520,7 @@ class ExperienceStore:
                 ctx = json.loads(ctx)
             except json.JSONDecodeError:
                 ctx = {}
+        tier = row[11] if len(row) > 11 else "tentative"
         return Experience(
             id=row[0],
             type=row[1],
@@ -497,6 +533,7 @@ class ExperienceStore:
             last_used=row[8],
             use_count=row[9],
             session_id=row[10] or "",
+            tier=tier or "tentative",
         )
 
 
@@ -510,18 +547,28 @@ def extract_modules_from_workspace(workspace: Workspace | None) -> set[str]:
     project_dir = workspace.project_dir
     if not project_dir.is_dir():
         return modules
-    for yml_file in project_dir.rglob("*.yml"):
-        try:
-            content = yml_file.read_text(encoding="utf-8")
-            modules.update(_MODULE_PATTERN.findall(content))
-        except OSError:
-            logger.debug("yml_read_failed", file=str(yml_file), exc_info=True)
+    for pattern in ("*.yml", "*.yaml"):
+        for yml_file in project_dir.rglob(pattern):
+            try:
+                content = yml_file.read_text(encoding="utf-8")
+                modules.update(_MODULE_PATTERN.findall(content))
+            except OSError:
+                logger.debug("yml_read_failed", file=str(yml_file), exc_info=True)
     return modules
+
+
+_TIER_LABELS = {"proven": "★", "learned": "●", "tentative": "○"}
+_TOKEN_BUDGET = 800
+_CHARS_PER_TOKEN = 2.7
 
 
 def _format_experience(exp: Experience) -> str:
     confidence_pct = int(exp.confidence * 100)
-    return f"  [{exp.type}] (confidence: {confidence_pct}%) {exp.solution}"
+    tier = getattr(exp, "tier", "tentative") if hasattr(exp, "tier") else "tentative"
+    label = _TIER_LABELS.get(tier, "○")
+    trigger_short = exp.trigger[:100].strip()
+    solution_short = exp.solution[:200].strip()
+    return f"  {label} [{exp.type}] ({confidence_pct}%) {trigger_short} → {solution_short}"
 
 
 def build_experience_context(
@@ -607,4 +654,11 @@ def build_experience_context(
         return "", []
 
     unique_ids = list(dict.fromkeys(used_ids))
-    return "---\nExperience context:\n" + "\n\n".join(sections) + "\n", unique_ids
+    full_text = "---\nExperience context:\n" + "\n\n".join(sections) + "\n"
+
+    char_budget = int(_TOKEN_BUDGET * _CHARS_PER_TOKEN)
+    if len(full_text) > char_budget:
+        truncated = full_text[:char_budget].rsplit("\n", 1)[0]
+        full_text = truncated + "\n  [... more experiences available — ask if needed]\n"
+
+    return full_text, unique_ids
