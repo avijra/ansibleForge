@@ -136,6 +136,7 @@ class ConnectivityTester(BaseTool):
             extravars.update(vault.get_all())
         self._materialize_ssh_keys(ws, extravars)
         self._clean_stale_env(ws)
+        (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
 
         missing = find_missing_secrets(inv_path, extravars)
         if missing:
@@ -144,12 +145,17 @@ class ConnectivityTester(BaseTool):
                 f"Use request_secret to collect them from the user before retrying."
             )
 
+        envvars = _connectivity_envvars()
+        for key, value in extravars.items():
+            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                envvars[key] = str(value)
+
         runner_kwargs: dict[str, Any] = {
             "private_data_dir": str(ws / ".tuyere"),
             "module": "ansible.builtin.ping",
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
-            "envvars": _connectivity_envvars(),
+            "envvars": envvars,
         }
         if extravars:
             runner_kwargs["extravars"] = extravars

@@ -152,6 +152,12 @@ class FactsCollector(BaseTool):
             extravars.update(vault.get_all())
         self._materialize_ssh_keys(ws, extravars)
         self._clean_stale_env(ws)
+        (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
+
+        envvars = _facts_envvars()
+        for key, value in extravars.items():
+            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                envvars[key] = str(value)
 
         runner_kwargs: dict[str, Any] = {
             "private_data_dir": str(ws / ".tuyere"),
@@ -159,7 +165,7 @@ class FactsCollector(BaseTool):
             "module_args": f"gather_subset={gather_subset}",
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
-            "envvars": _facts_envvars(),
+            "envvars": envvars,
         }
         if extravars:
             runner_kwargs["extravars"] = extravars

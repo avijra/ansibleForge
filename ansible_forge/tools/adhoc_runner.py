@@ -222,6 +222,7 @@ class AdhocRunner(BaseTool):
         self._materialize_ssh_keys(ws, merged_vars)
         clean_stale_env(ws)
         ensure_ansible_cfg(ws)
+        (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
 
         if host_pattern not in local_targets:
             missing = find_missing_secrets(inv_path, merged_vars)
@@ -231,6 +232,11 @@ class AdhocRunner(BaseTool):
                     f"Use request_secret to collect them from the user before retrying."
                 )
 
+        envvars = _adhoc_envvars()
+        for key, value in merged_vars.items():
+            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                envvars[key] = str(value)
+
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
         runner_kwargs: dict[str, Any] = {
@@ -239,7 +245,7 @@ class AdhocRunner(BaseTool):
             "module": module,
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
-            "envvars": _adhoc_envvars(),
+            "envvars": envvars,
         }
 
         if live_queue is not None:

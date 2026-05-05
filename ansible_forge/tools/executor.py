@@ -365,6 +365,12 @@ class Executor(BaseTool):
         self._materialize_ssh_keys(ws, merged_vars)
         self._clean_stale_env(ws)
         ensure_ansible_cfg(ws)
+        (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
+
+        envvars = _runner_envvars()
+        for key, value in merged_vars.items():
+            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                envvars[key] = str(value)
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
@@ -373,7 +379,7 @@ class Executor(BaseTool):
             "project_dir": str(ws),
             "playbook": playbook,
             "verbosity": verbosity,
-            "envvars": _runner_envvars(),
+            "envvars": envvars,
         }
 
         if live_queue is not None:
