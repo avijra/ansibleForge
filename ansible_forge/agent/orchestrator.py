@@ -140,7 +140,8 @@ class SessionState:
     def __init__(self, session_id: str, workspace: Workspace) -> None:
         self.session_id = session_id
         self.workspace = workspace
-        self.memory = Memory()
+        ctx_limit = get_settings().llm_max_context_tokens
+        self.memory = Memory(max_context_tokens=ctx_limit)
         self.step_count = 0
         self.status: SessionStatus = SessionStatus.ACTIVE
         self.last_error: str | None = None
@@ -2076,7 +2077,8 @@ class Orchestrator:
         state = self._sessions.get(session_id)
         if state is None:
             return
-        state.memory = Memory()
+        ctx_limit = get_settings().llm_max_context_tokens
+        state.memory = Memory(max_context_tokens=ctx_limit)
         state.memory.attach_vault(self._secret_vault.for_session(session_id))
         state.memory.add_system(self._build_system_prompt(state.workspace))
         state.step_count = 0

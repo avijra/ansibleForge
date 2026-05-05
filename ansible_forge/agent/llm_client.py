@@ -147,7 +147,7 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        response = await litellm.acompletion(**kwargs)
+        response = await self._stream_with_retry(**kwargs)
         async for chunk in response:
             choice = chunk.choices[0] if chunk.choices else None  # type: ignore[union-attr]
             if choice is None:
@@ -170,6 +170,20 @@ class LLMClient:
                 ),
                 "finish_reason": choice.finish_reason,
             }
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=2, min=2, max=75),
+        retry=retry_if_exception_type((litellm.RateLimitError, litellm.ServiceUnavailableError)),
+        reraise=True,
+        before_sleep=lambda rs: logger.info(
+            "stream_rate_limit_retry",
+            attempt=rs.attempt_number,
+            wait=f"{rs.next_action.sleep:.1f}s",
+        ),
+    )
+    async def _stream_with_retry(self, **kwargs: Any) -> Any:
+        return await litellm.acompletion(**kwargs)
 
     async def _call_with_fallback(self, **kwargs: Any) -> Any:
         primary_model = kwargs.get("model", self._settings.llm_model)
@@ -198,10 +212,15 @@ class LLMClient:
             ) from exc
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=2, min=2, max=75),
         retry=retry_if_exception_type((litellm.RateLimitError, litellm.ServiceUnavailableError)),
         reraise=True,
+        before_sleep=lambda rs: logger.info(
+            "rate_limit_retry",
+            attempt=rs.attempt_number,
+            wait=f"{rs.next_action.sleep:.1f}s",
+        ),
     )
     async def _single_call(self, **kwargs: Any) -> Any:
         try:

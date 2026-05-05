@@ -85,6 +85,7 @@ class Settings(BaseSettings):
         return _parse_model_list(self.llm_fallback_models_raw)
     llm_temperature: float = 0.1
     llm_max_tokens: int = 16384
+    llm_max_context_tokens: int = 24000
     ollama_base_url: str = "http://localhost:11434"
 
     # Provider keys read without prefix so LiteLLM picks them up too

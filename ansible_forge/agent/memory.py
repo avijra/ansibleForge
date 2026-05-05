@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ansible_forge.safety.secret_vault import SessionVault
+
+_CHARS_PER_TOKEN = 4
+
+
+def _estimate_message_tokens(msg: dict[str, Any]) -> int:
+    """Fast heuristic token count for a single chat message."""
+    total = 4  # role overhead
+    content = msg.get("content") or ""
+    if isinstance(content, str):
+        total += len(content) // _CHARS_PER_TOKEN
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                total += len(str(part.get("text", ""))) // _CHARS_PER_TOKEN
+    if "tool_calls" in msg:
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function", {})
+            total += len(fn.get("name", "")) // _CHARS_PER_TOKEN + 4
+            args = fn.get("arguments", "")
+            if isinstance(args, dict):
+                args = json.dumps(args)
+            total += len(args) // _CHARS_PER_TOKEN
+    return total
 
 
 class Memory:
@@ -21,9 +45,10 @@ class Memory:
     they ever enter the message list (and are therefore never sent to the LLM).
     """
 
-    def __init__(self, max_messages: int = 500) -> None:
+    def __init__(self, max_messages: int = 500, max_context_tokens: int = 0) -> None:
         self._messages: list[dict[str, Any]] = []
         self._max_messages = max_messages
+        self._max_context_tokens = max_context_tokens
         self._metadata: dict[str, Any] = {}
         self.created_at = time.time()
         self._vault: SessionVault | None = None
@@ -100,9 +125,15 @@ class Memory:
     def _prune(self) -> None:
         """Keep system message + last N messages, preserving tool_call/result pairs.
 
-        When pruning, we find a safe cut point that doesn't split an assistant
-        message with tool_calls from its subsequent tool result messages.
+        Applies two passes:
+        1. Message-count cap (fast, coarse).
+        2. Token-budget cap (estimates tokens, drops oldest turns until under budget).
         """
+        self._prune_by_count()
+        if self._max_context_tokens > 0:
+            self._prune_by_tokens()
+
+    def _prune_by_count(self) -> None:
         if len(self._messages) <= self._max_messages:
             return
 
@@ -114,7 +145,6 @@ class Memory:
             return
 
         cut = len(other_msgs) - keep
-        # Walk forward from the cut point to avoid splitting a tool_call/result pair
         while cut < len(other_msgs):
             msg = other_msgs[cut]
             if msg.get("role") == "tool":
@@ -123,6 +153,25 @@ class Memory:
                 break
 
         self._messages = system_msgs + other_msgs[cut:]
+
+    def _prune_by_tokens(self) -> None:
+        total = sum(_estimate_message_tokens(m) for m in self._messages)
+        if total <= self._max_context_tokens:
+            return
+
+        system_msgs = [m for m in self._messages if m["role"] == "system"]
+        other_msgs = [m for m in self._messages if m["role"] != "system"]
+        system_tokens = sum(_estimate_message_tokens(m) for m in system_msgs)
+        budget = self._max_context_tokens - system_tokens
+
+        while other_msgs and sum(_estimate_message_tokens(m) for m in other_msgs) > budget:
+            removed = other_msgs.pop(0)
+            if removed.get("role") == "assistant" and "tool_calls" in removed:
+                expected_ids = {tc["id"] for tc in removed["tool_calls"]}
+                while other_msgs and other_msgs[0].get("role") == "tool" and other_msgs[0].get("tool_call_id") in expected_ids:
+                    other_msgs.pop(0)
+
+        self._messages = system_msgs + other_msgs
 
     def ensure_integrity(self) -> int:
         """Ensure all assistant tool_calls have matching tool result messages.
