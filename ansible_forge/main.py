@@ -36,11 +36,31 @@ def _setup_frozen_env() -> None:
         bundle_dir = str(Path(sys.executable).resolve().parent)
         extra_dirs.append(bundle_dir)
 
+        _setup_ssl_certs(bundle_dir)
+
     current_path = os.environ.get("PATH", "")
     path_parts = current_path.split(os.pathsep)
     prepend = [d for d in extra_dirs if d not in path_parts]
     if prepend:
         os.environ["PATH"] = os.pathsep.join(prepend) + os.pathsep + current_path
+
+
+def _setup_ssl_certs(bundle_dir: str) -> None:
+    """Point Python/urllib/requests at the bundled CA certificate bundle.
+
+    PyInstaller packages certifi's cacert.pem but the frozen Python's
+    default SSL paths point to the build machine's filesystem which
+    doesn't exist on the user's machine, causing SSL_CERTIFICATE_VERIFY_FAILED
+    for any HTTPS call (ansible-galaxy, litellm, httpx, etc.)."""
+    ca_candidates = [
+        os.path.join(bundle_dir, "_internal", "certifi", "cacert.pem"),
+        os.path.join(bundle_dir, "certifi", "cacert.pem"),
+    ]
+    for ca in ca_candidates:
+        if os.path.isfile(ca):
+            os.environ.setdefault("SSL_CERT_FILE", ca)
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", ca)
+            return
 
 
 _setup_frozen_env()

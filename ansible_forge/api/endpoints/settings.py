@@ -94,6 +94,38 @@ async def update_llm_settings(
     return await get_llm_settings()
 
 
+@router.post("/settings/llm/test")
+async def test_llm_connection(
+    body: LLMSettingsUpdate,
+    _: Any = Depends(verify_api_key),
+) -> dict[str, Any]:
+    test_model = body.model or effective_llm_model()
+    test_key = body.api_key
+    test_base = body.api_base
+
+    if not test_model:
+        return {"ok": False, "error": "No model configured."}
+
+    try:
+        from litellm import acompletion
+
+        kwargs: dict[str, Any] = {
+            "model": test_model,
+            "messages": [{"role": "user", "content": "Reply with exactly: ok"}],
+            "max_tokens": 5,
+            "temperature": 0,
+        }
+        if test_key:
+            kwargs["api_key"] = test_key
+        if test_base:
+            kwargs["api_base"] = test_base
+        resp = await acompletion(**kwargs)
+        reply = resp.choices[0].message.content or ""
+        return {"ok": True, "reply": reply.strip()[:50], "model": test_model}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300], "model": test_model}
+
+
 @router.delete("/settings/llm", response_model=LLMSettingsResponse)
 async def reset_llm_settings(
     _: Any = Depends(verify_api_key),

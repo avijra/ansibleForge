@@ -394,6 +394,13 @@ class Executor(BaseTool):
             None,
             functools.partial(ansible_runner.run_async, **runner_kwargs),
         )
+
+        log_watcher: asyncio.Task[None] | None = None
+        if live_queue is not None:
+            log_watcher = asyncio.create_task(
+                _tail_new_logs(ws, log_snapshot, live_queue)
+            )
+
         try:
             await asyncio.wait_for(
                 loop.run_in_executor(None, thread.join),
@@ -416,6 +423,11 @@ class Executor(BaseTool):
                 f"Consider increasing the timeout parameter if the operation "
                 f"legitimately needs more time."
             )
+        finally:
+            if log_watcher and not log_watcher.done():
+                log_watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await log_watcher
         result = runner
 
         captured_events = (
@@ -519,7 +531,8 @@ def _detect_new_log_files(
                     continue
                 try:
                     real = f.resolve(strict=True)
-                    if not str(real).startswith(str(ws.resolve())):
+                    ws_real = ws.resolve()
+                    if not str(real).startswith(str(ws_real) + os.sep) and real != ws_real:
                         continue
                     rel = str(f.relative_to(ws))
                     mtime = real.stat().st_mtime
@@ -538,6 +551,63 @@ def _detect_new_log_files(
     except Exception:
         pass
     return detected[:_LOG_MAX_FILES]
+
+
+_TAIL_POLL_INTERVAL = 3.0
+_TAIL_MAX_LINE_LEN = 500
+
+
+async def _tail_new_logs(
+    ws: Path, baseline: dict[str, float], queue: asyncio.Queue[dict[str, Any]]
+) -> None:
+    positions: dict[str, int] = {}
+    ws_resolved = ws.resolve()
+
+    while True:
+        await asyncio.sleep(_TAIL_POLL_INTERVAL)
+        try:
+            for ext in _LOG_EXTENSIONS:
+                for f in ws.rglob(f"*{ext}"):
+                    if ".tuyere" in f.parts or "node_modules" in f.parts:
+                        continue
+                    try:
+                        real = f.resolve(strict=True)
+                        if not str(real).startswith(str(ws_resolved) + os.sep) and real != ws_resolved:
+                            continue
+                        rel = str(f.relative_to(ws))
+                        stat_info = real.stat()
+                        if stat_info.st_size > _LOG_MAX_READ:
+                            continue
+                        old_mtime = baseline.get(rel, 0)
+                        if stat_info.st_mtime <= old_mtime and rel not in positions:
+                            continue
+
+                        pos = positions.get(rel, 0)
+                        if stat_info.st_size <= pos:
+                            continue
+
+                        with real.open("r", encoding="utf-8", errors="replace") as fh:
+                            fh.seek(pos)
+                            new_data = fh.read(8192)
+                            positions[rel] = fh.tell()
+
+                        if new_data.strip():
+                            lines = new_data.strip().splitlines()
+                            preview = "\n".join(
+                                ln[:_TAIL_MAX_LINE_LEN] for ln in lines[-10:]
+                            )
+                            with contextlib.suppress(Exception):
+                                queue.put_nowait({
+                                    "source": "log_file",
+                                    "file": rel,
+                                    "content": preview,
+                                })
+                    except OSError:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
 
 _RESULT_KEYS = (

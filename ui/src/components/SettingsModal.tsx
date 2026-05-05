@@ -55,6 +55,8 @@ export function SettingsModal({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testing, setTesting] = useState(false);
   const [approvedModels, setApprovedModels] = useState<ApprovedModel[]>([]);
 
   useEffect(() => {
@@ -81,6 +83,7 @@ export function SettingsModal({
     setProvider(m.provider);
     setModel(m.model);
     setShowCustom(false);
+    setTestResult(null);
   };
 
   const handleSave = async () => {
@@ -111,6 +114,26 @@ export function SettingsModal({
     await onLLMReset();
     setApiKey("");
     setShowCustom(false);
+  };
+
+  const handleTest = async () => {
+    if (!model.trim()) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const body: LLMSettingsUpdate = { model: model.trim(), provider: provider.trim() };
+      if (apiKey) body.api_key = apiKey;
+      if (apiBase.trim()) body.api_base = apiBase.trim();
+      const res = await api.llmSettings.test(body);
+      setTestResult(res.ok
+        ? { ok: true, message: `Connected — model replied: "${res.reply}"` }
+        : { ok: false, message: res.error || "Connection failed." }
+      );
+    } catch (err) {
+      setTestResult({ ok: false, message: String(err) });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -437,6 +460,21 @@ export function SettingsModal({
           </button>
 
           <button
+            onClick={handleTest}
+            disabled={testing || !model.trim()}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium transition-all",
+              testing || !model.trim()
+                ? "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                : testResult?.ok
+                  ? "bg-emerald-900/40 text-emerald-400 border border-emerald-800/30"
+                  : "bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600"
+            )}
+          >
+            {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {testing ? "Testing..." : "Test"}
+          </button>
+          <button
             onClick={handleSave}
             disabled={llmLoading || !provider.trim() || !model.trim()}
             className={cn(
@@ -456,6 +494,17 @@ export function SettingsModal({
             {saved ? "Saved" : "Apply"}
           </button>
         </div>
+        {testResult && (
+          <div className={cn(
+            "mt-2 rounded-md px-3 py-2 text-xs",
+            testResult.ok
+              ? "bg-emerald-900/20 text-emerald-400 border border-emerald-800/20"
+              : "bg-red-900/20 text-red-400 border border-red-800/20"
+          )}>
+            {testResult.ok ? <Check className="inline h-3 w-3 mr-1" /> : <AlertCircle className="inline h-3 w-3 mr-1" />}
+            {testResult.message}
+          </div>
+        )}
       </div>
     </div>
   );

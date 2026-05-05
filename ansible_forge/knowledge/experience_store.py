@@ -214,6 +214,16 @@ class ExperienceStore:
         return "tentative"
 
     def save(self, exp: Experience) -> None:
+        existing = self.find_similar(exp.type, exp.trigger, exp.solution)
+        if existing and existing.id != exp.id:
+            existing.confidence = max(existing.confidence, exp.confidence)
+            existing.use_count += 1
+            existing.last_used = time.time()
+            if exp.outcome and len(exp.outcome) > len(existing.outcome or ""):
+                existing.outcome = exp.outcome
+            exp = existing
+            logger.debug("experience_merged", id=exp.id, type=exp.type)
+
         tier = self._compute_tier(exp.use_count, exp.confidence)
         with self._lock:
             conn = self._connect()

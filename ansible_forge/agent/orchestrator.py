@@ -151,6 +151,11 @@ class SessionState:
         self._max_error_retries = 3
         self._generation = 0
         self._last_error_by_tool: dict[str, dict[str, Any]] = {}
+        self._exec_fail_count = 0
+        self._searched_since_exec_fail = False
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_cost = 0.0
         self._rejected_output: str | None = None
         self._rejected_feedback: str | None = None
         self._rejected_tool: str | None = None
@@ -245,6 +250,73 @@ class Orchestrator:
         self._sessions: dict[str, SessionState] = {}
         self._session_store = SessionStore()
         self._experience_store = ExperienceStore()
+
+    _EXECUTION_TOOLS = frozenset({"execute_playbook", "run_adhoc", "terraform_exec"})
+    _SEARCH_GATE_THRESHOLD = 2
+
+    @staticmethod
+    def _check_search_gate(state: SessionState, tool_name: str) -> ToolResult | None:
+        if tool_name not in Orchestrator._EXECUTION_TOOLS:
+            return None
+        if state._searched_since_exec_fail:
+            return None
+        if state._exec_fail_count < Orchestrator._SEARCH_GATE_THRESHOLD:
+            return None
+        return ToolResult.fail(
+            f"BLOCKED: {tool_name} has failed {state._exec_fail_count} time(s) "
+            f"and you have not searched for the error. "
+            f"You MUST call `web_search` with the error message before "
+            f"retrying any execution tool. This is a hard requirement, "
+            f"not a suggestion.",
+        )
+
+    @staticmethod
+    def _build_exec_fail_directive(
+        tool_name: str,
+        error: str,
+        fail_count: int,
+        searched: bool,
+    ) -> str | None:
+        if tool_name not in Orchestrator._EXECUTION_TOOLS:
+            return None
+
+        error_summary = (error[:300] if error else "Unknown error").replace('"', "'")
+
+        if fail_count >= 3 and not searched:
+            return (
+                f'HALT. "{tool_name}" has failed {fail_count} times and you have '
+                "NOT searched for the error even once. You are in a loop.\n\n"
+                "You MUST do ONE of the following — no other action is allowed:\n"
+                "A) Call `web_search` with the core error message right now, OR\n"
+                "B) Report to the user that you are stuck and ask for guidance.\n\n"
+                "Do NOT generate another playbook. Do NOT call "
+                f"`{tool_name}` again until you have search results or user input."
+            )
+
+        if fail_count >= 3 and searched:
+            return (
+                f'"{tool_name}" has now failed {fail_count} times. You searched '
+                "the web but the fix didn't work.\n\n"
+                "STOP retrying the same approach. You MUST:\n"
+                "1. Tell the user exactly what you tried and what failed\n"
+                "2. Share the relevant error and search results\n"
+                "3. Ask the user for guidance on how to proceed\n\n"
+                "Do NOT generate another playbook without user input."
+            )
+
+        if fail_count == 2 and not searched:
+            return (
+                f'WARNING: "{tool_name}" has failed twice without a web search.\n\n'
+                "Your next action MUST be `web_search` with this error:\n"
+                f'"{error_summary}"\n\n'
+                "Do NOT generate another playbook until you have search results."
+            )
+
+        return (
+            f'"{tool_name}" failed. Before retrying, use `web_search` to look up '
+            f'the error: "{error_summary}"\n'
+            "Read the results, then fix based on what you find."
+        )
 
     @staticmethod
     def _load_user_rules(workspace: Workspace) -> str | None:
@@ -669,6 +741,26 @@ class Orchestrator:
                     has_reasoning=response.reasoning_content is not None,
                 )
 
+                if response.usage:
+                    state._total_prompt_tokens += response.usage.get("prompt_tokens", 0)
+                    state._total_completion_tokens += response.usage.get("completion_tokens", 0)
+                    try:
+                        import litellm
+                        step_cost = litellm.completion_cost(
+                            model=self._llm._effective_model(),
+                            prompt_tokens=response.usage.get("prompt_tokens", 0),
+                            completion_tokens=response.usage.get("completion_tokens", 0),
+                        )
+                        state._total_cost += step_cost
+                    except Exception:
+                        pass
+                    yield AgentEvent("usage", {
+                        "prompt_tokens": state._total_prompt_tokens,
+                        "completion_tokens": state._total_completion_tokens,
+                        "total_tokens": state._total_prompt_tokens + state._total_completion_tokens,
+                        "estimated_cost": round(state._total_cost, 6),
+                    })
+
                 if not response.has_tool_calls:
                     state.memory.add_assistant(
                         content=response.content,
@@ -720,6 +812,7 @@ class Orchestrator:
                 if can_parallel:
                     session_vault = self._secret_vault.for_session(state.session_id)
                     parallel_tasks: dict[str, asyncio.Task[ToolResult]] = {}
+                    gated_ids: set[str] = set()
                     for tc in response.tool_calls:
                         state.record_tool_call(tc.name, tc.arguments)
                         logger.info(
@@ -734,6 +827,24 @@ class Orchestrator:
                             "arguments": tc.arguments,
                             "tool_call_id": tc.id,
                         }))
+
+                        gate_block = self._check_search_gate(state, tc.name)
+                        if gate_block:
+                            logger.warning(
+                                "search_gate_blocked",
+                                tool=tc.name,
+                                exec_fail_count=state._exec_fail_count,
+                            )
+                            state.memory.add_tool_result(tc.id, gate_block.model_dump_json())
+                            yield AgentEvent("tool_result", session_vault.redact_dict({
+                                "tool": tc.name,
+                                "tool_call_id": tc.id,
+                                "status": gate_block.status.value,
+                                "output": gate_block.error or "",
+                            }))
+                            gated_ids.add(tc.id)
+                            continue
+
                         ptask = asyncio.create_task(
                             self._execute_tool(state, tc.name, tc.arguments)
                         )
@@ -762,6 +873,8 @@ class Orchestrator:
                     deferred_user_msgs_p: list[str] = []
                     deferred_events_p: list[AgentEvent] = []
                     for tc in response.tool_calls:
+                        if tc.id in gated_ids:
+                            continue
                         result = parallel_tasks[tc.id].result()
                         try:
                             state.memory.add_tool_result(tc.id, result.model_dump_json())
@@ -784,9 +897,14 @@ class Orchestrator:
                         if result.data:
                             tool_result_payload["data"] = result.data
                         yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
+                        if tc.name == "web_search" and result.status != ToolStatus.ERROR:
+                            state._searched_since_exec_fail = True
+
                         if result.status == ToolStatus.ERROR:
                             state._consecutive_errors += 1
                             state.last_error = result.error
+                            if tc.name in self._EXECUTION_TOOLS:
+                                state._exec_fail_count += 1
                             remaining = max(state._max_error_retries - state._consecutive_errors, 0)
                             error_ctx = ERROR_RECOVERY_PROMPT.format(
                                 tool_name=tc.name,
@@ -798,6 +916,13 @@ class Orchestrator:
                             )
                             if knowledge_hint:
                                 error_ctx += knowledge_hint
+                            exec_directive = self._build_exec_fail_directive(
+                                tc.name, result.error or "",
+                                state._exec_fail_count,
+                                state._searched_since_exec_fail,
+                            )
+                            if exec_directive:
+                                error_ctx += f"\n\n{exec_directive}"
                             deferred_user_msgs_p.append(error_ctx)
                             deferred_events_p.append(AgentEvent("error_recovery", {
                                 "tool": tc.name,
@@ -806,6 +931,9 @@ class Orchestrator:
                             }))
                         else:
                             state._consecutive_errors = 0
+                            if tc.name in self._EXECUTION_TOOLS:
+                                state._exec_fail_count = 0
+                                state._searched_since_exec_fail = False
 
                     for msg in deferred_user_msgs_p:
                         state.memory.add_user(msg)
@@ -925,6 +1053,28 @@ class Orchestrator:
                         except Exception:
                             logger.debug("checkpoint_before_failed", tool=tc.name, exc_info=True)
 
+                    gate_block = self._check_search_gate(state, tc.name)
+                    if gate_block:
+                        logger.warning(
+                            "search_gate_blocked",
+                            tool=tc.name,
+                            exec_fail_count=state._exec_fail_count,
+                        )
+                        state.memory.add_tool_result(tc.id, gate_block.model_dump_json())
+                        result = gate_block
+                        yield AgentEvent("tool_result", session_vault.redact_dict({
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": result.status.value,
+                            "output": result.output or result.error or "",
+                        }))
+                        deferred_user_msgs.append(
+                            f"`{tc.name}` was BLOCKED because you have not searched "
+                            f"for the error after {state._exec_fail_count} failures. "
+                            f"Call `web_search` with the error message, then retry."
+                        )
+                        continue
+
                     live_queue: asyncio.Queue[dict[str, Any]] | None = None
                     if tc.name in ("execute_playbook", "run_adhoc"):
                         live_queue = asyncio.Queue()
@@ -1004,6 +1154,7 @@ class Orchestrator:
                             yield AgentEvent("progress", {
                                 "tool": tc.name,
                                 "elapsed_seconds": elapsed,
+                                "step": state.step_count,
                                 "message": f"[{elapsed_str}] {hint}",
                             })
 
@@ -1205,6 +1356,9 @@ class Orchestrator:
                             early_return = True
                             break
 
+                    if tc.name == "web_search" and result.status != ToolStatus.ERROR:
+                        state._searched_since_exec_fail = True
+
                     if result.status == ToolStatus.ERROR:
                         state._consecutive_errors += 1
                         state.last_error = result.error
@@ -1212,6 +1366,8 @@ class Orchestrator:
                             "error": result.error or "Unknown error",
                             "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
                         }
+                        if tc.name in self._EXECUTION_TOOLS:
+                            state._exec_fail_count += 1
                         remaining = max(state._max_error_retries - state._consecutive_errors, 0)
                         error_ctx = ERROR_RECOVERY_PROMPT.format(
                             tool_name=tc.name,
@@ -1223,6 +1379,13 @@ class Orchestrator:
                         )
                         if knowledge_hint:
                             error_ctx += knowledge_hint
+                        exec_directive = self._build_exec_fail_directive(
+                            tc.name, result.error or "",
+                            state._exec_fail_count,
+                            state._searched_since_exec_fail,
+                        )
+                        if exec_directive:
+                            error_ctx += f"\n\n{exec_directive}"
                         deferred_user_msgs.append(error_ctx)
                         deferred_events.append(AgentEvent("error_recovery", {
                             "tool": tc.name,
@@ -1231,6 +1394,9 @@ class Orchestrator:
                         }))
                     else:
                         state._consecutive_errors = 0
+                        if tc.name in self._EXECUTION_TOOLS:
+                            state._exec_fail_count = 0
+                            state._searched_since_exec_fail = False
 
                     if (
                         tc.name == "execute_playbook"
@@ -1920,6 +2086,11 @@ class Orchestrator:
         state._progress_warned = False
         state._loop_break_count = 0
         state._consecutive_errors = 0
+        state._exec_fail_count = 0
+        state._searched_since_exec_fail = False
+        state._total_prompt_tokens = 0
+        state._total_completion_tokens = 0
+        state._total_cost = 0.0
         state._generation += 1
         state.cancel_active_work()
         state._last_error_by_tool.clear()

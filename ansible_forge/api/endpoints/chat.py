@@ -92,7 +92,7 @@ async def _run_agent_background(
 ) -> None:
     bus = EventBusRegistry.get_instance().get_or_create(session_id)
     gen = bus_gen
-    transient_events = frozenset({"thinking_delta", "message_delta", "progress", "live_log"})
+    transient_events = frozenset({"thinking_delta", "message_delta", "progress", "live_log", "usage"})
     try:
         async for event in orch.handle_message(session_id, message):
             seq = bus.publish(event.event_type, event.data)

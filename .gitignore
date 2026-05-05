@@ -29,3 +29,4 @@ electron/resources/backend/
 /artifacts/
 /tmp/
 .DS_Store
+MEMORY.md

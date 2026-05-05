@@ -116,6 +116,14 @@ function LiveTaskIcon({ type }: { type: string }) {
 }
 
 function formatLiveEvent(data: Record<string, unknown>): string {
+  if (data.source === "log_file") {
+    const file = (data.file as string) || "log";
+    const content = (data.content as string) || "";
+    const lastLine = content.split("\n").filter(Boolean).pop() || "";
+    const short = lastLine.length > 120 ? lastLine.slice(0, 117) + "..." : lastLine;
+    return `[${file}] ${short}`;
+  }
+
   const type = data.type as string;
   const task = (data.task as string) || "";
   const host = (data.host as string) || "";
@@ -408,6 +416,7 @@ export function ActivityFeed({
   let lastMessageId: string | null = null;
   let hasItemsAfterLastMessage = false;
   let approvalCounter = 0;
+  let pendingApprovalGroup: { renderIdx: number; approved: number; rejected: number; lastIdx: number } | null = null;
   let secretCounter = 0;
 
   for (let idx = 0; idx < grouped.length; idx++) {
@@ -416,6 +425,7 @@ export function ActivityFeed({
     if (isStepGroup(item)) continue;
 
     const event = item;
+    if (event.event !== "approval_required") pendingApprovalGroup = null;
     switch (event.event) {
       case "user_message":
         renderItems.push(<UserMessageEvent key={event.id} event={event} />);
@@ -477,24 +487,31 @@ export function ActivityFeed({
         const resolution = approvalResolutions.get(thisApprovalIdx);
 
         if (resolution) {
-          const prevItem = renderItems[renderItems.length - 1];
-          const prevIsGroup = prevItem && typeof prevItem === "object" && (prevItem as React.ReactElement).key?.toString().startsWith("approval-group-");
-          if (prevIsGroup) {
-            const prevEl = prevItem as React.ReactElement<{ "data-count": number; "data-approved": number; "data-rejected": number }>;
-            const count = (prevEl.props["data-count"] || 1) + 1;
-            const approved = (prevEl.props["data-approved"] || 0) + (resolution === "approved" ? 1 : 0);
-            const rejected = (prevEl.props["data-rejected"] || 0) + (resolution === "rejected" ? 1 : 0);
-            renderItems[renderItems.length - 1] = (
-              <div key={`approval-group-${thisApprovalIdx}`} data-count={count} data-approved={approved} data-rejected={rejected}
-                className="flex items-center gap-2 rounded-md border border-emerald-800/20 px-3 py-1.5 bg-zinc-900/40">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="text-xs font-medium text-emerald-400">{approved} approved</span>
+          if (pendingApprovalGroup) {
+            pendingApprovalGroup.approved += resolution === "approved" ? 1 : 0;
+            pendingApprovalGroup.rejected += resolution === "rejected" ? 1 : 0;
+            pendingApprovalGroup.lastIdx = thisApprovalIdx;
+            const { approved, rejected, lastIdx } = pendingApprovalGroup;
+            const allRejected = approved === 0 && rejected > 0;
+            renderItems[pendingApprovalGroup.renderIdx] = (
+              <div key={`approval-group-${lastIdx}`}
+                className={`flex items-center gap-2 rounded-md border px-3 py-1.5 bg-zinc-900/40 ${allRejected ? "border-red-800/20" : "border-emerald-800/20"}`}>
+                {allRejected
+                  ? <XC className="h-3.5 w-3.5 text-red-400" />
+                  : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                {approved > 0 && <span className="text-xs font-medium text-emerald-400">{approved} approved</span>}
                 {rejected > 0 && <span className="text-xs font-medium text-red-400">{rejected} rejected</span>}
               </div>
             );
           } else {
+            pendingApprovalGroup = {
+              renderIdx: renderItems.length,
+              approved: resolution === "approved" ? 1 : 0,
+              rejected: resolution === "rejected" ? 1 : 0,
+              lastIdx: thisApprovalIdx,
+            };
             renderItems.push(
-              <div key={`approval-group-${thisApprovalIdx}`} data-count={1} data-approved={resolution === "approved" ? 1 : 0} data-rejected={resolution === "rejected" ? 1 : 0}
+              <div key={`approval-group-${thisApprovalIdx}`}
                 className={`flex items-center gap-2 rounded-md border px-3 py-1.5 bg-zinc-900/40 ${resolution === "rejected" ? "border-red-800/20" : "border-emerald-800/20"}`}>
                 {resolution === "rejected"
                   ? <XC className="h-3.5 w-3.5 text-red-400" />
@@ -506,6 +523,7 @@ export function ActivityFeed({
             );
           }
         } else {
+          pendingApprovalGroup = null;
           if (lastMessageId) hasItemsAfterLastMessage = true;
           renderItems.push(
             <DiffReview
@@ -572,6 +590,30 @@ export function ActivityFeed({
           {statusBar}
         </div>
       )}
+      <UsageBadge events={events} />
+    </div>
+  );
+}
+
+function UsageBadge({ events }: { events: AgentEvent[] }) {
+  const usage = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].event === "usage") return events[i].data;
+    }
+    return null;
+  }, [events]);
+
+  if (!usage) return null;
+
+  const tokens = (usage.total_tokens as number) || 0;
+  const cost = (usage.estimated_cost as number) || 0;
+  const fmt = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
+  const costFmt = cost > 0 ? `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}` : null;
+
+  return (
+    <div className="shrink-0 flex items-center justify-end gap-3 px-4 py-1 border-t border-zinc-800/30 text-[10px] text-zinc-600">
+      <span>{fmt} tokens</span>
+      {costFmt && <span>{costFmt}</span>}
     </div>
   );
 }

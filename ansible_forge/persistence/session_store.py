@@ -79,7 +79,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
     INSERT INTO events_fts(rowid, data) VALUES (new.id, new.data);
 END;
+CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events BEGIN
+    INSERT INTO events_fts(events_fts, rowid, data)
+    VALUES ('delete', old.id, old.data);
+END;
 """)
+            indexed = conn.execute("SELECT COUNT(*) FROM events_fts").fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            if total > 0 and indexed == 0:
+                conn.execute(
+                    "INSERT INTO events_fts(rowid, data) "
+                    "SELECT id, data FROM events"
+                )
+                conn.commit()
+                logger.info("session_fts5_backfilled", rows=total)
         except sqlite3.OperationalError:
             logger.debug("session_fts5_setup_skipped", exc_info=True)
 

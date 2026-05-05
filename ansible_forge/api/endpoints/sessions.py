@@ -60,6 +60,32 @@ async def reset_session(
     return {"session_id": session_id, "status": "reset"}
 
 
+@router.get("/sessions/{session_id}/usage")
+async def get_session_usage(
+    session_id: str,
+    _: Any = Depends(verify_api_key),
+) -> dict[str, Any]:
+    from ansible_forge.api.endpoints.chat import get_orchestrator
+
+    orch = get_orchestrator()
+    state = orch._sessions.get(session_id)
+    if not state:
+        return {
+            "session_id": session_id,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost": 0.0,
+        }
+    return {
+        "session_id": session_id,
+        "prompt_tokens": state._total_prompt_tokens,
+        "completion_tokens": state._total_completion_tokens,
+        "total_tokens": state._total_prompt_tokens + state._total_completion_tokens,
+        "estimated_cost": round(state._total_cost, 6),
+    }
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,

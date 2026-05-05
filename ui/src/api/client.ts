@@ -110,6 +110,11 @@ export const api = {
       }),
     reset: () =>
       request<LLMSettings>("/settings/llm", { method: "DELETE" }),
+    test: (body: LLMSettingsUpdate) =>
+      request<{ ok: boolean; error?: string; reply?: string; model?: string }>(
+        "/settings/llm/test",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
   },
 
   sessions: {

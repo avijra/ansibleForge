@@ -114,6 +114,14 @@ class InfrastructureStore:
             conn = self._connect()
             conn.executescript(_CREATE_SQL)
             self._migrate(conn)
+            orphaned = conn.execute(
+                "UPDATE run_history SET status='failed', "
+                "finished_at=COALESCE(finished_at, started_at) "
+                "WHERE status='running'"
+            ).rowcount
+            if orphaned:
+                conn.commit()
+                logger.warning("orphaned_runs_cleaned", count=orphaned)
             conn.close()
         logger.info("infrastructure_store_initialized", path=str(self._db_path))
 
