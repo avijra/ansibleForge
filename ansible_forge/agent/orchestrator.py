@@ -765,20 +765,30 @@ class Orchestrator:
                     has_reasoning=response.reasoning_content is not None,
                 )
 
-                if response.usage:
-                    p_tok = response.usage.get("prompt_tokens", 0)
-                    c_tok = response.usage.get("completion_tokens", 0)
-                    state._total_prompt_tokens += p_tok
-                    state._total_completion_tokens += c_tok
-                    state._total_cost += _estimate_step_cost(
-                        self._llm._effective_model(), p_tok, c_tok,
+                u = response.usage or {}
+                p_tok = u.get("prompt_tokens", 0)
+                c_tok = u.get("completion_tokens", 0)
+                if p_tok == 0 and c_tok == 0:
+                    p_tok = sum(
+                        len(str(m.get("content", ""))) // 4
+                        for m in state.memory.messages
                     )
-                    yield AgentEvent("usage", {
-                        "prompt_tokens": state._total_prompt_tokens,
-                        "completion_tokens": state._total_completion_tokens,
-                        "total_tokens": state._total_prompt_tokens + state._total_completion_tokens,
-                        "estimated_cost": round(state._total_cost, 6),
-                    })
+                    c_tok = (
+                        len(response.content or "") +
+                        len(response.reasoning_content or "") +
+                        sum(len(json.dumps(tc.arguments)) for tc in response.tool_calls)
+                    ) // 4
+                state._total_prompt_tokens += p_tok
+                state._total_completion_tokens += c_tok
+                state._total_cost += _estimate_step_cost(
+                    self._llm._effective_model(), p_tok, c_tok,
+                )
+                yield AgentEvent("usage", {
+                    "prompt_tokens": state._total_prompt_tokens,
+                    "completion_tokens": state._total_completion_tokens,
+                    "total_tokens": state._total_prompt_tokens + state._total_completion_tokens,
+                    "estimated_cost": round(state._total_cost, 6),
+                })
 
                 if not response.has_tool_calls:
                     state.memory.add_assistant(
@@ -1509,7 +1519,7 @@ class Orchestrator:
         reasoning_parts: list[str] = []
         tc_accum: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
-        usage: dict[str, int] = {}
+        usage: dict[str, int] | None = None
         saw_tool_call = False
 
         async for chunk in self._llm.complete_stream(
