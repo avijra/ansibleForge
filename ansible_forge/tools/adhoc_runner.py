@@ -24,6 +24,17 @@ _DEFAULT_ADHOC_TIMEOUT = 300
 _MAX_ADHOC_TIMEOUT = 7200
 
 
+def _adhoc_envvars() -> dict[str, str]:
+    import sys
+
+    return {
+        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_FORCE_COLOR": "0",
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_HOST_KEY_CHECKING": "False",
+    }
+
+
 def _kill_runner(runner: Any) -> None:
     """Terminate ansible-runner's subprocess tree on timeout."""
     import contextlib
@@ -206,6 +217,7 @@ class AdhocRunner(BaseTool):
             "module": module,
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
+            "envvars": _adhoc_envvars(),
         }
 
         if live_queue is not None:

@@ -23,6 +23,19 @@ logger = get_logger(__name__)
 _DEFAULT_PLAYBOOK_TIMEOUT = 3600
 _MAX_PLAYBOOK_TIMEOUT = 86400
 
+
+def _runner_envvars() -> dict[str, str]:
+    """Environment variables passed to ansible-runner for every invocation."""
+    import sys
+
+    return {
+        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_FORCE_COLOR": "0",
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_STDOUT_CALLBACK": "json",
+        "ANSIBLE_HOST_KEY_CHECKING": "False",
+    }
+
 _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
     "playbook_on_task_start",
@@ -350,6 +363,7 @@ class Executor(BaseTool):
             "project_dir": str(ws),
             "playbook": playbook,
             "verbosity": verbosity,
+            "envvars": _runner_envvars(),
         }
 
         if live_queue is not None:
