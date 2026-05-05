@@ -590,30 +590,6 @@ export function ActivityFeed({
           {statusBar}
         </div>
       )}
-      <UsageBadge events={events} />
-    </div>
-  );
-}
-
-function UsageBadge({ events }: { events: AgentEvent[] }) {
-  const usage = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].event === "usage") return events[i].data;
-    }
-    return null;
-  }, [events]);
-
-  if (!usage) return null;
-
-  const tokens = (usage.total_tokens as number) || 0;
-  const cost = (usage.estimated_cost as number) || 0;
-  const fmt = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
-  const costFmt = cost > 0 ? `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}` : null;
-
-  return (
-    <div className="shrink-0 flex items-center justify-end gap-3 px-4 py-1 border-t border-zinc-800/30 text-[10px] text-zinc-600">
-      <span>{fmt} tokens</span>
-      {costFmt && <span>{costFmt}</span>}
     </div>
   );
 }

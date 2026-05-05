@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Settings as SettingsIcon, PanelRightOpen, FolderOpen } from "lucide-react";
+import { Cpu, Settings as SettingsIcon, PanelRightOpen, FolderOpen } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { Sidebar, type SidebarView } from "@/components/layout/Sidebar";
 import { HostsView } from "@/components/views/HostsView";
@@ -584,6 +584,11 @@ export function App() {
                 }}
               />
 
+              <SessionFooter
+                events={session.active!.events}
+                model={llm.settings?.model || ""}
+              />
+
               <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
                 <div className="flex items-center gap-2">
                   <div className="flex-1">
@@ -841,6 +846,38 @@ function WelcomeScreen({ onOpenFolder }: { onOpenFolder: () => void }) {
           Open Project Folder
         </button>
       </div>
+    </div>
+  );
+}
+
+function SessionFooter({ events, model }: { events: AgentEvent[]; model: string }) {
+  const usage = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].event === "usage") return events[i].data;
+    }
+    return null;
+  }, [events]);
+
+  const modelShort = model ? model.split("/").pop() || model : null;
+
+  if (!modelShort && !usage) return null;
+
+  const tokens = usage ? ((usage.total_tokens as number) || 0) : 0;
+  const cost = usage ? ((usage.estimated_cost as number) || 0) : 0;
+  const tokenFmt = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
+  const costFmt = cost > 0 ? (cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`) : null;
+
+  return (
+    <div className="shrink-0 flex items-center gap-3 px-4 py-1 border-t border-zinc-800/30 bg-zinc-950/80 text-[10px] text-zinc-600">
+      {modelShort && (
+        <span className="flex items-center gap-1">
+          <Cpu className="h-2.5 w-2.5" />
+          {modelShort}
+        </span>
+      )}
+      <span className="flex-1" />
+      {usage && <span>{tokenFmt} tokens</span>}
+      {costFmt && <span>{costFmt}</span>}
     </div>
   );
 }
