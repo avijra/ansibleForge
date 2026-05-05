@@ -74,11 +74,20 @@ class TestFileWriter:
     async def test_missing_content(self, writer: FileWriter, tmp_workspace: Path) -> None:
         result = await writer.execute(
             file_path="x.txt",
-            content="",
+            content=None,
             workspace_path=str(tmp_workspace),
         )
         assert result.status == ToolStatus.ERROR
         assert "required" in (result.error or "").lower()
+
+    async def test_empty_content_allowed(self, writer: FileWriter, tmp_workspace: Path) -> None:
+        result = await writer.execute(
+            file_path="empty.txt",
+            content="",
+            workspace_path=str(tmp_workspace),
+        )
+        assert result.status == ToolStatus.SUCCESS
+        assert (tmp_workspace / "empty.txt").exists()
 
     async def test_missing_workspace_path(self, writer: FileWriter, tmp_workspace: Path) -> None:
         result = await writer.execute(

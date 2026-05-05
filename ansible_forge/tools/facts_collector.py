@@ -22,6 +22,17 @@ _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
 
 
+def _facts_envvars() -> dict[str, str]:
+    import sys
+
+    return {
+        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_FORCE_COLOR": "0",
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_HOST_KEY_CHECKING": "False",
+    }
+
+
 class FactsCollector(BaseTool):
     @property
     def name(self) -> str:
@@ -148,6 +159,7 @@ class FactsCollector(BaseTool):
             "module_args": f"gather_subset={gather_subset}",
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
+            "envvars": _facts_envvars(),
         }
         if extravars:
             runner_kwargs["extravars"] = extravars
@@ -168,7 +180,7 @@ class FactsCollector(BaseTool):
 
         host_facts: dict[str, Any] = {}
         for event in result.events:
-            if event.get("event") == "runner_on_ok":
+            if event.get("event") in ("runner_on_ok", "runner_on_changed"):
                 host = event.get("event_data", {}).get("host", "unknown")
                 facts = event.get("event_data", {}).get("res", {}).get("ansible_facts", {})
                 host_facts[host] = {

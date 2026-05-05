@@ -208,7 +208,9 @@ class TerraformGenerator(BaseTool):
             logger.info("terraform_provider_written", provider=provider)
 
         if filename and content:
-            target = tf_dir / filename
+            target = (tf_dir / filename).resolve()
+            if not str(target).startswith(str(tf_dir.resolve())):
+                return ToolResult.fail(f"Path escapes terraform directory: {filename}")
             final_content = content
             if append_ansible_outputs:
                 final_content += ANSIBLE_OUTPUT_BLOCK

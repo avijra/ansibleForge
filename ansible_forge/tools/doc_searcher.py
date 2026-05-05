@@ -118,7 +118,12 @@ class DocSearcher(BaseTool):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return (1, "", "ansible-doc timed out after 60s")
         return (
             proc.returncode or 0,
             stdout_b.decode(errors="replace"),

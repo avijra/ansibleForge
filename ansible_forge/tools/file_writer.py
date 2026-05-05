@@ -66,7 +66,7 @@ class FileWriter(BaseTool):
         workspace_path: str = "",
         **kwargs: Any,
     ) -> ToolResult:
-        if not file_path or not content or not workspace_path:
+        if not file_path or content is None or not workspace_path:
             return ToolResult.fail("file_path, content, and workspace_path are required")
 
         project_dir = Path(workspace_path).resolve()

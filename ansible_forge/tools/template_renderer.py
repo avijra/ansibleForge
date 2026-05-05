@@ -195,10 +195,13 @@ class TemplateRenderer(BaseTool):
         if host and workspace_path:
             facts_file = Path(workspace_path) / ".tuyere" / "artifacts" / "host_facts.json"
             if facts_file.exists():
-                all_facts = json.loads(facts_file.read_text(encoding="utf-8"))
-                host_facts = all_facts.get(host, {})
-                for k, v in host_facts.items():
-                    context[f"ansible_{k}" if not k.startswith("ansible_") else k] = v
+                try:
+                    all_facts = json.loads(facts_file.read_text(encoding="utf-8"))
+                    host_facts = all_facts.get(host, {})
+                    for k, v in host_facts.items():
+                        context[f"ansible_{k}" if not k.startswith("ansible_") else k] = v
+                except (json.JSONDecodeError, OSError):
+                    logger.debug("host_facts_load_failed", exc_info=True)
                 context["inventory_hostname"] = host
 
         if variables:

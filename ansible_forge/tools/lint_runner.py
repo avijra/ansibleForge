@@ -80,7 +80,12 @@ class LintRunner(BaseTool):
             stderr=asyncio.subprocess.PIPE,
             cwd=str(target_path.parent) if target_path.is_file() else str(target_path),
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ToolResult.fail("ansible-lint timed out after 2 minutes.")
         stdout = stdout_b.decode(errors="replace")
         stderr = stderr_b.decode(errors="replace")
 

@@ -154,9 +154,15 @@ class GitManager(BaseTool):
         )
 
     async def _do_diff(self, cwd: Path, **_: Any) -> ToolResult:
-        rc, staged_diff, _ = await self._run_git(cwd, "diff", "--cached", "--stat")
-        rc2, unstaged_diff, _ = await self._run_git(cwd, "diff", "--stat")
-        rc3, full_diff, _ = await self._run_git(cwd, "diff")
+        rc, staged_diff, err = await self._run_git(cwd, "diff", "--cached", "--stat")
+        if rc != 0:
+            return ToolResult.fail(f"git diff --cached failed: {err}")
+        rc2, unstaged_diff, err2 = await self._run_git(cwd, "diff", "--stat")
+        if rc2 != 0:
+            return ToolResult.fail(f"git diff failed: {err2}")
+        rc3, full_diff, err3 = await self._run_git(cwd, "diff")
+        if rc3 != 0:
+            return ToolResult.fail(f"git diff failed: {err3}")
 
         return ToolResult.ok(
             output=f"Diff generated ({len(full_diff)} chars)",

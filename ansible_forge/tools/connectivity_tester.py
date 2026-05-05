@@ -22,6 +22,17 @@ _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
 
 
+def _connectivity_envvars() -> dict[str, str]:
+    import sys
+
+    return {
+        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_FORCE_COLOR": "0",
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_HOST_KEY_CHECKING": "False",
+    }
+
+
 class ConnectivityTester(BaseTool):
     @property
     def name(self) -> str:
@@ -138,6 +149,7 @@ class ConnectivityTester(BaseTool):
             "module": "ansible.builtin.ping",
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
+            "envvars": _connectivity_envvars(),
         }
         if extravars:
             runner_kwargs["extravars"] = extravars
@@ -163,7 +175,7 @@ class ConnectivityTester(BaseTool):
             host = event.get("event_data", {}).get("host", "")
             if not host:
                 continue
-            if event_type == "runner_on_ok":
+            if event_type in ("runner_on_ok", "runner_on_changed"):
                 passed.append(host)
             elif event_type in ("runner_on_failed", "runner_on_unreachable"):
                 msg = event.get("event_data", {}).get("res", {}).get("msg", "")

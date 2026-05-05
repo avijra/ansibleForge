@@ -41,6 +41,7 @@ _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
     "playbook_on_task_start",
     "runner_on_ok",
+    "runner_on_changed",
     "runner_on_failed",
     "runner_on_skipped",
     "runner_on_unreachable",
@@ -63,13 +64,13 @@ def _format_live_event(event: dict[str, Any]) -> dict[str, Any] | None:
         task = ev_data.get("name", "") or ev_data.get("task", "")
         return {"type": "task_start", "task": task}
 
-    if ev_type == "runner_on_ok":
+    if ev_type in ("runner_on_ok", "runner_on_changed"):
         res = ev_data.get("res", {})
         return {
             "type": "task_ok",
             "host": ev_data.get("host", ""),
             "task": ev_data.get("task", ""),
-            "changed": res.get("changed", False),
+            "changed": res.get("changed", ev_type == "runner_on_changed"),
         }
 
     if ev_type == "runner_on_failed":

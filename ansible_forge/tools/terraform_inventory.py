@@ -97,7 +97,7 @@ class TerraformInventoryBridge(BaseTool):
         if session_id:
             vault = SecretVault.get_instance().for_session(session_id)
             for name, value in vault.get_all().items():
-                if name.isupper():
+                if name.isupper() or name.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
                     env[name] = str(value)
         env["TF_IN_AUTOMATION"] = "1"
 

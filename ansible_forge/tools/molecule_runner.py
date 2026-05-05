@@ -136,7 +136,12 @@ class MoleculeRunner(BaseTool):
             stderr=asyncio.subprocess.PIPE,
             cwd=str(role),
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ToolResult.fail(f"Molecule {action} timed out after 10 minutes.")
         stdout = stdout_b.decode(errors="replace")
         stderr = stderr_b.decode(errors="replace")
 

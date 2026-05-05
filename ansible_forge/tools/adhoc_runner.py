@@ -207,6 +207,7 @@ class AdhocRunner(BaseTool):
                 inv_path.write_text(
                     "[local]\nlocalhost ansible_connection=local\n"
                 )
+                host_pattern = "localhost"
                 logger.info("auto_created_localhost_inventory", path=str(inv_path))
             else:
                 return ToolResult.fail(f"Inventory not found: {inv_path}")
@@ -311,8 +312,8 @@ class AdhocRunner(BaseTool):
         for event in result.events:
             ev_type = event.get("event", "")
             event_data = event.get("event_data", {})
-            if ev_type in ("runner_on_ok", "runner_on_failed", "runner_on_unreachable",
-                           "runner_on_skipped"):
+            if ev_type in ("runner_on_ok", "runner_on_changed", "runner_on_failed",
+                           "runner_on_unreachable", "runner_on_skipped"):
                 host = event_data.get("host", "unknown")
                 res = event_data.get("res", {})
                 host_results[host] = {
@@ -342,7 +343,7 @@ class AdhocRunner(BaseTool):
                 f"the inventory has 'ansible_connection=local' set."
             )
 
-        ok = sum(1 for r in host_results.values() if r["status"] == "ok")
+        ok = sum(1 for r in host_results.values() if r["status"] in ("ok", "changed"))
         failed = sum(1 for r in host_results.values() if r["status"] == "failed")
         unreachable = sum(1 for r in host_results.values() if r["status"] == "unreachable")
 
