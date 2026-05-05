@@ -7,7 +7,6 @@ from typing import Any
 
 import yaml
 
-from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 
 
@@ -64,11 +63,6 @@ class PlaybookGenerator(BaseTool):
 
         if not playbook_name.endswith((".yml", ".yaml")):
             playbook_name += ".yml"
-
-        session_id = kwargs.get("_session_id")
-        if session_id:
-            vault = SecretVault.get_instance().for_session(session_id)
-            content = vault.redact(content)
 
         try:
             parsed = yaml.safe_load(content)

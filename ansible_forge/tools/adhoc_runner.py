@@ -202,6 +202,7 @@ class AdhocRunner(BaseTool):
 
         runner_kwargs: dict[str, Any] = {
             "private_data_dir": str(ws / ".tuyere"),
+            "project_dir": str(ws),
             "module": module,
             "host_pattern": host_pattern,
             "inventory": str(inv_path),
@@ -273,11 +274,14 @@ class AdhocRunner(BaseTool):
         result = runner
 
         host_results: dict[str, Any] = {}
+        runner_errors: list[str] = []
         for event in result.events:
             ev_type = event.get("event", "")
-            if ev_type in ("runner_on_ok", "runner_on_failed", "runner_on_unreachable"):
-                host = event.get("event_data", {}).get("host", "unknown")
-                res = event.get("event_data", {}).get("res", {})
+            event_data = event.get("event_data", {})
+            if ev_type in ("runner_on_ok", "runner_on_failed", "runner_on_unreachable",
+                           "runner_on_skipped"):
+                host = event_data.get("host", "unknown")
+                res = event_data.get("res", {})
                 host_results[host] = {
                     "status": ev_type.replace("runner_on_", ""),
                     "changed": res.get("changed", False),
@@ -286,11 +290,22 @@ class AdhocRunner(BaseTool):
                     "stderr": (res.get("stderr", "") or "")[:1000],
                     "rc": res.get("rc"),
                 }
+            elif ev_type == "runner_on_no_hosts":
+                runner_errors.append(
+                    f"No hosts matched pattern '{host_pattern}' in inventory."
+                )
+            elif ev_type == "error" or ev_type == "verbose":
+                stderr = event_data.get("data", "")
+                if stderr and len(str(stderr)) > 5:
+                    runner_errors.append(str(stderr)[:500])
 
         if not host_results:
+            detail = " ".join(runner_errors) if runner_errors else ""
             return ToolResult.fail(
-                "No hosts responded. "
-                "Verify that your server list is correct and hosts are reachable."
+                f"No hosts responded for pattern '{host_pattern}'. "
+                f"{detail} "
+                f"Check inventory and host_pattern. For localhost operations, "
+                f"use execute_playbook with 'hosts: localhost' instead."
             )
 
         ok = sum(1 for r in host_results.values() if r["status"] == "ok")

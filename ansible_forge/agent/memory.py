@@ -50,6 +50,7 @@ class Memory:
         self._max_messages = max_messages
         self._max_context_tokens = max_context_tokens
         self._metadata: dict[str, Any] = {}
+        self._pinned_goal: str | None = None
         self.created_at = time.time()
         self._vault: SessionVault | None = None
 
@@ -71,11 +72,45 @@ class Memory:
         stripped.  ``reasoning_content`` is preserved because thinking-mode
         models (e.g. DeepSeek) require it passed back on every subsequent
         call.
+
+        If older user messages have been pruned, a compact goal-reminder
+        message is injected right after the system prompt so the LLM
+        never loses track of the user's original request.
         """
         result: list[Any] = []
+        goal_injected = False
         for m in self._messages:
             result.append({k: v for k, v in m.items() if not k.startswith("_")})
+            if (
+                not goal_injected
+                and self._pinned_goal
+                and m.get("role") == "system"
+                and self._goal_pruned()
+            ):
+                result.append({
+                    "role": "user",
+                    "content": (
+                        f"[CONTEXT REMINDER — original user goal, do NOT lose "
+                        f"track of this]\n{self._pinned_goal}"
+                    ),
+                })
+                result.append({
+                    "role": "assistant",
+                    "content": "Understood — I have the original goal in context.",
+                })
+                goal_injected = True
         return result
+
+    def _goal_pruned(self) -> bool:
+        """Check if the pinned goal's original message was pruned."""
+        if not self._pinned_goal:
+            return False
+        for m in self._messages:
+            if m.get("role") == "user":
+                content = m.get("content", "")
+                if isinstance(content, str) and self._pinned_goal[:80] in content:
+                    return False
+        return True
 
     @property
     def message_count(self) -> int:
@@ -88,7 +123,10 @@ class Memory:
             self._messages.insert(0, {"role": "system", "content": content})
 
     def add_user(self, content: str) -> None:
-        self._messages.append({"role": "user", "content": self._redact(content)})
+        redacted = self._redact(content)
+        if self._pinned_goal is None and len(redacted.strip()) > 10:
+            self._pinned_goal = redacted.strip()[:500]
+        self._messages.append({"role": "user", "content": redacted})
         self._prune()
 
     def add_assistant(

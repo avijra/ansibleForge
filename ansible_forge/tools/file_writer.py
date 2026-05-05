@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from ansible_forge.logging import get_logger
-from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 
 logger = get_logger(__name__)
@@ -69,11 +68,6 @@ class FileWriter(BaseTool):
     ) -> ToolResult:
         if not file_path or not content or not workspace_path:
             return ToolResult.fail("file_path, content, and workspace_path are required")
-
-        session_id = kwargs.get("_session_id")
-        if session_id:
-            vault = SecretVault.get_instance().for_session(session_id)
-            content = vault.redact(content)
 
         project_dir = Path(workspace_path).resolve()
         target = (project_dir / file_path).resolve()
