@@ -134,6 +134,29 @@ _LLM_THINKING_MESSAGES = [
 ]
 
 
+def _estimate_step_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimate cost for a single LLM call using litellm's pricing database."""
+    try:
+        import litellm
+        from litellm import Choices, Message, ModelResponse, Usage
+
+        mock_resp = ModelResponse(
+            model=model,
+            choices=[Choices(
+                finish_reason="stop", index=0,
+                message=Message(content="", role="assistant"),
+            )],
+            usage=Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            ),
+        )
+        return litellm.completion_cost(completion_response=mock_resp)
+    except Exception:
+        return 0.0
+
+
 class SessionState:
     """Tracks state for a single agent session."""
 
@@ -743,18 +766,13 @@ class Orchestrator:
                 )
 
                 if response.usage:
-                    state._total_prompt_tokens += response.usage.get("prompt_tokens", 0)
-                    state._total_completion_tokens += response.usage.get("completion_tokens", 0)
-                    try:
-                        import litellm
-                        step_cost = litellm.completion_cost(
-                            model=self._llm._effective_model(),
-                            prompt_tokens=response.usage.get("prompt_tokens", 0),
-                            completion_tokens=response.usage.get("completion_tokens", 0),
-                        )
-                        state._total_cost += step_cost
-                    except Exception:
-                        pass
+                    p_tok = response.usage.get("prompt_tokens", 0)
+                    c_tok = response.usage.get("completion_tokens", 0)
+                    state._total_prompt_tokens += p_tok
+                    state._total_completion_tokens += c_tok
+                    state._total_cost += _estimate_step_cost(
+                        self._llm._effective_model(), p_tok, c_tok,
+                    )
                     yield AgentEvent("usage", {
                         "prompt_tokens": state._total_prompt_tokens,
                         "completion_tokens": state._total_completion_tokens,
