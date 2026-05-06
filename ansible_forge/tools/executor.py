@@ -30,16 +30,16 @@ def _resolve_python_interpreter() -> str:
 
     In a PyInstaller bundle sys.executable is the app binary (ansibleforge-backend)
     which would start a second FastAPI server if Ansible invoked it as a module
-    executor.  Instead, we point to the bundled ``ansible-python`` wrapper that
-    acts as a minimal script executor with all _internal packages available.
+    executor.  We use ``auto_silent`` so Ansible discovers the system Python —
+    this is critical because cloud modules (boto3, azure, google-cloud) live on
+    the user's system Python, not inside the frozen bundle.  This matches the
+    v1.0.22 behavior that worked correctly.
+
+    In dev mode we use sys.executable (the venv Python) which has all deps.
     """
     import sys
 
     if getattr(sys, "frozen", False):
-        bundle_dir = Path(sys.executable).parent
-        ansible_python = bundle_dir / "ansible-python"
-        if ansible_python.exists():
-            return str(ansible_python)
         return "auto_silent"
     return sys.executable
 
