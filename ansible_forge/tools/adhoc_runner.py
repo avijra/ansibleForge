@@ -18,6 +18,7 @@ from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
     _LIVE_EVENT_TYPES,
     _format_live_event,
+    _resolve_python_interpreter,
     _sigkill_after_delay,
     clean_stale_env,
 )
@@ -31,10 +32,8 @@ _MAX_ADHOC_TIMEOUT = 7200
 
 
 def _adhoc_envvars() -> dict[str, str]:
-    import sys
-
     return {
-        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",

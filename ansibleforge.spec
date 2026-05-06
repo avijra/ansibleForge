@@ -2,7 +2,8 @@
 """PyInstaller spec for bundling the AnsibleForge backend into a standalone directory.
 
 Builds the main backend executable plus frozen Ansible CLI tools
-(ansible-playbook, ansible-galaxy, ansible-vault, ansible-doc, ansible-lint)
+(ansible, ansible-playbook, ansible-galaxy, ansible-vault, ansible-doc, ansible-lint)
+and a minimal Python wrapper (ansible-python) for ANSIBLE_PYTHON_INTERPRETER
 so the packaged app is fully self-contained — no system Python required.
 """
 
@@ -146,6 +147,7 @@ hidden_imports = [
     "ansible.cli.galaxy",
     "ansible.cli.vault",
     "ansible.cli.doc",
+    "ansible.cli.adhoc",
     "ansible.cli.inventory",
     "ansible.config",
     "ansible.constants",
@@ -317,12 +319,14 @@ a_main = Analysis(
 # resolve all ansible modules from the shared _internal directory.
 # ---------------------------------------------------------------------------
 cli_tools = {
+    "ansible": os.path.join(cli_entries, "cli_ansible.py"),
     "ansible-playbook": os.path.join(cli_entries, "cli_ansible_playbook.py"),
     "ansible-galaxy": os.path.join(cli_entries, "cli_ansible_galaxy.py"),
     "ansible-vault": os.path.join(cli_entries, "cli_ansible_vault.py"),
     "ansible-doc": os.path.join(cli_entries, "cli_ansible_doc.py"),
     "ansible-lint": os.path.join(cli_entries, "cli_ansible_lint.py"),
     "ansible-inventory": os.path.join(cli_entries, "cli_ansible_inventory.py"),
+    "ansible-python": os.path.join(cli_entries, "cli_python.py"),
 }
 
 cli_analyses = {}

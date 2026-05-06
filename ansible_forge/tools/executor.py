@@ -25,12 +25,29 @@ _DEFAULT_PLAYBOOK_TIMEOUT = 3600
 _MAX_PLAYBOOK_TIMEOUT = 86400
 
 
-def _runner_envvars() -> dict[str, str]:
-    """Environment variables passed to ansible-runner for every invocation."""
+def _resolve_python_interpreter() -> str:
+    """Return a Python interpreter path suitable for ANSIBLE_PYTHON_INTERPRETER.
+
+    In a PyInstaller bundle sys.executable is the app binary (ansibleforge-backend)
+    which would start a second FastAPI server if Ansible invoked it as a module
+    executor.  Instead, we point to the bundled ``ansible-python`` wrapper that
+    acts as a minimal script executor with all _internal packages available.
+    """
     import sys
 
+    if getattr(sys, "frozen", False):
+        bundle_dir = Path(sys.executable).parent
+        ansible_python = bundle_dir / "ansible-python"
+        if ansible_python.exists():
+            return str(ansible_python)
+        return "auto_silent"
+    return sys.executable
+
+
+def _runner_envvars() -> dict[str, str]:
+    """Environment variables passed to ansible-runner for every invocation."""
     return {
-        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_STDOUT_CALLBACK": "json",

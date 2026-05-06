@@ -15,6 +15,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import _resolve_python_interpreter
 
 logger = get_logger(__name__)
 
@@ -23,10 +24,8 @@ _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "priva
 
 
 def _facts_envvars() -> dict[str, str]:
-    import sys
-
     return {
-        "ANSIBLE_PYTHON_INTERPRETER": sys.executable,
+        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
