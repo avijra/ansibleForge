@@ -172,13 +172,17 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-          APPLE_CERTIFICATE: ${{ secrets.MAC_CERT_P12_BASE64 || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '' }}
-        run: cargo tauri build --target aarch64-apple-darwin --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
+        run: |
+          ARGS="--target aarch64-apple-darwin --config {\"build\":{\"beforeBuildCommand\":\"\",\"beforeDevCommand\":\"\"}}"
+          if [ -n "${{ secrets.MAC_CERT_P12_BASE64 }}" ]; then
+            export APPLE_CERTIFICATE="${{ secrets.MAC_CERT_P12_BASE64 }}"
+            export APPLE_CERTIFICATE_PASSWORD="${{ secrets.MAC_CERT_PASSWORD }}"
+            export APPLE_SIGNING_IDENTITY="${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            export APPLE_ID="${{ secrets.APPLE_ID }}"
+            export APPLE_PASSWORD="${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}"
+            export APPLE_TEAM_ID="${{ secrets.APPLE_TEAM_ID }}"
+          fi
+          cargo tauri build $ARGS
 
       - name: Collect artifacts
         run: |
