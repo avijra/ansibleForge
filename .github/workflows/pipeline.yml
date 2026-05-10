@@ -169,7 +169,6 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build Tauri app
-        working-directory: src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
@@ -179,7 +178,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '' }}
-        run: cargo tauri build --target aarch64-apple-darwin
+        run: cargo tauri build --target aarch64-apple-darwin --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
 
       - name: Collect artifacts
         run: |
@@ -252,11 +251,10 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build Tauri app
-        working-directory: src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: cargo tauri build
+        run: cargo tauri build --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
 
       - name: Collect artifacts
         run: |
@@ -313,6 +311,9 @@ jobs:
           npm run build
 
       - name: Bundle backend with PyInstaller
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
       - name: Copy backend to Tauri binaries
@@ -326,11 +327,10 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build Tauri app
-        working-directory: src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: cargo tauri build
+        run: cargo tauri build --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
 
       - name: Collect artifacts
         shell: bash
