@@ -314,11 +314,22 @@ jobs:
           npm ci
           npm run build
 
+      - name: Set Windows UTF-8 locale
+        run: |
+          [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          chcp 65001
+
       - name: Bundle backend with PyInstaller
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
-        run: pyinstaller --clean --noconfirm ansibleforge.spec
+          PYTHONLEGACYWINDOWSSTDIO: "0"
+        shell: cmd
+        run: |
+          chcp 65001
+          set PYTHONUTF8=1
+          set PYTHONIOENCODING=utf-8
+          pyinstaller --clean --noconfirm ansibleforge.spec
 
       - name: Copy backend to Tauri binaries
         shell: bash
@@ -360,7 +371,11 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     needs: [build-mac-arm64, build-linux, build-windows, preflight]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: |
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-mac-arm64.result == 'success' &&
+      needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -380,6 +395,7 @@ jobs:
           path: artifacts
 
       - name: Download Windows artifacts
+        if: needs.build-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: release-windows
