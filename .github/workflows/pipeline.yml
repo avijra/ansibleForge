@@ -31,21 +31,27 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           PYPROJECT_VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          ELECTRON_VERSION=$(jq -r '.version' electron/package.json)
+          TAURI_VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          CARGO_VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           INIT_VERSION=$(grep '__version__' ansible_forge/__init__.py | sed 's/.*"\(.*\)".*/\1/')
 
-          echo "Tag:       $TAG_VERSION"
-          echo "pyproject: $PYPROJECT_VERSION"
-          echo "electron:  $ELECTRON_VERSION"
-          echo "__init__:  $INIT_VERSION"
+          echo "Tag:        $TAG_VERSION"
+          echo "pyproject:  $PYPROJECT_VERSION"
+          echo "tauri.conf: $TAURI_VERSION"
+          echo "Cargo.toml: $CARGO_VERSION"
+          echo "__init__:   $INIT_VERSION"
 
           FAIL=0
           if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
             echo "::error::Version mismatch: tag ($TAG_VERSION) != pyproject.toml ($PYPROJECT_VERSION)"
             FAIL=1
           fi
-          if [ "$TAG_VERSION" != "$ELECTRON_VERSION" ]; then
-            echo "::error::Version mismatch: tag ($TAG_VERSION) != electron/package.json ($ELECTRON_VERSION)"
+          if [ "$TAG_VERSION" != "$TAURI_VERSION" ]; then
+            echo "::error::Version mismatch: tag ($TAG_VERSION) != tauri.conf.json ($TAURI_VERSION)"
+            FAIL=1
+          fi
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch: tag ($TAG_VERSION) != Cargo.toml ($CARGO_VERSION)"
             FAIL=1
           fi
           if [ "$TAG_VERSION" != "$INIT_VERSION" ]; then
@@ -53,7 +59,7 @@ jobs:
             FAIL=1
           fi
           if [ "$FAIL" -eq 1 ]; then
-            echo "::error::Fix version strings before tagging. All three must match."
+            echo "::error::Fix version strings before tagging. All must match."
             exit 1
           fi
 
@@ -110,18 +116,10 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      - name: Electron install
-        working-directory: electron
-        run: npm ci
-
-      - name: Electron type check
-        working-directory: electron
-        run: npx tsc --noEmit
-
   # ---------------------------------------------------------------------------
-  # STAGE 2: build-mac (tag only)
+  # STAGE 2: build-mac-arm64 (tag only)
   # ---------------------------------------------------------------------------
-  build-mac:
+  build-mac-arm64:
     needs: [test, preflight]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
@@ -136,6 +134,16 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
@@ -151,55 +159,40 @@ jobs:
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
-      - name: Copy backend to electron resources
+      - name: Copy backend to Tauri binaries
         run: |
-          rm -rf electron/resources/backend
-          mkdir -p electron/resources/backend
-          cp -R dist/ansibleforge-backend/* electron/resources/backend/
+          mkdir -p src-tauri/binaries
+          TRIPLE=$(rustc --print host-tuple)
+          cp dist/ansibleforge-backend/ansibleforge-backend "src-tauri/binaries/ansibleforge-backend-${TRIPLE}"
 
-      - name: Install Electron dependencies
-        working-directory: electron
-        run: npm ci
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
 
-      - name: Build Electron TypeScript
-        working-directory: electron
-        run: npm run build
-
-      - name: Import macOS signing certificate
-        if: env.CSC_LINK != ''
+      - name: Build Tauri app
+        working-directory: src-tauri
         env:
-          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-        run: echo "Certificate imported via electron-builder env vars"
-
-      - name: Package Electron app
-        working-directory: electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 || '' }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD || '' }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12_BASE64 != '' && 'true' || 'false' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.MAC_CERT_P12_BASE64 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_ID: ${{ secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '' }}
-        run: |
-          if [ -z "$CSC_LINK" ]; then
-            unset CSC_LINK CSC_KEY_PASSWORD
-          fi
-          npx electron-builder --mac --publish never
+        run: cargo tauri build --target aarch64-apple-darwin
 
-      - name: Flatten release artifacts
+      - name: Collect artifacts
         run: |
           mkdir -p /tmp/release-mac
-          cp electron/release/*.dmg /tmp/release-mac/ 2>/dev/null || true
-          cp electron/release/*.zip /tmp/release-mac/ 2>/dev/null || true
-          cp electron/release/*.yml /tmp/release-mac/ 2>/dev/null || true
+          find src-tauri/target -name '*.dmg' -exec cp {} /tmp/release-mac/ \;
+          find src-tauri/target -name '*.app.tar.gz' -exec cp {} /tmp/release-mac/ \;
+          find src-tauri/target -name '*.app.tar.gz.sig' -exec cp {} /tmp/release-mac/ \;
           ls -lh /tmp/release-mac/
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-mac
+          name: release-mac-arm64
           path: /tmp/release-mac/
           if-no-files-found: error
 
@@ -209,7 +202,7 @@ jobs:
   build-linux:
     needs: [test, preflight]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -221,6 +214,19 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
@@ -236,32 +242,29 @@ jobs:
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
-      - name: Copy backend to electron resources
+      - name: Copy backend to Tauri binaries
         run: |
-          rm -rf electron/resources/backend
-          mkdir -p electron/resources/backend
-          cp -R dist/ansibleforge-backend/* electron/resources/backend/
+          mkdir -p src-tauri/binaries
+          TRIPLE=$(rustc --print host-tuple)
+          cp dist/ansibleforge-backend/ansibleforge-backend "src-tauri/binaries/ansibleforge-backend-${TRIPLE}"
 
-      - name: Install Electron dependencies
-        working-directory: electron
-        run: npm ci
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
 
-      - name: Build Electron TypeScript
-        working-directory: electron
-        run: npm run build
-
-      - name: Package Electron app
-        working-directory: electron
+      - name: Build Tauri app
+        working-directory: src-tauri
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --linux --publish never
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: cargo tauri build
 
-      - name: Flatten release artifacts
+      - name: Collect artifacts
         run: |
           mkdir -p /tmp/release-linux
-          cp electron/release/*.AppImage /tmp/release-linux/ 2>/dev/null || true
-          cp electron/release/*.deb /tmp/release-linux/ 2>/dev/null || true
-          cp electron/release/*.yml /tmp/release-linux/ 2>/dev/null || true
+          find src-tauri/target -name '*.AppImage' -exec cp {} /tmp/release-linux/ \;
+          find src-tauri/target -name '*.AppImage.tar.gz' -exec cp {} /tmp/release-linux/ \;
+          find src-tauri/target -name '*.AppImage.tar.gz.sig' -exec cp {} /tmp/release-linux/ \;
+          find src-tauri/target -name '*.deb' -exec cp {} /tmp/release-linux/ \;
           ls -lh /tmp/release-linux/
 
       - name: Upload Linux artifacts
@@ -272,163 +275,87 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # STAGE 3: verify artifacts (tag only)
+  # STAGE 2: build-windows (tag only)
   # ---------------------------------------------------------------------------
-  verify:
-    needs: [build-mac, build-linux, preflight]
+  build-windows:
+    needs: [test, preflight]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-latest
+    runs-on: windows-latest
     steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-mac
-          path: mac-artifacts
+      - uses: actions/checkout@v4
 
-      - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: release-linux
-          path: linux-artifacts
+          python-version: "3.13"
 
-      - name: Verify macOS artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bundle backend with PyInstaller
+        run: pyinstaller --clean --noconfirm ansibleforge.spec
+
+      - name: Copy backend to Tauri binaries
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          TRIPLE=$(rustc --print host-tuple)
+          cp dist/ansibleforge-backend/ansibleforge-backend.exe "src-tauri/binaries/ansibleforge-backend-${TRIPLE}.exe"
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app
+        working-directory: src-tauri
         env:
-          EXPECTED_VERSION: ${{ needs.preflight.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: cargo tauri build
+
+      - name: Collect artifacts
+        shell: bash
         run: |
-          set -euo pipefail
-          echo "=== macOS Artifact Verification ==="
+          mkdir -p /tmp/release-windows
+          find src-tauri/target -name '*.msi' -exec cp {} /tmp/release-windows/ \;
+          find src-tauri/target -name '*.msi.zip' -exec cp {} /tmp/release-windows/ \;
+          find src-tauri/target -name '*.msi.zip.sig' -exec cp {} /tmp/release-windows/ \;
+          find src-tauri/target -name '*.exe' -path '*/nsis/*' -exec cp {} /tmp/release-windows/ \;
+          find src-tauri/target -name '*-setup.nsis.zip' -exec cp {} /tmp/release-windows/ \;
+          find src-tauri/target -name '*-setup.nsis.zip.sig' -exec cp {} /tmp/release-windows/ \;
+          ls -lh /tmp/release-windows/
 
-          echo "--- Checking DMG ---"
-          DMG=$(find mac-artifacts -name '*.dmg' -type f | head -1)
-          if [ -z "$DMG" ]; then
-            echo "::error::No DMG file found"
-            exit 1
-          fi
-          DMG_SIZE=$(stat -f%z "$DMG")
-          echo "DMG: $DMG ($DMG_SIZE bytes)"
-          if [ "$DMG_SIZE" -lt 104857600 ]; then
-            echo "::error::DMG is suspiciously small (${DMG_SIZE} bytes < 100MB). Build is likely broken."
-            exit 1
-          fi
-          echo "DMG size check passed"
-
-          echo "--- Checking ZIP ---"
-          ZIP=$(find mac-artifacts -name '*.zip' -type f | head -1)
-          if [ -z "$ZIP" ]; then
-            echo "::error::No ZIP file found"
-            exit 1
-          fi
-          echo "ZIP: $ZIP"
-
-          echo "--- Extracting .app from ZIP ---"
-          EXTRACT_DIR=$(mktemp -d)
-          unzip -q "$ZIP" -d "$EXTRACT_DIR"
-          APP_DIR=$(find "$EXTRACT_DIR" -name '*.app' -maxdepth 1 -type d | head -1)
-          if [ -z "$APP_DIR" ]; then
-            echo "::error::No .app bundle found inside ZIP"
-            exit 1
-          fi
-          echo "App bundle: $APP_DIR"
-
-          echo "--- Checking icon ---"
-          ICON="$APP_DIR/Contents/Resources/icon.icns"
-          if [ ! -f "$ICON" ]; then
-            echo "::error::icon.icns not found in Contents/Resources/"
-            exit 1
-          fi
-          ICON_SIZE=$(stat -f%z "$ICON")
-          if [ "$ICON_SIZE" -lt 51200 ]; then
-            echo "::error::icon.icns is suspiciously small (${ICON_SIZE} bytes < 50KB). Likely a placeholder."
-            exit 1
-          fi
-          echo "icon.icns exists and is $ICON_SIZE bytes"
-
-          echo "--- Checking Info.plist ---"
-          PLIST="$APP_DIR/Contents/Info.plist"
-          if [ ! -f "$PLIST" ]; then
-            echo "::error::Info.plist not found"
-            exit 1
-          fi
-
-          BUNDLE_ICON=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST")
-          if [ "$BUNDLE_ICON" != "icon.icns" ]; then
-            echo "::error::CFBundleIconFile is '$BUNDLE_ICON', expected 'icon.icns'"
-            exit 1
-          fi
-          echo "CFBundleIconFile = $BUNDLE_ICON"
-
-          BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
-          if [ "$BUNDLE_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "::error::CFBundleShortVersionString is '$BUNDLE_VERSION', expected '$EXPECTED_VERSION'"
-            exit 1
-          fi
-          echo "CFBundleShortVersionString = $BUNDLE_VERSION"
-
-          BUNDLE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$PLIST")
-          if [ "$BUNDLE_NAME" != "Tuyere" ]; then
-            echo "::error::Bundle display name is '$BUNDLE_NAME', expected 'Tuyere'"
-            exit 1
-          fi
-          echo "Bundle name = $BUNDLE_NAME"
-
-          echo "--- Checking backend binary ---"
-          BACKEND="$APP_DIR/Contents/Resources/backend/ansibleforge-backend"
-          if [ ! -f "$BACKEND" ]; then
-            echo "::error::Backend binary not found at Contents/Resources/backend/ansibleforge-backend"
-            exit 1
-          fi
-          echo "Backend binary exists"
-
-          echo "--- Checking UI dist ---"
-          UI_INDEX="$APP_DIR/Contents/Resources/backend/_internal/ui/dist/index.html"
-          if [ ! -f "$UI_INDEX" ]; then
-            echo "::error::UI dist not found at Contents/Resources/backend/_internal/ui/dist/index.html"
-            exit 1
-          fi
-          echo "UI dist/index.html exists"
-
-          echo "=== macOS verification PASSED ==="
-
-      - name: Verify Linux artifacts
-        run: |
-          set -euo pipefail
-          echo "=== Linux Artifact Verification ==="
-
-          echo "--- Checking AppImage ---"
-          APPIMAGE=$(find linux-artifacts -name '*.AppImage' -type f | head -1)
-          if [ -z "$APPIMAGE" ]; then
-            echo "::error::No AppImage file found"
-            exit 1
-          fi
-          APPIMAGE_SIZE=$(stat -f%z "$APPIMAGE" 2>/dev/null || stat -c%s "$APPIMAGE")
-          echo "AppImage: $APPIMAGE ($APPIMAGE_SIZE bytes)"
-          if [ "$APPIMAGE_SIZE" -lt 104857600 ]; then
-            echo "::error::AppImage is suspiciously small (${APPIMAGE_SIZE} bytes < 100MB). Build is likely broken."
-            exit 1
-          fi
-          echo "AppImage size check passed"
-
-          echo "--- Checking deb ---"
-          DEB=$(find linux-artifacts -name '*.deb' -type f | head -1)
-          if [ -z "$DEB" ]; then
-            echo "::error::No .deb file found"
-            exit 1
-          fi
-          DEB_SIZE=$(stat -f%z "$DEB" 2>/dev/null || stat -c%s "$DEB")
-          echo "deb: $DEB ($DEB_SIZE bytes)"
-          if [ "$DEB_SIZE" -lt 52428800 ]; then
-            echo "::error::deb is suspiciously small (${DEB_SIZE} bytes < 50MB). Build is likely broken."
-            exit 1
-          fi
-          echo "deb size check passed"
-
-          echo "=== Linux verification PASSED ==="
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: /tmp/release-windows/
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # STAGE 4: publish GitHub Release (tag only)
+  # STAGE 3: publish GitHub Release (tag only)
   # ---------------------------------------------------------------------------
   publish:
-    needs: [verify, preflight]
+    needs: [build-mac-arm64, build-linux, build-windows, preflight]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -439,13 +366,19 @@ jobs:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-mac
+          name: release-mac-arm64
           path: artifacts
 
       - name: Download Linux artifacts
         uses: actions/download-artifact@v4
         with:
           name: release-linux
+          path: artifacts
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
           path: artifacts
 
       - name: List all artifacts
@@ -478,12 +411,6 @@ jobs:
               echo "| macOS (Apple Silicon) | \`$f\` | $SIZE |"
             done
 
-            for f in *.zip; do
-              [ -f "$f" ] || continue
-              SIZE=$(du -h "$f" | cut -f1 | xargs)
-              echo "| macOS (Apple Silicon) | \`$f\` | $SIZE |"
-            done
-
             for f in *.AppImage; do
               [ -f "$f" ] || continue
               SIZE=$(du -h "$f" | cut -f1 | xargs)
@@ -496,14 +423,23 @@ jobs:
               echo "| Linux (Debian) | \`$f\` | $SIZE |"
             done
 
+            for f in *.msi; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| Windows (MSI) | \`$f\` | $SIZE |"
+            done
+
+            for f in *setup*.exe; do
+              [ -f "$f" ] || continue
+              SIZE=$(du -h "$f" | cut -f1 | xargs)
+              echo "| Windows (Installer) | \`$f\` | $SIZE |"
+            done
+
             echo ""
             echo "## Install"
             echo ""
             echo "### macOS (Apple Silicon)"
-            echo "Download the \`.dmg\`, open it, drag **Tuyere** to Applications, then run:"
-            echo "\`\`\`"
-            echo "xattr -cr /Applications/Tuyere.app"
-            echo "\`\`\`"
+            echo "Download the \`.dmg\`, open it, drag **Tuyere** to Applications."
             echo ""
             echo "### Linux"
             echo "**AppImage:**"
@@ -515,6 +451,9 @@ jobs:
             echo "\`\`\`"
             echo "sudo dpkg -i tuyere_*.deb"
             echo "\`\`\`"
+            echo ""
+            echo "### Windows"
+            echo "Run the \`.msi\` installer or the NSIS \`.exe\` setup."
             echo ""
             echo "## Checksums (SHA256)"
             echo "\`\`\`"
@@ -535,6 +474,60 @@ jobs:
 
           cat /tmp/release_body.md
 
+      - name: Generate Tauri updater manifest
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          cd artifacts
+
+          get_sig() {
+            local sigfile="$1"
+            if [ -f "$sigfile" ]; then
+              cat "$sigfile"
+            else
+              echo ""
+            fi
+          }
+
+          REPO="https://github.com/avijra/ansibleForge/releases/download/v${VERSION}"
+
+          MAC_TAR=$(ls *.app.tar.gz 2>/dev/null | head -1 || true)
+          MAC_SIG=$(get_sig "${MAC_TAR}.sig" 2>/dev/null || true)
+
+          LINUX_APPIMAGE_TAR=$(ls *.AppImage.tar.gz 2>/dev/null | head -1 || true)
+          LINUX_APPIMAGE_SIG=$(get_sig "${LINUX_APPIMAGE_TAR}.sig" 2>/dev/null || true)
+
+          WIN_MSI_ZIP=$(ls *.msi.zip 2>/dev/null | head -1 || true)
+          WIN_MSI_SIG=$(get_sig "${WIN_MSI_ZIP}.sig" 2>/dev/null || true)
+
+          WIN_NSIS_ZIP=$(ls *-setup.nsis.zip 2>/dev/null | head -1 || true)
+          WIN_NSIS_SIG=$(get_sig "${WIN_NSIS_ZIP}.sig" 2>/dev/null || true)
+
+          cat > latest.json <<MANIFEST
+          {
+            "version": "v${VERSION}",
+            "notes": "Tuyere v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${MAC_SIG}",
+                "url": "${REPO}/${MAC_TAR}"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_APPIMAGE_SIG}",
+                "url": "${REPO}/${LINUX_APPIMAGE_TAR}"
+              },
+              "windows-x86_64": {
+                "signature": "${WIN_MSI_SIG}",
+                "url": "${REPO}/${WIN_MSI_ZIP}"
+              }
+            }
+          }
+          MANIFEST
+
+          echo "=== latest.json ==="
+          cat latest.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -544,10 +537,19 @@ jobs:
           draft: false
           files: |
             artifacts/*.dmg
-            artifacts/*.zip
+            artifacts/*.app.tar.gz
+            artifacts/*.app.tar.gz.sig
             artifacts/*.AppImage
+            artifacts/*.AppImage.tar.gz
+            artifacts/*.AppImage.tar.gz.sig
             artifacts/*.deb
-            artifacts/*.yml
+            artifacts/*.msi
+            artifacts/*.msi.zip
+            artifacts/*.msi.zip.sig
+            artifacts/*-setup*.exe
+            artifacts/*-setup.nsis.zip
+            artifacts/*-setup.nsis.zip.sig
+            artifacts/latest.json
             artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

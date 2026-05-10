@@ -69,7 +69,7 @@ UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
 async def _parent_watchdog(check_interval: int = 5) -> None:
-    """Shut down if parent Electron process dies (prevents zombie backends)."""
+    """Shut down if parent desktop process (Tauri/Electron) dies (prevents zombie backends)."""
     parent_pid_str = os.environ.get("ANSIBLEFORGE_PARENT_PID")
     if not parent_pid_str:
         return

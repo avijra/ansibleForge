@@ -21,9 +21,8 @@ htmlcov/
 
 node_modules/
 ui/dist/
-electron/release/
-electron/resources/backend/
-!electron/build/
+src-tauri/target/
+src-tauri/binaries/
 
 *.log
 *.zip

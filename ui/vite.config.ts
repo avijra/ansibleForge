@@ -12,13 +12,20 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    strictPort: true,
     proxy: {
       "/api": {
         target: "http://localhost:8420",
         changeOrigin: true,
       },
+      "/ws": {
+        target: "ws://localhost:8420",
+        ws: true,
+      },
     },
   },
+  clearScreen: false,
+  envPrefix: ["VITE_", "TAURI_"],
   build: {
     outDir: "dist",
     emptyOutDir: true,

@@ -22,7 +22,7 @@ import { useLLMSettings } from "@/hooks/useLLMSettings";
 import { useKeyboard } from "@/hooks/useKeyboard";
 import { useAnsibleContext } from "@/hooks/useAnsibleContext";
 import { useResizable } from "@/hooks/useResizable";
-import { useElectronIPC, useUpdateStatus } from "@/hooks/useElectronIPC";
+import { useTauriIPC, useUpdateStatus, pickDirectoryTauri } from "@/hooks/useTauriIPC";
 import { api, request } from "@/api/client";
 import type { AgentEvent, SessionListItem, WorkspaceFile } from "@/api/types";
 
@@ -49,11 +49,7 @@ function detectLanguage(path: string): string {
 }
 
 async function pickDirectory(): Promise<string | null> {
-  const electronAPI = window.electronAPI;
-  if (electronAPI) {
-    return electronAPI.selectProjectDirectory();
-  }
-  return prompt("Enter project directory path:");
+  return pickDirectoryTauri();
 }
 
 export function App() {
@@ -448,7 +444,7 @@ export function App() {
     )
   );
 
-  useElectronIPC(
+  useTauriIPC(
     useMemo(
       () => ({
         onOpenSettings: () => { llm.refresh(); setSettingsOpen(true); },
