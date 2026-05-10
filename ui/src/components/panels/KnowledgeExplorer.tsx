@@ -304,7 +304,8 @@ export function KnowledgeExplorer() {
     setLoading(true);
     setFetchError(null);
     try {
-      const base = import.meta.env.VITE_API_BASE || "";
+      const { BACKEND_ORIGIN: origin } = await import("@/api/client");
+      const base = import.meta.env.VITE_API_BASE || origin;
       const headers: Record<string, string> = {};
       const apiKey = import.meta.env.VITE_API_KEY;
       if (apiKey) headers["X-API-Key"] = apiKey;

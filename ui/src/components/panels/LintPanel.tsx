@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { BACKEND_ORIGIN } from "@/api/client";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -49,7 +50,7 @@ export function LintPanel({ sessionId, onOpenFile }: LintPanelProps) {
       const apiKey = import.meta.env.VITE_API_KEY;
       if (apiKey) headers["X-API-Key"] = apiKey;
 
-      const res = await fetch(`/api/v1/lint/${sessionId}`, { headers });
+      const res = await fetch(`${BACKEND_ORIGIN}/api/v1/lint/${sessionId}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setViolations(data.violations || []);

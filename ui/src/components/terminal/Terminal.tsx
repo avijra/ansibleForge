@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { TerminalSquare } from "lucide-react";
+import { BACKEND_ORIGIN } from "@/api/client";
 
 interface TerminalProps {
   sessionId: string | null;
@@ -71,9 +72,10 @@ export function TerminalPanel({ sessionId, visible }: TerminalProps) {
     ro.observe(containerRef.current);
 
     if (sessionId) {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.host;
-      const ws = new WebSocket(`${protocol}//${host}/api/v1/terminal/${sessionId}`);
+      const wsBase = BACKEND_ORIGIN
+        ? BACKEND_ORIGIN.replace(/^http/, "ws")
+        : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+      const ws = new WebSocket(`${wsBase}/api/v1/terminal/${sessionId}`);
 
       ws.onopen = () => {
         term.writeln("\x1b[90m--- Connected to workspace terminal ---\x1b[0m\r\n");

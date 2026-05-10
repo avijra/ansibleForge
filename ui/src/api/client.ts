@@ -18,7 +18,12 @@ import type {
   WorkspaceFilesResponse,
 } from "./types";
 
-const BASE = "/api/v1";
+export const BACKEND_ORIGIN =
+  "__TAURI_INTERNALS__" in window
+    ? "http://127.0.0.1:8420"
+    : "";
+
+const BASE = `${BACKEND_ORIGIN}/api/v1`;
 
 export function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
