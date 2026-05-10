@@ -4,8 +4,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
-#[cfg(unix)]
-use libc;
 
 const PORT: u16 = 8420;
 const MAX_RESTARTS: u32 = 3;
@@ -53,19 +51,33 @@ pub async fn wait_for_backend() -> bool {
 }
 
 fn get_backend_command(app: &AppHandle) -> (String, Vec<String>, String) {
+    let bin_name = if cfg!(target_os = "windows") {
+        "ansibleforge-backend.exe"
+    } else {
+        "ansibleforge-backend"
+    };
+
+    // externalBin places the sidecar next to the main executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let sidecar = exe_dir.join(bin_name);
+            if sidecar.exists() {
+                return (
+                    sidecar.to_string_lossy().to_string(),
+                    vec![],
+                    exe_dir.to_string_lossy().to_string(),
+                );
+            }
+        }
+    }
+
+    // Fallback: check resource_dir/binaries (legacy path)
     let resource_dir = app
         .path()
         .resource_dir()
         .expect("failed to resolve resource dir");
 
-    let backend_bin = if cfg!(target_os = "windows") {
-        resource_dir
-            .join("binaries")
-            .join("ansibleforge-backend.exe")
-    } else {
-        resource_dir.join("binaries").join("ansibleforge-backend")
-    };
-
+    let backend_bin = resource_dir.join("binaries").join(bin_name);
     if backend_bin.exists() {
         return (
             backend_bin.to_string_lossy().to_string(),
