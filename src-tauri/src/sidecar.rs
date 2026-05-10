@@ -57,7 +57,30 @@ fn get_backend_command(app: &AppHandle) -> (String, Vec<String>, String) {
         "ansibleforge-backend"
     };
 
-    // externalBin places the sidecar next to the main executable
+    // Bundled mode: backend directory is in resources/backend/
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .expect("failed to resolve resource dir");
+
+    let backend_dir = resource_dir.join("backend");
+    let backend_bin = backend_dir.join(bin_name);
+
+    log::info!(
+        "Looking for backend at: {} (exists={})",
+        backend_bin.display(),
+        backend_bin.exists()
+    );
+
+    if backend_bin.exists() {
+        return (
+            backend_bin.to_string_lossy().to_string(),
+            vec![],
+            backend_dir.to_string_lossy().to_string(),
+        );
+    }
+
+    // Fallback: next to main executable (for older builds)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let sidecar = exe_dir.join(bin_name);
@@ -69,21 +92,6 @@ fn get_backend_command(app: &AppHandle) -> (String, Vec<String>, String) {
                 );
             }
         }
-    }
-
-    // Fallback: check resource_dir/binaries (legacy path)
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .expect("failed to resolve resource dir");
-
-    let backend_bin = resource_dir.join("binaries").join(bin_name);
-    if backend_bin.exists() {
-        return (
-            backend_bin.to_string_lossy().to_string(),
-            vec![],
-            resource_dir.join("binaries").to_string_lossy().to_string(),
-        );
     }
 
     // Dev mode: run from Python

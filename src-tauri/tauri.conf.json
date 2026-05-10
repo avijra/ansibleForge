@@ -37,9 +37,9 @@
       "icons/icon.png",
       "icons/icon.icns"
     ],
-    "externalBin": [
-      "binaries/ansibleforge-backend"
-    ],
+    "resources": {
+      "resources/backend": "backend"
+    },
     "category": "DeveloperTool",
     "macOS": {
       "entitlements": null,

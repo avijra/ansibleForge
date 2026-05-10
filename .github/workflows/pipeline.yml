@@ -159,11 +159,12 @@ jobs:
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
-      - name: Copy backend to Tauri binaries
+      - name: Copy backend to Tauri resources
         run: |
-          mkdir -p src-tauri/binaries
-          TRIPLE=$(rustc --print host-tuple)
-          cp dist/ansibleforge-backend/ansibleforge-backend "src-tauri/binaries/ansibleforge-backend-${TRIPLE}"
+          mkdir -p src-tauri/resources/backend
+          cp -r dist/ansibleforge-backend/* src-tauri/resources/backend/
+          chmod +x src-tauri/resources/backend/ansibleforge-backend
+          ls -lh src-tauri/resources/backend/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
@@ -245,11 +246,12 @@ jobs:
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
-      - name: Copy backend to Tauri binaries
+      - name: Copy backend to Tauri resources
         run: |
-          mkdir -p src-tauri/binaries
-          TRIPLE=$(rustc --print host-tuple)
-          cp dist/ansibleforge-backend/ansibleforge-backend "src-tauri/binaries/ansibleforge-backend-${TRIPLE}"
+          mkdir -p src-tauri/resources/backend
+          cp -r dist/ansibleforge-backend/* src-tauri/resources/backend/
+          chmod +x src-tauri/resources/backend/ansibleforge-backend
+          ls -lh src-tauri/resources/backend/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
@@ -331,12 +333,12 @@ jobs:
           set PYTHONIOENCODING=utf-8
           pyinstaller --clean --noconfirm ansibleforge.spec
 
-      - name: Copy backend to Tauri binaries
+      - name: Copy backend to Tauri resources
         shell: bash
         run: |
-          mkdir -p src-tauri/binaries
-          TRIPLE=$(rustc --print host-tuple)
-          cp dist/ansibleforge-backend/ansibleforge-backend.exe "src-tauri/binaries/ansibleforge-backend-${TRIPLE}.exe"
+          mkdir -p src-tauri/resources/backend
+          cp -r dist/ansibleforge-backend/* src-tauri/resources/backend/
+          ls -lh src-tauri/resources/backend/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
