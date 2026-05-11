@@ -18,6 +18,16 @@ project_root = os.path.abspath(".")
 ui_dist = os.path.join(project_root, "ui", "dist")
 cli_entries = os.path.join(project_root, "scripts", "cli_entries")
 
+_ansible_cli_imports = [
+    "ansible.cli",
+    "ansible.cli.playbook",
+    "ansible.cli.galaxy",
+    "ansible.cli.vault",
+    "ansible.cli.doc",
+    "ansible.cli.adhoc",
+    "ansible.cli.inventory",
+]
+
 hidden_imports = [
     # --- Core framework ---
     "ansible_forge",
@@ -142,13 +152,6 @@ hidden_imports = [
     "litellm.llms.openai",
     # --- Ansible ---
     "ansible",
-    "ansible.cli",
-    "ansible.cli.playbook",
-    "ansible.cli.galaxy",
-    "ansible.cli.vault",
-    "ansible.cli.doc",
-    "ansible.cli.adhoc",
-    "ansible.cli.inventory",
     "ansible.config",
     "ansible.constants",
     "ansible.context",
@@ -233,6 +236,10 @@ hidden_imports = [
     "multiprocessing",
 ]
 
+# ansible.cli calls initialize_locale() at import time which fails on Windows (cp1252)
+if sys.platform != "win32":
+    hidden_imports.extend(_ansible_cli_imports)
+
 datas = []
 
 if os.path.isdir(ui_dist):
@@ -295,6 +302,9 @@ excludes = [
     "hypothesis",
 ]
 
+if sys.platform == "win32":
+    excludes.extend(_ansible_cli_imports)
+
 # ---------------------------------------------------------------------------
 # Main backend
 # ---------------------------------------------------------------------------
@@ -317,17 +327,23 @@ a_main = Analysis(
 # ---------------------------------------------------------------------------
 # Ansible CLI companions — share the same hidden imports / data so they can
 # resolve all ansible modules from the shared _internal directory.
+# Skipped on Windows: Ansible does not support Windows as a control node.
 # ---------------------------------------------------------------------------
-cli_tools = {
-    "ansible": os.path.join(cli_entries, "cli_ansible.py"),
-    "ansible-playbook": os.path.join(cli_entries, "cli_ansible_playbook.py"),
-    "ansible-galaxy": os.path.join(cli_entries, "cli_ansible_galaxy.py"),
-    "ansible-vault": os.path.join(cli_entries, "cli_ansible_vault.py"),
-    "ansible-doc": os.path.join(cli_entries, "cli_ansible_doc.py"),
-    "ansible-lint": os.path.join(cli_entries, "cli_ansible_lint.py"),
-    "ansible-inventory": os.path.join(cli_entries, "cli_ansible_inventory.py"),
-    "ansible-python": os.path.join(cli_entries, "cli_python.py"),
-}
+if sys.platform != "win32":
+    cli_tools = {
+        "ansible": os.path.join(cli_entries, "cli_ansible.py"),
+        "ansible-playbook": os.path.join(cli_entries, "cli_ansible_playbook.py"),
+        "ansible-galaxy": os.path.join(cli_entries, "cli_ansible_galaxy.py"),
+        "ansible-vault": os.path.join(cli_entries, "cli_ansible_vault.py"),
+        "ansible-doc": os.path.join(cli_entries, "cli_ansible_doc.py"),
+        "ansible-lint": os.path.join(cli_entries, "cli_ansible_lint.py"),
+        "ansible-inventory": os.path.join(cli_entries, "cli_ansible_inventory.py"),
+        "ansible-python": os.path.join(cli_entries, "cli_python.py"),
+    }
+else:
+    cli_tools = {
+        "ansible-python": os.path.join(cli_entries, "cli_python.py"),
+    }
 
 cli_analyses = {}
 for tool_name, entry_script in cli_tools.items():

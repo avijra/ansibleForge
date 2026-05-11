@@ -171,10 +171,9 @@ jobs:
 
       - name: Build Tauri app
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          ARGS="--target aarch64-apple-darwin --config {\"build\":{\"beforeBuildCommand\":\"\",\"beforeDevCommand\":\"\"}}"
           if [ -n "${{ secrets.MAC_CERT_P12_BASE64 }}" ]; then
             export APPLE_CERTIFICATE="${{ secrets.MAC_CERT_P12_BASE64 }}"
             export APPLE_CERTIFICATE_PASSWORD="${{ secrets.MAC_CERT_PASSWORD }}"
@@ -183,7 +182,7 @@ jobs:
             export APPLE_PASSWORD="${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}"
             export APPLE_TEAM_ID="${{ secrets.APPLE_TEAM_ID }}"
           fi
-          cargo tauri build $ARGS
+          cargo tauri build --target aarch64-apple-darwin --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
 
       - name: Collect artifacts
         run: |
