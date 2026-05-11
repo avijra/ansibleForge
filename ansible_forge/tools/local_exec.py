@@ -64,7 +64,8 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bssh\s+"), "run_adhoc with ansible.builtin.ping or test_connectivity tool"),
     (re.compile(r"\bdocker\s+(?!ps|inspect)"), "run_adhoc with community.docker.* modules"),
     (re.compile(r"\bterraform\s+"), "terraform_exec tool (not local_exec)"),
-    (re.compile(r"\boc\s+(?:create|apply|delete)\b"), "run_adhoc with kubernetes.core.k8s / k8s_info module"),
+    (re.compile(r"\bopenshift-install\b"), "run_adhoc with ansible.builtin.command on localhost"),
+    (re.compile(r"\boc\s+(?:get|create|apply|delete|adm)\b"), "run_adhoc with kubernetes.core.k8s / k8s_info module"),
     (re.compile(r"\bansible-galaxy\b"), "manage_galaxy tool (not local_exec)"),
     (re.compile(r"\bansible-playbook\b"), "execute_playbook tool (not local_exec)"),
     (re.compile(r"\bansible\s+(?!--version)"), "run_adhoc tool (not local_exec)"),
@@ -93,8 +94,6 @@ _ALLOWED_PATTERNS = [
     re.compile(r"--version\b"),
     re.compile(r"\bdig\s+"),
     re.compile(r"\bnslookup\b"),
-    re.compile(r"\bopenshift-install\b"),
-    re.compile(r"\boc\s+(?:get|adm|login|logout|whoami|project|status|version)\b"),
 ]
 
 _ESCAPE_HATCH_THRESHOLD = 2
