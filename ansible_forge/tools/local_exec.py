@@ -239,11 +239,11 @@ class LocalExec(BaseTool):
                     reason=rejection[:200],
                 )
                 return ToolResult.fail(
-                    f"BLOCKED: {rejection}. "
-                    f"Use the dedicated tool instead of local_exec for this. "
-                    f"local_exec is only allowed as a fallback after Ansible/Terraform "
-                    f"tools have failed (current exec_fail_count={exec_fail_count}, "
-                    f"threshold={_ESCAPE_HATCH_THRESHOLD})."
+                    f"BLOCKED: `local_exec` cannot run this command directly. "
+                    f"You MUST call `{rejection.split()[0]}` instead — specifically: {rejection}. "
+                    f"Do NOT retry `local_exec` for this. Call the correct tool now. "
+                    f"(local_exec is only unblocked after {_ESCAPE_HATCH_THRESHOLD} "
+                    f"failures of Ansible/Terraform tools; current count={exec_fail_count})"
                 )
 
         timeout = max(10, min(kwargs.get("timeout", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT, 600))
