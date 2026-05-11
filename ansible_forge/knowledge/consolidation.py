@@ -93,7 +93,7 @@ async def consolidate_experiences(
 
     Returns the number of new rules created.
     """
-    groups = store.get_all_by_type_grouped(min_group_size=3)
+    groups = await store.aget_all_by_type_grouped(min_group_size=3)
     if not groups:
         logger.info("consolidation_skipped", reason="not enough experiences")
         return 0
@@ -143,13 +143,13 @@ async def consolidate_experiences(
                 existing.solution = solution
                 existing.confidence = confidence
                 existing.trigger = trigger
-                store.save(existing)
+                await store.asave(existing)
                 saved += 1
             else:
                 skipped += 1
             continue
 
-        store.save(Experience(
+        await store.asave(Experience(
             type="rule",
             trigger=trigger,
             context=ctx,

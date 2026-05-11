@@ -19,6 +19,7 @@ from ansible_forge.config import Settings, get_settings
 from ansible_forge.knowledge.experience_store import (
     Experience,
     ExperienceStore,
+    abuild_experience_context,
     build_experience_context,
     extract_modules_from_workspace,
 )
@@ -523,7 +524,7 @@ class Orchestrator:
         exp_context = ""
         try:
             ws_modules = extract_modules_from_workspace(state.workspace)
-            exp_context, used_exp_ids = build_experience_context(
+            exp_context, used_exp_ids = await abuild_experience_context(
                 self._experience_store, user_message, ws_modules
             )
             state._used_experience_ids.extend(used_exp_ids)
@@ -632,7 +633,7 @@ class Orchestrator:
                         raw_message=fs_response.raw_message if fs_response else None,
                     )
                     state.status = SessionStatus.COMPLETED
-                    self._score_used_experiences(state, success=False)
+                    await self._score_used_experiences(state, success=False)
                     yielded_terminal = True
                     yield AgentEvent("message", {"content": content, "usage": usage})
                     return
@@ -798,7 +799,7 @@ class Orchestrator:
                     )
                     state.status = SessionStatus.COMPLETED
                     had_errors = state._consecutive_errors > 0 or state._loop_break_count > 0
-                    self._score_used_experiences(state, success=not had_errors)
+                    await self._score_used_experiences(state, success=not had_errors)
                     yielded_terminal = True
                     yield AgentEvent("message", {
                         "content": response.content or "",
@@ -914,7 +915,7 @@ class Orchestrator:
                             )
                         try:
                             clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                            self._capture_experience(tc.name, result, state, clean_args)
+                            await self._capture_experience(tc.name, result, state, clean_args)
                         except Exception:
                             logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
                         tool_result_payload: dict[str, Any] = {
@@ -940,7 +941,7 @@ class Orchestrator:
                                 error_message=result.error or "Unknown error",
                                 remaining_retries=remaining,
                             )
-                            knowledge_hint = self._build_error_knowledge(
+                            knowledge_hint = await self._build_error_knowledge(
                                 state, tc.name, result.error or "Unknown error",
                             )
                             if knowledge_hint:
@@ -1308,7 +1309,7 @@ class Orchestrator:
                         )
                     try:
                         clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                        self._capture_experience(
+                        await self._capture_experience(
                             tc.name, result, state, clean_args, pending_run_id,
                         )
                     except Exception:
@@ -1364,7 +1365,7 @@ class Orchestrator:
                             if not auto_approved:
                                 yield AgentEvent("approval_granted", {"session_id": state.session_id})
                             if state._rejected_output and state._rejected_tool == tc.name:
-                                self._capture_correction(state, tc.name, result)
+                                await self._capture_correction(state, tc.name, result)
                         else:
                             state.status = SessionStatus.REJECTED
                             feedback = approval.feedback or "User rejected the operation."
@@ -1403,7 +1404,7 @@ class Orchestrator:
                             error_message=result.error or "Unknown error",
                             remaining_retries=remaining,
                         )
-                        knowledge_hint = self._build_error_knowledge(
+                        knowledge_hint = await self._build_error_knowledge(
                             state, tc.name, result.error or "Unknown error",
                         )
                         if knowledge_hint:
@@ -1488,7 +1489,7 @@ class Orchestrator:
                 continue
 
           state.status = SessionStatus.MAX_STEPS_REACHED
-          self._score_used_experiences(state, success=False)
+          await self._score_used_experiences(state, success=False)
           yielded_terminal = True
           yield AgentEvent("max_steps", {
               "step_count": state.step_count,
@@ -1572,17 +1573,17 @@ class Orchestrator:
             reasoning_content="".join(reasoning_parts) or None,
         )
 
-    def _capture_experience(
+    async def _capture_experience(
         self, tool_name: str, result: ToolResult, state: SessionState,
         current_args: dict[str, Any] | None = None,
         pending_run_id: int | None = None,
     ) -> None:
         try:
             if tool_name == "execute_playbook" and result.status == ToolStatus.SUCCESS:
-                self._capture_recipe(state, result)
+                await self._capture_recipe(state, result)
             if result.status != ToolStatus.ERROR and tool_name in state._last_error_by_tool:
                 prev_info = state._last_error_by_tool.pop(tool_name)
-                self._capture_error_resolution(
+                await self._capture_error_resolution(
                     state, tool_name, prev_info, result, current_args or {},
                 )
             self._update_infrastructure(tool_name, result, state, pending_run_id)
@@ -1724,7 +1725,7 @@ class Orchestrator:
         except Exception:
             logger.debug("infrastructure_update_failed", tool=tool_name, exc_info=True)
 
-    def _capture_recipe(self, state: SessionState, result: ToolResult) -> None:
+    async def _capture_recipe(self, state: SessionState, result: ToolResult) -> None:
         data = result.data
         playbook_name = data.get("playbook", "unknown")
         events = data.get("events", [])
@@ -1738,7 +1739,7 @@ class Orchestrator:
         user_goal = self._extract_user_goal(state)
         task_names = [e.get("task", "") for e in events if e.get("task")]
 
-        self._experience_store.save(Experience(
+        await self._experience_store.asave(Experience(
             type="recipe",
             trigger=user_goal,
             context={"modules": sorted(modules), "hosts": sorted(hosts), "playbook": playbook_name},
@@ -1749,7 +1750,7 @@ class Orchestrator:
         ))
         logger.info("experience_recipe_captured", playbook=playbook_name, session_id=state.session_id)
 
-    def _capture_error_resolution(
+    async def _capture_error_resolution(
         self, state: SessionState, tool_name: str,
         prev_info: dict[str, Any], result: ToolResult,
         success_args: dict[str, Any],
@@ -1790,7 +1791,7 @@ class Orchestrator:
         else:
             solution = f"Same arguments succeeded on retry (transient failure). Output: {result.output[:300]}"
 
-        self._experience_store.save(Experience(
+        await self._experience_store.asave(Experience(
             type="error_resolution",
             trigger=trigger[:500],
             context={"tool": tool_name, "changed_args": changed_keys[:5]},
@@ -1807,11 +1808,11 @@ class Orchestrator:
             session_id=state.session_id,
         )
 
-    def _capture_correction(
+    async def _capture_correction(
         self, state: SessionState, tool_name: str, result: ToolResult
     ) -> None:
         try:
-            self._experience_store.save(Experience(
+            await self._experience_store.asave(Experience(
                 type="correction",
                 trigger=state._rejected_feedback or "User rejected",
                 context={"tool": tool_name},
@@ -1828,13 +1829,13 @@ class Orchestrator:
             state._rejected_feedback = None
             state._rejected_tool = None
 
-    def _score_used_experiences(self, state: SessionState, success: bool) -> None:
+    async def _score_used_experiences(self, state: SessionState, success: bool) -> None:
         if not state._used_experience_ids:
             return
         unique_ids = list(dict.fromkeys(state._used_experience_ids))
         for exp_id in unique_ids:
             with contextlib.suppress(Exception):
-                self._experience_store.reward(exp_id, success)
+                await self._experience_store.areward(exp_id, success)
         logger.info(
             "experiences_scored",
             session_id=state.session_id,
@@ -1842,19 +1843,19 @@ class Orchestrator:
             success=success,
         )
 
-    def _build_error_knowledge(
+    async def _build_error_knowledge(
         self, state: SessionState, tool_name: str, error_message: str
     ) -> str:
         """Query the experience store for fixes matching this error and return
         a text block to inject alongside ERROR_RECOVERY_PROMPT."""
         try:
             query = f"{tool_name} {error_message}"
-            matches = self._experience_store.search(query, limit=3, min_confidence=0.4)
+            matches = await self._experience_store.asearch(query, limit=3, min_confidence=0.4)
             module_matches: list[Experience] = []
             module_ctx = (state._last_error_by_tool.get(tool_name) or {}).get("args", {})
             module_name = module_ctx.get("module") or module_ctx.get("playbook") or ""
             if module_name:
-                module_matches = self._experience_store.query_by_context(
+                module_matches = await self._experience_store.aquery_by_context(
                     exp_type="error_resolution", module=module_name, limit=2,
                 )
                 module_matches = [e for e in module_matches if e.confidence >= 0.5]
@@ -1870,7 +1871,7 @@ class Orchestrator:
                 return ""
 
             for exp in all_matches:
-                self._experience_store.record_use(exp.id)
+                await self._experience_store.arecord_use(exp.id)
                 state._used_experience_ids.append(exp.id)
 
             lines = []
@@ -1913,7 +1914,7 @@ class Orchestrator:
                 context_parts.append(f"\nWorkspace:\n{ws_context[:500]}")
             try:
                 ws_modules = extract_modules_from_workspace(state.workspace)
-                exp_text, _ = build_experience_context(
+                exp_text, _ = await abuild_experience_context(
                     self._experience_store, user_message, ws_modules,
                     record_usage=False,
                 )

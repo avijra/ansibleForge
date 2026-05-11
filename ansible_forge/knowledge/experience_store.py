@@ -535,6 +535,49 @@ class ExperienceStore:
             groups.setdefault(exp.type, []).append(exp)
         return {k: v for k, v in groups.items() if len(v) >= min_group_size}
 
+    # ------------------------------------------------------------------
+    # Async wrappers — use from FastAPI handlers / orchestrator
+    # ------------------------------------------------------------------
+
+    async def asave(self, exp: Experience) -> None:
+        await self._offload(self.save, exp)
+
+    async def arecord_use(self, experience_id: str) -> None:
+        await self._offload(self.record_use, experience_id)
+
+    async def areward(self, experience_id: str, success: bool) -> None:
+        await self._offload(self.reward, experience_id, success)
+
+    async def asearch(self, query: str, limit: int = 5, min_confidence: float = 0.3) -> list[Experience]:
+        return await self._offload(self.search, query, limit, min_confidence)
+
+    async def asearch_by_type(self, query: str, exp_type: str, limit: int = 5, min_confidence: float = 0.3) -> list[Experience]:
+        return await self._offload(self.search_by_type, query, exp_type, limit, min_confidence)
+
+    async def aquery_by_type(self, exp_type: str, limit: int = 10) -> list[Experience]:
+        return await self._offload(self.query_by_type, exp_type, limit)
+
+    async def aquery_by_context(self, exp_type: str | None = None, module: str | None = None, limit: int = 5) -> list[Experience]:
+        return await self._offload(self.query_by_context, exp_type, module, limit)
+
+    async def aget_rules(self, limit: int = 5) -> list[Experience]:
+        return await self._offload(self.get_rules, limit)
+
+    async def adeduplicate(self, threshold: float = 0.4) -> int:
+        return await self._offload(self.deduplicate, threshold)
+
+    async def aprune_subsumed(self, threshold: float = 0.35) -> int:
+        return await self._offload(self.prune_subsumed, threshold)
+
+    async def aprune_stale(self, max_age_days: int = 30, min_confidence: float = 0.3) -> int:
+        return await self._offload(self.prune_stale, max_age_days, min_confidence)
+
+    async def acount(self, exp_type: str | None = None) -> int:
+        return await self._offload(self.count, exp_type)
+
+    async def aget_all_by_type_grouped(self, min_group_size: int = 3) -> dict[str, list[Experience]]:
+        return await self._offload(self.get_all_by_type_grouped, min_group_size)
+
     @staticmethod
     def _row_to_experience(row: tuple[Any, ...]) -> Experience:
         ctx = row[3]
@@ -601,12 +644,7 @@ def build_experience_context(
     *,
     record_usage: bool = True,
 ) -> tuple[str, list[str]]:
-    """Build experience context for the agent prompt.
-
-    Returns (context_text, list_of_experience_ids_used).
-    Set record_usage=False when calling from plan generation to avoid
-    double-counting usage.
-    """
+    """Sync version — only use from non-async contexts. Prefer abuild_experience_context."""
     sections: list[str] = []
     used_ids: list[str] = []
 
@@ -659,6 +697,79 @@ def build_experience_context(
                 store.record_use(r.id)
             used_ids.append(r.id)
 
+    return _finalize_experience_text(store, user_message, sections, used_ids)
+
+
+async def abuild_experience_context(
+    store: ExperienceStore,
+    user_message: str,
+    modules: set[str] | None = None,
+    *,
+    record_usage: bool = True,
+) -> tuple[str, list[str]]:
+    """Async version — use from FastAPI handlers and the orchestrator."""
+    sections: list[str] = []
+    used_ids: list[str] = []
+
+    relevant = await store.asearch(user_message, limit=5, min_confidence=0.35)
+    if relevant:
+        lines = [_format_experience(e) for e in relevant]
+        sections.append("Relevant past experiences:\n" + "\n".join(lines))
+        for exp in relevant:
+            if record_usage:
+                await store.arecord_use(exp.id)
+            used_ids.append(exp.id)
+
+    if modules:
+        for mod in sorted(modules):
+            errors = await store.aquery_by_context(exp_type="error_resolution", module=mod, limit=3)
+            high_conf = [e for e in errors if e.confidence >= 0.5]
+            if high_conf:
+                lines = [f"  - {e.trigger[:150]} -> {e.solution[:150]}" for e in high_conf]
+                sections.append(f"Known issues with `{mod}`:\n" + "\n".join(lines))
+                for e in high_conf:
+                    if record_usage:
+                        await store.arecord_use(e.id)
+                    used_ids.append(e.id)
+
+    recipes = await store.asearch_by_type(user_message, exp_type="recipe", limit=3)
+    if recipes:
+        lines = []
+        for r in recipes:
+            ctx = r.context or {}
+            host_list = ", ".join(ctx.get("hosts", [])[:3])
+            mod_list = ", ".join(ctx.get("modules", [])[:5])
+            detail = r.solution[:200]
+            if host_list:
+                detail += f" (hosts: {host_list})"
+            if mod_list:
+                detail += f" (modules: {mod_list})"
+            lines.append(f"  - {detail}")
+        sections.append("Successful patterns from previous runs:\n" + "\n".join(lines))
+        for r in recipes:
+            if record_usage:
+                await store.arecord_use(r.id)
+            used_ids.append(r.id)
+
+    rules = await store.aget_rules(limit=5)
+    if rules:
+        lines = [f"  - {r.solution}" for r in rules]
+        sections.append("Learned rules:\n" + "\n".join(lines))
+        for r in rules:
+            if record_usage:
+                await store.arecord_use(r.id)
+            used_ids.append(r.id)
+
+    total = await store.acount() if not sections else 0
+    return _finalize_experience_text_with_count(user_message, sections, used_ids, total)
+
+
+def _finalize_experience_text(
+    store: ExperienceStore,
+    user_message: str,
+    sections: list[str],
+    used_ids: list[str],
+) -> tuple[str, list[str]]:
     if sections:
         logger.info(
             "experience_context_built",
@@ -671,6 +782,40 @@ def build_experience_context(
             "experience_context_empty",
             search_keywords=keywords,
             total_experiences=store.count(),
+        )
+
+    if not sections:
+        return "", []
+
+    unique_ids = list(dict.fromkeys(used_ids))
+    full_text = "---\nExperience context:\n" + "\n\n".join(sections) + "\n"
+
+    char_budget = int(_TOKEN_BUDGET * _CHARS_PER_TOKEN)
+    if len(full_text) > char_budget:
+        truncated = full_text[:char_budget].rsplit("\n", 1)[0]
+        full_text = truncated + "\n  [... more experiences available — ask if needed]\n"
+
+    return full_text, unique_ids
+
+
+def _finalize_experience_text_with_count(
+    user_message: str,
+    sections: list[str],
+    used_ids: list[str],
+    total: int,
+) -> tuple[str, list[str]]:
+    if sections:
+        logger.info(
+            "experience_context_built",
+            section_count=len(sections),
+            experience_ids_used=len(used_ids),
+        )
+    else:
+        keywords = _extract_search_keywords(user_message, max_keywords=6)
+        logger.info(
+            "experience_context_empty",
+            search_keywords=keywords,
+            total_experiences=total,
         )
 
     if not sections:

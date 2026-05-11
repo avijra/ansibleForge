@@ -93,7 +93,7 @@ async def _periodic_consolidation(interval: int = 3600) -> None:
             from ansible_forge.knowledge.consolidation import consolidate_experiences
 
             orch = get_orchestrator()
-            pruned = orch._experience_store.prune_stale(max_age_days=30, min_confidence=0.3)
+            pruned = await orch._experience_store.aprune_stale(max_age_days=30, min_confidence=0.3)
             if pruned:
                 logger.info("periodic_prune_done", pruned=pruned)
             count = await consolidate_experiences(orch._experience_store, orch._llm)

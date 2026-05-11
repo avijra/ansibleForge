@@ -224,11 +224,11 @@ async def reflect_on_session(
         if existing:
             if existing.confidence < 0.8:
                 existing.confidence = min(existing.confidence + 0.05, 0.8)
-                store.save(existing)
+                await store.asave(existing)
             skipped += 1
             continue
 
-        store.save(Experience(
+        await store.asave(Experience(
             type="reflection",
             trigger=trigger,
             context=ctx,

@@ -46,7 +46,7 @@ async def _run_reflection(session_id: str, orch: Orchestrator, store: SessionSto
     try:
         from ansible_forge.knowledge.reflection import reflect_on_session
 
-        events = store.get_events(session_id)
+        events = await store.aget_events(session_id)
         count = await reflect_on_session(
             session_id, events, orch._llm, orch._experience_store
         )
@@ -58,18 +58,18 @@ async def _run_reflection(session_id: str, orch: Orchestrator, store: SessionSto
     try:
         from ansible_forge.knowledge.consolidation import consolidate_experiences
 
-        total = orch._experience_store.count()
-        rule_count = orch._experience_store.count("rule")
+        total = await orch._experience_store.acount()
+        rule_count = await orch._experience_store.acount("rule")
         if total >= 10 and total // 15 > rule_count:
             rules_created = await consolidate_experiences(
                 orch._experience_store, orch._llm
             )
             if rules_created:
                 logger.info("auto_consolidation_complete", rules_created=rules_created)
-                pruned = orch._experience_store.prune_subsumed()
+                pruned = await orch._experience_store.aprune_subsumed()
                 if pruned:
                     logger.info("auto_prune_subsumed", removed=pruned)
-        deduped = orch._experience_store.deduplicate()
+        deduped = await orch._experience_store.adeduplicate()
         if deduped:
             logger.info("auto_dedup_complete", removed=deduped)
     except Exception:
