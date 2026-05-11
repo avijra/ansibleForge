@@ -113,7 +113,13 @@ class Settings(BaseSettings):
     port: int = 8420
     log_level: str = "info"
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:5173", "http://localhost:8420"]
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://localhost:8420",
+            "http://127.0.0.1:8420",
+            "tauri://localhost",
+            "https://tauri.localhost",
+        ]
     )
 
 
