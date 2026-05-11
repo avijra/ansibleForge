@@ -183,8 +183,8 @@ async def chat(
         session_id = state.session_id
 
     store = _get_session_store()
-    store.save_session(session_id, status="active", project_path=request.project_path)
-    store.save_event(session_id, "user_message", {"content": request.message})
+    await store.asave_session(session_id, status="active", project_path=request.project_path)
+    await store.asave_event(session_id, "user_message", {"content": request.message})
 
     bus = EventBusRegistry.get_instance().get_or_create(session_id)
     bus_gen = bus.mark_running()

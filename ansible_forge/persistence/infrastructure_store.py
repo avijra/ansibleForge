@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +87,9 @@ CREATE TABLE IF NOT EXISTS inventory_sources (
 """
 
 
+_infra_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infra-db")
+
+
 class InfrastructureStore:
     """Persistent store for infrastructure state — hosts, facts, roles, and run history."""
 
@@ -95,6 +101,13 @@ class InfrastructureStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._lock = threading.Lock()
+
+    async def _offload(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a blocking DB function off the event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _infra_executor, partial(fn, *args, **kwargs)
+        )
         self._init_db()
 
     @classmethod

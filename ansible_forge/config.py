@@ -138,6 +138,33 @@ _settings: Settings | None = None
 _runtime_llm = RuntimeLLMConfig()
 _lock = threading.Lock()
 
+_RUNTIME_LLM_PATH = Path.home() / ".ansibleforge" / "llm_settings.json"
+
+
+def _load_persisted_llm() -> RuntimeLLMConfig:
+    """Load persisted LLM settings from disk if available."""
+    try:
+        if _RUNTIME_LLM_PATH.exists():
+            import json
+            data = json.loads(_RUNTIME_LLM_PATH.read_text(encoding="utf-8"))
+            return RuntimeLLMConfig(**data)
+    except Exception:
+        pass
+    return RuntimeLLMConfig()
+
+
+def _persist_llm(config: RuntimeLLMConfig) -> None:
+    """Save LLM settings to disk so they survive restarts."""
+    try:
+        import json
+        _RUNTIME_LLM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RUNTIME_LLM_PATH.write_text(
+            json.dumps(config.model_dump(), indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
 
 def get_settings() -> Settings:
     global _settings
@@ -156,6 +183,7 @@ def update_runtime_llm(patch: dict[str, Any]) -> RuntimeLLMConfig:
         current = _runtime_llm.model_dump()
         current.update({k: v for k, v in patch.items() if v is not None})
         _runtime_llm = RuntimeLLMConfig(**current)
+        _persist_llm(_runtime_llm)
     return _runtime_llm
 
 
@@ -163,6 +191,16 @@ def clear_runtime_llm() -> None:
     global _runtime_llm
     with _lock:
         _runtime_llm = RuntimeLLMConfig()
+        _persist_llm(_runtime_llm)
+
+
+def _init_runtime_llm() -> None:
+    """Called at import time to restore persisted LLM settings."""
+    global _runtime_llm
+    _runtime_llm = _load_persisted_llm()
+
+
+_init_runtime_llm()
 
 
 def effective_llm_provider() -> str:

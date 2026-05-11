@@ -29,8 +29,8 @@ async def list_sessions(
 ) -> dict[str, Any]:
     store = _get_store()
     if project_path:
-        return {"sessions": store.list_by_project_path(project_path)}
-    return {"sessions": store.list_sessions(limit=limit)}
+        return {"sessions": await store.alist_by_project_path(project_path)}
+    return {"sessions": await store.alist_sessions(limit=limit)}
 
 
 @router.get("/sessions/{session_id}/events")
@@ -39,7 +39,7 @@ async def get_session_events(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     store = _get_store()
-    events = store.get_events(session_id)
+    events = await store.aget_events(session_id)
     return {"session_id": session_id, "events": events}
 
 
@@ -49,7 +49,7 @@ async def reset_session(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     store = _get_store()
-    if not store.reset_session(session_id):
+    if not await store.areset_session(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
 
     from ansible_forge.api.endpoints.chat import get_orchestrator
@@ -92,7 +92,7 @@ async def delete_session(
     _: Any = Depends(verify_api_key),
 ) -> dict[str, Any]:
     store = _get_store()
-    deleted = store.delete_session(session_id)
+    deleted = await store.adelete_session(session_id)
 
     from ansible_forge.agent.event_bus import EventBusRegistry
     from ansible_forge.api.endpoints.chat import get_orchestrator

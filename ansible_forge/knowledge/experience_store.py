@@ -7,12 +7,15 @@ via full-text search for future decisions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -161,6 +164,9 @@ class Experience:
         }
 
 
+_exp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="exp-db")
+
+
 class ExperienceStore:
     """SQLite + FTS5 backed experience store for self-learning."""
 
@@ -171,6 +177,13 @@ class ExperienceStore:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._init_db()
+
+    async def _offload(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a blocking DB function off the event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _exp_executor, partial(fn, *args, **kwargs)
+        )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path))
