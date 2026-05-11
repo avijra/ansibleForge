@@ -113,6 +113,21 @@ async def _periodic_consolidation(interval: int = 3600) -> None:
         await asyncio.sleep(interval)
 
 
+async def _startup_self_check() -> None:
+    """Run self-check on first launch after install/update."""
+    from ansible_forge.self_check import needs_validation, run_self_check
+
+    if needs_validation():
+        logger.info("running_startup_self_check")
+        report = await run_self_check()
+        if not report.critical_passed:
+            failed = [c.name for c in report.checks if not c.passed and c.critical]
+            logger.error("startup_self_check_critical_failure", failed=failed)
+        elif not report.all_passed:
+            non_critical = [c.name for c in report.checks if not c.passed]
+            logger.warning("startup_self_check_warnings", warnings=non_critical)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -125,9 +140,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     consolidation_task = asyncio.create_task(_periodic_consolidation())
     watchdog_task = asyncio.create_task(_parent_watchdog())
+    self_check_task = asyncio.create_task(_startup_self_check())
     try:
         yield
     finally:
+        self_check_task.cancel()
         watchdog_task.cancel()
         consolidation_task.cancel()
         logger.info("ansibleforge_shutdown")

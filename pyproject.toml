@@ -69,6 +69,9 @@ known-first-party = ["ansible_forge"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests that exercise real subprocess calls and network (may be slow)",
+]
 
 [tool.mypy]
 python_version = "3.11"

@@ -19,6 +19,7 @@ from ansible_forge.api.endpoints import (
     plugins,
     rules,
     secrets,
+    self_check,
     sessions,
     settings,
     terminal,
@@ -28,6 +29,7 @@ from ansible_forge.api.endpoints import (
 api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(health.router, tags=["health"])
+api_router.include_router(self_check.router, tags=["self-check"])
 api_router.include_router(chat.router, tags=["chat"])
 api_router.include_router(secrets.router, tags=["secrets"])
 api_router.include_router(execute.router, tags=["execute"])

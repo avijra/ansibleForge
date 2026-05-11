@@ -98,7 +98,11 @@ jobs:
         run: mypy ansible_forge/ --ignore-missing-imports
 
       - name: Backend tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --ignore=tests/integration
+
+      - name: Integration tests
+        run: pytest tests/integration/ -v --tb=short -m integration
+        timeout-minutes: 3
 
       - name: Frontend install
         working-directory: ui
@@ -115,6 +119,22 @@ jobs:
       - name: Frontend build
         working-directory: ui
         run: npm run build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust check and lint
+        working-directory: src-tauri
+        run: |
+          cargo check
+          cargo clippy -- -D warnings
 
   # ---------------------------------------------------------------------------
   # STAGE 2: build-mac-arm64 (tag only)
@@ -158,6 +178,10 @@ jobs:
 
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
+
+      - name: Smoke test packaged backend
+        run: bash scripts/smoke_test.sh
+        timeout-minutes: 3
 
       - name: Copy backend to Tauri resources
         run: |
@@ -245,6 +269,10 @@ jobs:
       - name: Bundle backend with PyInstaller
         run: pyinstaller --clean --noconfirm ansibleforge.spec
 
+      - name: Smoke test packaged backend
+        run: bash scripts/smoke_test.sh
+        timeout-minutes: 3
+
       - name: Copy backend to Tauri resources
         run: |
           mkdir -p src-tauri/resources/backend
@@ -331,6 +359,41 @@ jobs:
           set PYTHONUTF8=1
           set PYTHONIOENCODING=utf-8
           pyinstaller --clean --noconfirm ansibleforge.spec
+
+      - name: Smoke test packaged backend (Windows)
+        shell: bash
+        run: |
+          BACKEND="./dist/ansibleforge-backend/ansibleforge-backend.exe"
+          if [ ! -f "$BACKEND" ]; then
+            echo "FAIL: Backend binary not found"; exit 1
+          fi
+          echo "=== Starting backend ==="
+          ANSIBLEFORGE_PORT=18420 ANSIBLEFORGE_HOST=127.0.0.1 "$BACKEND" &
+          PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:18420/api/v1/health" > /dev/null 2>&1; then
+              echo "=== Backend healthy after ${i}s ==="
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "FAIL: Backend never became healthy"
+              kill $PID 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+          HEALTH=$(curl -sf "http://127.0.0.1:18420/api/v1/health")
+          echo "Health: $HEALTH"
+          echo "=== Checking CA bundle ==="
+          CA="./dist/ansibleforge-backend/_internal/certifi/cacert.pem"
+          if [ -f "$CA" ]; then
+            echo "  OK: cacert.pem present"
+          else
+            echo "  WARN: cacert.pem not at expected path"
+          fi
+          kill $PID 2>/dev/null || true
+          echo "=== Windows smoke test passed ==="
+        timeout-minutes: 3
 
       - name: Copy backend to Tauri resources
         shell: bash
