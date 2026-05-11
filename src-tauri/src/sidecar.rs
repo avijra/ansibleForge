@@ -126,16 +126,48 @@ pub fn start_backend(app: &AppHandle) {
 
     log::info!("Starting backend: {} {:?} (cwd: {})", cmd, args, cwd);
 
-    match Command::new(&cmd)
+    let mut command = Command::new(&cmd);
+    command
         .args(&args)
         .current_dir(&cwd)
         .env("ANSIBLEFORGE_HOST", "127.0.0.1")
         .env("ANSIBLEFORGE_PORT", PORT.to_string())
-        .env("ANSIBLEFORGE_PARENT_PID", pid.to_string())
+        .env("ANSIBLEFORGE_PARENT_PID", pid.to_string());
+
+    // Ensure bundled Python/OpenSSL can find CA certificates for HTTPS
+    // (PyInstaller binaries lose access to build-machine cert paths)
+    let backend_dir = std::path::Path::new(&cwd);
+    let bundled_ca = backend_dir
+        .join("_internal")
+        .join("certifi")
+        .join("cacert.pem");
+    if bundled_ca.exists() {
+        let ca_str = bundled_ca.to_string_lossy().to_string();
+        command.env("SSL_CERT_FILE", &ca_str);
+        command.env("REQUESTS_CA_BUNDLE", &ca_str);
+        log::info!("Setting SSL_CERT_FILE={}", ca_str);
+    } else {
+        // Fallback to system CA bundles
+        for path in &[
+            "/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        ] {
+            if std::path::Path::new(path).exists() {
+                command.env("SSL_CERT_FILE", path);
+                command.env("REQUESTS_CA_BUNDLE", path);
+                log::info!("Setting SSL_CERT_FILE={} (system fallback)", path);
+                break;
+            }
+        }
+    }
+
+    command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+
+    match command.spawn()
     {
         Ok(child) => {
             let state = app.state::<BackendProcess>();

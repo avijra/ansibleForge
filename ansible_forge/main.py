@@ -46,21 +46,30 @@ def _setup_frozen_env() -> None:
 
 
 def _setup_ssl_certs(bundle_dir: str) -> None:
-    """Point Python/urllib/requests at the bundled CA certificate bundle.
+    """Point Python/urllib/requests at a valid CA certificate bundle.
 
     PyInstaller packages certifi's cacert.pem but the frozen Python's
     default SSL paths point to the build machine's filesystem which
     doesn't exist on the user's machine, causing SSL_CERTIFICATE_VERIFY_FAILED
-    for any HTTPS call (ansible-galaxy, litellm, httpx, etc.)."""
+    for any HTTPS call (ansible-galaxy, litellm, httpx, etc.).
+
+    We unconditionally set SSL_CERT_FILE so child processes (ansible-galaxy,
+    ansible-playbook, etc.) inherit it — they are separate frozen binaries
+    that cannot resolve certs on their own."""
     ca_candidates = [
         os.path.join(bundle_dir, "_internal", "certifi", "cacert.pem"),
         os.path.join(bundle_dir, "certifi", "cacert.pem"),
+        "/etc/ssl/cert.pem",  # macOS system CA bundle
+        "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",  # RHEL/Fedora
     ]
     for ca in ca_candidates:
         if os.path.isfile(ca):
-            os.environ.setdefault("SSL_CERT_FILE", ca)
-            os.environ.setdefault("REQUESTS_CA_BUNDLE", ca)
+            os.environ["SSL_CERT_FILE"] = ca
+            os.environ["REQUESTS_CA_BUNDLE"] = ca
+            logger.info("ssl_certs_configured", ca_path=ca)
             return
+    logger.warning("ssl_certs_not_found", candidates=ca_candidates)
 
 
 _setup_frozen_env()

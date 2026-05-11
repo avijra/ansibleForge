@@ -269,17 +269,25 @@ class GalaxyManager(BaseTool):
 
     @staticmethod
     async def _run_galaxy(*args: str, timeout: int = 300) -> tuple[int, str, str]:
+        import os
+
+        env = os.environ.copy()
+        ssl_cert = env.get("SSL_CERT_FILE", "")
+        if ssl_cert:
+            env.setdefault("REQUESTS_CA_BUNDLE", ssl_cert)
+
         proc = await asyncio.create_subprocess_exec(
             "ansible-galaxy",
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             try:
                 proc.kill()
                 await proc.wait()
