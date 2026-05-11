@@ -351,20 +351,21 @@ jobs:
       - name: Collect artifacts
         shell: bash
         run: |
-          mkdir -p /tmp/release-windows
-          find src-tauri/target -name '*.msi' -exec cp {} /tmp/release-windows/ \;
-          find src-tauri/target -name '*.msi.zip' -exec cp {} /tmp/release-windows/ \;
-          find src-tauri/target -name '*.msi.zip.sig' -exec cp {} /tmp/release-windows/ \;
-          find src-tauri/target -name '*.exe' -path '*/nsis/*' -exec cp {} /tmp/release-windows/ \;
-          find src-tauri/target -name '*-setup.nsis.zip' -exec cp {} /tmp/release-windows/ \;
-          find src-tauri/target -name '*-setup.nsis.zip.sig' -exec cp {} /tmp/release-windows/ \;
-          ls -lh /tmp/release-windows/
+          OUTDIR="${{ runner.temp }}/release-windows"
+          mkdir -p "$OUTDIR"
+          find src-tauri/target -name '*.msi' -exec cp {} "$OUTDIR" \;
+          find src-tauri/target -name '*.msi.zip' -exec cp {} "$OUTDIR" \;
+          find src-tauri/target -name '*.msi.zip.sig' -exec cp {} "$OUTDIR" \;
+          find src-tauri/target -name '*.exe' -path '*/nsis/*' -exec cp {} "$OUTDIR" \;
+          find src-tauri/target -name '*-setup.nsis.zip' -exec cp {} "$OUTDIR" \;
+          find src-tauri/target -name '*-setup.nsis.zip.sig' -exec cp {} "$OUTDIR" \;
+          ls -lh "$OUTDIR"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: /tmp/release-windows/
+          path: ${{ runner.temp }}/release-windows/
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
