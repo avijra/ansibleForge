@@ -180,7 +180,7 @@ async def _check_companion_binaries() -> CheckResult:
             message=f"Required binaries not found on PATH: {', '.join(missing_required)}",
         )
 
-    msg = f"All required binaries found on PATH"
+    msg = "All required binaries found on PATH"
     if missing_optional:
         msg += f" (optional missing: {', '.join(missing_optional)})"
     return CheckResult(
