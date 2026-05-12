@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -44,12 +45,12 @@ class RefreshResult(BaseModel):
 
 
 @router.get("/")
-async def list_sources() -> list[dict[str, Any]]:
+def list_sources() -> list[dict[str, Any]]:
     return _store().list_sources()
 
 
 @router.post("/")
-async def create_source(body: SourceCreate) -> dict[str, Any]:
+def create_source(body: SourceCreate) -> dict[str, Any]:
     config_yaml = body.config_yaml
     if not config_yaml:
         tmpl = get_template(body.plugin_type)
@@ -77,7 +78,7 @@ async def create_source(body: SourceCreate) -> dict[str, Any]:
 
 
 @router.get("/{source_id}")
-async def get_source(source_id: str) -> dict[str, Any]:
+def get_source(source_id: str) -> dict[str, Any]:
     source = _store().get_source(source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -85,7 +86,7 @@ async def get_source(source_id: str) -> dict[str, Any]:
 
 
 @router.patch("/{source_id}")
-async def update_source(source_id: str, body: SourceUpdate) -> dict[str, Any]:
+def update_source(source_id: str, body: SourceUpdate) -> dict[str, Any]:
     store = _store()
     existing = store.get_source(source_id)
     if not existing:
@@ -102,7 +103,7 @@ async def update_source(source_id: str, body: SourceUpdate) -> dict[str, Any]:
 
 
 @router.delete("/{source_id}")
-async def delete_source(source_id: str, remove_hosts: bool = False) -> dict[str, str]:
+def delete_source(source_id: str, remove_hosts: bool = False) -> dict[str, str]:
     if not _store().delete_source(source_id, remove_hosts=remove_hosts):
         raise HTTPException(status_code=404, detail="Source not found")
     return {"status": "deleted"}
@@ -110,8 +111,9 @@ async def delete_source(source_id: str, remove_hosts: bool = False) -> dict[str,
 
 @router.post("/{source_id}/refresh")
 async def refresh_source(source_id: str) -> RefreshResult:
+    loop = asyncio.get_running_loop()
     store = _store()
-    source = store.get_source(source_id)
+    source = await loop.run_in_executor(None, store.get_source, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
@@ -133,12 +135,12 @@ async def refresh_source(source_id: str) -> RefreshResult:
 
 
 @router.get("/templates/list")
-async def get_templates() -> list[dict[str, Any]]:
+def get_templates() -> list[dict[str, Any]]:
     return list_templates()
 
 
 @router.get("/templates/{plugin_type:path}")
-async def get_template_detail(plugin_type: str) -> dict[str, Any]:
+def get_template_detail(plugin_type: str) -> dict[str, Any]:
     tmpl = get_template(plugin_type)
     if not tmpl:
         raise HTTPException(status_code=404, detail=f"No template for '{plugin_type}'")

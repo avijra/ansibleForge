@@ -1122,12 +1122,16 @@ class Orchestrator:
                             elif tc.name == "run_adhoc":
                                 _args = tc.arguments.get("module_args", "")
                                 _run_label = f"adhoc: {(_args[:80] if _args else tc.arguments.get('module', 'shell'))}"
-                            pending_run_id = _store.record_run(
-                                session_id=state.session_id,
-                                playbook=_run_label,
-                                mode=tc.arguments.get("mode", tc.arguments.get("action", "run")),
-                                hosts=[],
-                                status="running",
+                            _loop = asyncio.get_running_loop()
+                            pending_run_id = await _loop.run_in_executor(
+                                None,
+                                lambda: _store.record_run(
+                                    session_id=state.session_id,
+                                    playbook=_run_label,
+                                    mode=tc.arguments.get("mode", tc.arguments.get("action", "run")),
+                                    hosts=[],
+                                    status="running",
+                                ),
                             )
                         except Exception:
                             logger.debug("pending_run_record_failed", tool=tc.name, exc_info=True)
@@ -1585,11 +1589,21 @@ class Orchestrator:
                 await self._capture_error_resolution(
                     state, tool_name, prev_info, result, current_args or {},
                 )
-            self._update_infrastructure(tool_name, result, state, pending_run_id)
+            await self._update_infrastructure(tool_name, result, state, pending_run_id)
         except Exception:
             logger.debug("experience_capture_failed", tool=tool_name, exc_info=True)
 
-    def _update_infrastructure(
+    async def _update_infrastructure(
+        self, tool_name: str, result: ToolResult, state: SessionState,
+        pending_run_id: int | None = None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._update_infrastructure_sync,
+            tool_name, result, state, pending_run_id,
+        )
+
+    def _update_infrastructure_sync(
         self, tool_name: str, result: ToolResult, state: SessionState,
         pending_run_id: int | None = None,
     ) -> None:

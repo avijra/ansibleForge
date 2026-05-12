@@ -34,12 +34,12 @@ class HostUpdate(BaseModel):
 
 
 @router.get("/hosts")
-async def list_hosts(group: str | None = None) -> list[dict[str, Any]]:
+def list_hosts(group: str | None = None) -> list[dict[str, Any]]:
     return _store().list_hosts(group=group)
 
 
 @router.post("/hosts")
-async def create_host(body: HostCreate) -> dict[str, Any]:
+def create_host(body: HostCreate) -> dict[str, Any]:
     host_id = _store().upsert_host(
         hostname=body.hostname,
         ip_address=body.ip_address,
@@ -55,7 +55,7 @@ async def create_host(body: HostCreate) -> dict[str, Any]:
 
 
 @router.get("/hosts/{host_id}")
-async def get_host(host_id: str) -> dict[str, Any]:
+def get_host(host_id: str) -> dict[str, Any]:
     host = _store().get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -63,7 +63,7 @@ async def get_host(host_id: str) -> dict[str, Any]:
 
 
 @router.patch("/hosts/{host_id}")
-async def update_host(host_id: str, body: HostUpdate) -> dict[str, Any]:
+def update_host(host_id: str, body: HostUpdate) -> dict[str, Any]:
     existing = _store().get_host(host_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -80,14 +80,14 @@ async def update_host(host_id: str, body: HostUpdate) -> dict[str, Any]:
 
 
 @router.delete("/hosts/{host_id}")
-async def delete_host(host_id: str) -> dict[str, str]:
+def delete_host(host_id: str) -> dict[str, str]:
     if not _store().delete_host(host_id):
         raise HTTPException(status_code=404, detail="Host not found")
     return {"status": "deleted"}
 
 
 @router.get("/hosts/{host_id}/facts")
-async def get_host_facts(host_id: str) -> dict[str, Any]:
+def get_host_facts(host_id: str) -> dict[str, Any]:
     facts = _store().get_facts(host_id)
     if not facts:
         raise HTTPException(status_code=404, detail="No facts for this host")
@@ -95,28 +95,28 @@ async def get_host_facts(host_id: str) -> dict[str, Any]:
 
 
 @router.get("/hosts/{host_id}/roles")
-async def get_host_roles(host_id: str) -> list[dict[str, Any]]:
+def get_host_roles(host_id: str) -> list[dict[str, Any]]:
     return _store().get_applied_roles(host_id)
 
 
 @router.get("/runs")
-async def list_runs(limit: int = 50, session_id: str | None = None) -> list[dict[str, Any]]:
+def list_runs(limit: int = 50, session_id: str | None = None) -> list[dict[str, Any]]:
     return _store().list_runs(limit=limit, session_id=session_id)
 
 
 @router.get("/drift")
-async def list_drift(host_id: str | None = None) -> list[dict[str, Any]]:
+def list_drift(host_id: str | None = None) -> list[dict[str, Any]]:
     return _store().get_unresolved_drift(host_id=host_id)
 
 
 @router.post("/drift/{drift_id}/resolve")
-async def resolve_drift(drift_id: int) -> dict[str, str]:
+def resolve_drift(drift_id: int) -> dict[str, str]:
     _store().resolve_drift(drift_id)
     return {"status": "resolved"}
 
 
 @router.get("/stats")
-async def infrastructure_stats() -> dict[str, Any]:
+def infrastructure_stats() -> dict[str, Any]:
     return _store().get_stats()
 
 
@@ -126,7 +126,7 @@ class InventoryImport(BaseModel):
 
 
 @router.post("/import")
-async def import_inventory(body: InventoryImport) -> dict[str, Any]:
+def import_inventory(body: InventoryImport) -> dict[str, Any]:
     import yaml as pyyaml
 
     try:
