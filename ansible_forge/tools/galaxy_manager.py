@@ -287,7 +287,7 @@ class GalaxyManager(BaseTool):
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             try:
                 proc.kill()
                 await proc.wait()

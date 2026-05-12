@@ -15,7 +15,6 @@ import asyncio
 import os
 import shutil
 import ssl
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -221,7 +220,7 @@ async def _check_galaxy_connectivity() -> CheckResult:
             message="ansible-galaxy binary not found",
             critical=False,
         )
-    except (TimeoutError, asyncio.TimeoutError):
+    except TimeoutError:
         return CheckResult(
             name="galaxy_connectivity",
             passed=False,
