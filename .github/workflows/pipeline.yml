@@ -372,16 +372,29 @@ jobs:
           if [ ! -f "$BACKEND" ]; then
             echo "FAIL: Backend binary not found"; exit 1
           fi
+          echo "=== Validating binary exists ==="
+          ls -lh "$BACKEND"
+          echo "=== Checking CA bundle ==="
+          CA="./dist/ansibleforge-backend/_internal/certifi/cacert.pem"
+          if [ -f "$CA" ]; then
+            echo "  OK: cacert.pem present ($(wc -c < "$CA" | tr -d ' ') bytes)"
+          else
+            echo "  WARN: cacert.pem not at expected path"
+          fi
           echo "=== Starting backend ==="
           ANSIBLEFORGE_PORT=18420 ANSIBLEFORGE_HOST=127.0.0.1 "$BACKEND" &
           PID=$!
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if curl -sf "http://127.0.0.1:18420/api/v1/health" > /dev/null 2>&1; then
               echo "=== Backend healthy after ${i}s ==="
               break
             fi
-            if [ "$i" -eq 30 ]; then
-              echo "FAIL: Backend never became healthy"
+            if ! kill -0 $PID 2>/dev/null; then
+              echo "FAIL: Backend process died during startup"
+              exit 1
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "FAIL: Backend never became healthy within 60s"
               kill $PID 2>/dev/null || true
               exit 1
             fi
@@ -389,13 +402,6 @@ jobs:
           done
           HEALTH=$(curl -sf "http://127.0.0.1:18420/api/v1/health")
           echo "Health: $HEALTH"
-          echo "=== Checking CA bundle ==="
-          CA="./dist/ansibleforge-backend/_internal/certifi/cacert.pem"
-          if [ -f "$CA" ]; then
-            echo "  OK: cacert.pem present"
-          else
-            echo "  WARN: cacert.pem not at expected path"
-          fi
           kill $PID 2>/dev/null || true
           echo "=== Windows smoke test passed ==="
         timeout-minutes: 3
