@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import uuid
+from functools import partial
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -1123,12 +1124,15 @@ class Orchestrator:
                                 _args = tc.arguments.get("module_args", "")
                                 _run_label = f"adhoc: {(_args[:80] if _args else tc.arguments.get('module', 'shell'))}"
                             _loop = asyncio.get_running_loop()
+                            _run_mode = tc.arguments.get("mode", tc.arguments.get("action", "run"))
+                            _sid = state.session_id
                             pending_run_id = await _loop.run_in_executor(
                                 None,
-                                lambda: _store.record_run(
-                                    session_id=state.session_id,
+                                partial(
+                                    _store.record_run,
+                                    session_id=_sid,
                                     playbook=_run_label,
-                                    mode=tc.arguments.get("mode", tc.arguments.get("action", "run")),
+                                    mode=_run_mode,
                                     hosts=[],
                                     status="running",
                                 ),
