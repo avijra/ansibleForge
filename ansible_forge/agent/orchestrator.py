@@ -6,8 +6,8 @@ import asyncio
 import contextlib
 import json
 import uuid
-from functools import partial
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import Any
 
 from ansible_forge.agent.llm_client import LLMClient, LLMResponse, ToolCall, _repair_json
