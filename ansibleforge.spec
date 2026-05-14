@@ -50,6 +50,7 @@ hidden_imports = [
     "ansible_forge.api.endpoints.workspace_files",
     "ansible_forge.api.endpoints.self_check",
     "ansible_forge.self_check",
+    "ansible_forge.dep_manager",
     "ansible_forge.api.middleware.auth",
     "ansible_forge.api.middleware.logging",
     "ansible_forge.agent.orchestrator",

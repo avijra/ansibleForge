@@ -88,6 +88,13 @@ _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
         "Installing Ansible collection from Galaxy...",
         "Still downloading collection. Large collections take a moment.",
     ],
+    "manage_galaxy": [
+        "Installing Ansible collection from Galaxy...",
+        "Still downloading. Large collections and dependencies take a moment.",
+        "Galaxy operation in progress. Installing Python SDK dependencies if needed.",
+        "Package installation continues — downloading required libraries.",
+        "Almost done with collection and dependency installation.",
+    ],
     "run_molecule_test": [
         "Running Molecule tests to validate the role...",
         "Tests still running — waiting for all scenarios to complete.",
@@ -564,14 +571,43 @@ class Orchestrator:
 
     async def _react_loop(self, state: SessionState) -> AsyncIterator[AgentEvent]:
         """Core ReAct loop: Reason → Act → Observe, repeat."""
+        import time as _time
+
         max_steps = self._settings.max_agent_steps
         progress_check_interval = max(max_steps // 3, 15)
         llm_timeout = 120
         my_generation = state._generation
         yielded_terminal = False
+        session_start_mono = _time.monotonic()
+        last_activity_mono = session_start_mono
+        stall_warning_secs = 300  # 5 minutes
+        stall_recovery_secs = 900  # 15 minutes
+        _stall_warned = False
+        max_session_duration = getattr(self._settings, "session_timeout_seconds", 7200)
 
         try:
           while state.step_count < max_steps:
+            # Wall-clock timeout guard
+            elapsed = _time.monotonic() - session_start_mono
+            if elapsed > max_session_duration:
+                state.status = SessionStatus.COMPLETED
+                logger.warning(
+                    "session_wall_clock_timeout",
+                    session_id=state.session_id,
+                    elapsed_seconds=int(elapsed),
+                )
+                yield AgentEvent("timeout", {
+                    "elapsed_seconds": int(elapsed),
+                    "reason": "wall_clock",
+                })
+                yield AgentEvent("message", {
+                    "content": (
+                        f"Session timed out after {int(elapsed // 60)} minutes. "
+                        "Please start a new session to continue."
+                    ),
+                })
+                return
+
             if state._generation != my_generation:
                 logger.info("react_loop_superseded", session_id=state.session_id)
                 return
@@ -584,6 +620,27 @@ class Orchestrator:
                 )
 
                 yield AgentEvent("step_start", {"step": state.step_count})
+
+                # ── Stall detection ────────────────────────────────────
+                stall_elapsed = _time.monotonic() - last_activity_mono
+                if stall_elapsed > stall_recovery_secs:
+                    state.memory.add_user(
+                        "You appear to be stalled — no meaningful progress for "
+                        f"{int(stall_elapsed)} seconds. Summarize your current state "
+                        "and ask the user for help if you are stuck."
+                    )
+                    yield AgentEvent("progress", {
+                        "tool": "stall_detection",
+                        "message": f"No progress for {int(stall_elapsed)}s — injecting recovery.",
+                    })
+                    last_activity_mono = _time.monotonic()
+                    _stall_warned = False
+                elif stall_elapsed > stall_warning_secs and not _stall_warned:
+                    yield AgentEvent("progress", {
+                        "tool": "stall_detection",
+                        "message": f"Agent has been working for {int(stall_elapsed)}s without new results.",
+                    })
+                    _stall_warned = True
 
                 # ── Progress checkpoint (fires every N steps) ────────────
                 if (
@@ -906,6 +963,8 @@ class Orchestrator:
                         if tc.id in gated_ids:
                             continue
                         result = parallel_tasks[tc.id].result()
+                        last_activity_mono = _time.monotonic()
+                        _stall_warned = False
                         try:
                             state.memory.add_tool_result(tc.id, result.model_dump_json())
                         except Exception:
@@ -931,34 +990,80 @@ class Orchestrator:
                             state._searched_since_exec_fail = True
 
                         if result.status == ToolStatus.ERROR:
+                            # Auto-remediation: detect missing Python SDK and install it
+                            if tc.name in self._EXECUTION_TOOLS:
+                                from ansible_forge.dep_manager import (
+                                    ensure_packages,
+                                    guess_pip_package,
+                                    parse_missing_module,
+                                )
+
+                                _missing = parse_missing_module(result.error or "")
+                                if not _missing and result.data:
+                                    _missing = parse_missing_module(
+                                        str(result.data.get("raw_stdout", ""))
+                                    )
+                                if _missing:
+                                    _pkg = guess_pip_package(_missing)
+                                    _ok, _msg = await ensure_packages(
+                                        [_pkg], reason=f"auto-fix for {tc.name}"
+                                    )
+                                    if _ok:
+                                        deferred_user_msgs_p.append(
+                                            f"Missing Python package '{_pkg}' was auto-installed. "
+                                            f"Retry the same action now."
+                                        )
+                                        deferred_events_p.append(AgentEvent("progress", {
+                                            "tool": "dep_manager",
+                                            "message": f"Auto-installed {_pkg}",
+                                        }))
+                                        state.memory.add_tool_result(
+                                            tc.id, result.model_dump_json()
+                                        )
+                                        continue
+
                             state._consecutive_errors += 1
                             state.last_error = result.error
                             if tc.name in self._EXECUTION_TOOLS:
                                 state._exec_fail_count += 1
                             remaining = max(state._max_error_retries - state._consecutive_errors, 0)
-                            error_ctx = ERROR_RECOVERY_PROMPT.format(
-                                tool_name=tc.name,
-                                error_message=result.error or "Unknown error",
-                                remaining_retries=remaining,
-                            )
-                            knowledge_hint = await self._build_error_knowledge(
-                                state, tc.name, result.error or "Unknown error",
-                            )
-                            if knowledge_hint:
-                                error_ctx += knowledge_hint
-                            exec_directive = self._build_exec_fail_directive(
-                                tc.name, result.error or "",
-                                state._exec_fail_count,
-                                state._searched_since_exec_fail,
-                            )
-                            if exec_directive:
-                                error_ctx += f"\n\n{exec_directive}"
-                            deferred_user_msgs_p.append(error_ctx)
-                            deferred_events_p.append(AgentEvent("error_recovery", {
-                                "tool": tc.name,
-                                "error": result.error,
-                                "retries_remaining": remaining,
-                            }))
+
+                            if remaining <= 0:
+                                deferred_user_msgs_p.append(
+                                    "You have exhausted all error retries. STOP trying the same "
+                                    "approach. Summarize exactly what went wrong, what you tried, "
+                                    "and ask the user for guidance on how to proceed."
+                                )
+                                deferred_events_p.append(AgentEvent("error_recovery", {
+                                    "tool": tc.name,
+                                    "error": result.error,
+                                    "retries_remaining": 0,
+                                    "budget_exhausted": True,
+                                }))
+                            else:
+                                error_ctx = ERROR_RECOVERY_PROMPT.format(
+                                    tool_name=tc.name,
+                                    error_message=result.error or "Unknown error",
+                                    remaining_retries=remaining,
+                                )
+                                knowledge_hint = await self._build_error_knowledge(
+                                    state, tc.name, result.error or "Unknown error",
+                                )
+                                if knowledge_hint:
+                                    error_ctx += knowledge_hint
+                                exec_directive = self._build_exec_fail_directive(
+                                    tc.name, result.error or "",
+                                    state._exec_fail_count,
+                                    state._searched_since_exec_fail,
+                                )
+                                if exec_directive:
+                                    error_ctx += f"\n\n{exec_directive}"
+                                deferred_user_msgs_p.append(error_ctx)
+                                deferred_events_p.append(AgentEvent("error_recovery", {
+                                    "tool": tc.name,
+                                    "error": result.error,
+                                    "retries_remaining": remaining,
+                                }))
                         else:
                             state._consecutive_errors = 0
                             if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
@@ -1307,6 +1412,8 @@ class Orchestrator:
                         })
                         continue
 
+                    last_activity_mono = _time.monotonic()
+                    _stall_warned = False
                     try:
                         state.memory.add_tool_result(tc.id, result.model_dump_json())
                     except Exception:
@@ -1397,38 +1504,83 @@ class Orchestrator:
                         state._searched_since_exec_fail = True
 
                     if result.status == ToolStatus.ERROR:
-                        state._consecutive_errors += 1
-                        state.last_error = result.error
-                        state._last_error_by_tool[tc.name] = {
-                            "error": result.error or "Unknown error",
-                            "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
-                        }
+                        # Auto-remediation: detect missing Python SDK and install it
+                        _auto_fixed = False
                         if tc.name in self._EXECUTION_TOOLS:
-                            state._exec_fail_count += 1
-                        remaining = max(state._max_error_retries - state._consecutive_errors, 0)
-                        error_ctx = ERROR_RECOVERY_PROMPT.format(
-                            tool_name=tc.name,
-                            error_message=result.error or "Unknown error",
-                            remaining_retries=remaining,
-                        )
-                        knowledge_hint = await self._build_error_knowledge(
-                            state, tc.name, result.error or "Unknown error",
-                        )
-                        if knowledge_hint:
-                            error_ctx += knowledge_hint
-                        exec_directive = self._build_exec_fail_directive(
-                            tc.name, result.error or "",
-                            state._exec_fail_count,
-                            state._searched_since_exec_fail,
-                        )
-                        if exec_directive:
-                            error_ctx += f"\n\n{exec_directive}"
-                        deferred_user_msgs.append(error_ctx)
-                        deferred_events.append(AgentEvent("error_recovery", {
-                            "tool": tc.name,
-                            "error": result.error,
-                            "retries_remaining": remaining,
-                        }))
+                            from ansible_forge.dep_manager import (
+                                ensure_packages,
+                                guess_pip_package,
+                                parse_missing_module,
+                            )
+
+                            _missing = parse_missing_module(result.error or "")
+                            if not _missing and result.data:
+                                _missing = parse_missing_module(
+                                    str(result.data.get("raw_stdout", ""))
+                                )
+                            if _missing:
+                                _pkg = guess_pip_package(_missing)
+                                _ok, _msg = await ensure_packages(
+                                    [_pkg], reason=f"auto-fix for {tc.name}"
+                                )
+                                if _ok:
+                                    deferred_user_msgs.append(
+                                        f"Missing Python package '{_pkg}' was auto-installed. "
+                                        f"Retry the same action now."
+                                    )
+                                    deferred_events.append(AgentEvent("progress", {
+                                        "tool": "dep_manager",
+                                        "message": f"Auto-installed {_pkg}",
+                                    }))
+                                    _auto_fixed = True
+
+                        if not _auto_fixed:
+                            state._consecutive_errors += 1
+                            state.last_error = result.error
+                            state._last_error_by_tool[tc.name] = {
+                                "error": result.error or "Unknown error",
+                                "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
+                            }
+                            if tc.name in self._EXECUTION_TOOLS:
+                                state._exec_fail_count += 1
+                            remaining = max(state._max_error_retries - state._consecutive_errors, 0)
+
+                            if remaining <= 0:
+                                deferred_user_msgs.append(
+                                    "You have exhausted all error retries. STOP trying the same "
+                                    "approach. Summarize exactly what went wrong, what you tried, "
+                                    "and ask the user for guidance on how to proceed."
+                                )
+                                deferred_events.append(AgentEvent("error_recovery", {
+                                    "tool": tc.name,
+                                    "error": result.error,
+                                    "retries_remaining": 0,
+                                    "budget_exhausted": True,
+                                }))
+                            else:
+                                error_ctx = ERROR_RECOVERY_PROMPT.format(
+                                    tool_name=tc.name,
+                                    error_message=result.error or "Unknown error",
+                                    remaining_retries=remaining,
+                                )
+                                knowledge_hint = await self._build_error_knowledge(
+                                    state, tc.name, result.error or "Unknown error",
+                                )
+                                if knowledge_hint:
+                                    error_ctx += knowledge_hint
+                                exec_directive = self._build_exec_fail_directive(
+                                    tc.name, result.error or "",
+                                    state._exec_fail_count,
+                                    state._searched_since_exec_fail,
+                                )
+                                if exec_directive:
+                                    error_ctx += f"\n\n{exec_directive}"
+                                deferred_user_msgs.append(error_ctx)
+                                deferred_events.append(AgentEvent("error_recovery", {
+                                    "tool": tc.name,
+                                    "error": result.error,
+                                    "retries_remaining": remaining,
+                                }))
                     else:
                         state._consecutive_errors = 0
                         if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:

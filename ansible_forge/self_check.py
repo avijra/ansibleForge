@@ -70,6 +70,9 @@ async def run_self_check() -> SelfCheckReport:
     report.checks.append(await _check_galaxy_connectivity())
     report.checks.append(_check_workspace_writable())
     report.checks.append(_check_database_accessible())
+    report.checks.append(_check_managed_site_packages())
+    report.checks.append(_check_package_installer())
+    report.checks.append(await _check_ansible_python_interpreter())
 
     if report.all_passed:
         _mark_validated()
@@ -276,4 +279,120 @@ def _check_database_accessible() -> CheckResult:
             passed=False,
             message=f"Database error ({db_path}): {e}",
             critical=False,
+        )
+
+
+def _check_managed_site_packages() -> CheckResult:
+    """Verify managed site-packages directory exists and is writable."""
+    from ansible_forge.dep_manager import MANAGED_SITE_PACKAGES
+
+    try:
+        MANAGED_SITE_PACKAGES.mkdir(parents=True, exist_ok=True)
+        test_file = MANAGED_SITE_PACKAGES / ".write_test"
+        test_file.write_text("ok")
+        test_file.unlink()
+        return CheckResult(
+            name="managed_site_packages",
+            passed=True,
+            message=f"Managed site-packages writable: {MANAGED_SITE_PACKAGES}",
+            critical=False,
+        )
+    except OSError as e:
+        return CheckResult(
+            name="managed_site_packages",
+            passed=False,
+            message=f"Cannot write to managed site-packages {MANAGED_SITE_PACKAGES}: {e}",
+            critical=False,
+        )
+
+
+def _check_package_installer() -> CheckResult:
+    """Verify that a package installer (uv or pip) is available."""
+    from ansible_forge.dep_manager import _BIN_DIR
+
+    binary_name = "uv.exe" if os.name == "nt" else "uv"
+    cached_uv = _BIN_DIR / binary_name
+    if cached_uv.is_file():
+        return CheckResult(
+            name="package_installer",
+            passed=True,
+            message=f"uv cached at {cached_uv}",
+            critical=False,
+        )
+
+    if shutil.which("uv"):
+        return CheckResult(
+            name="package_installer",
+            passed=True,
+            message="uv found on system PATH",
+            critical=False,
+        )
+
+    if shutil.which("pip3") or shutil.which("pip"):
+        return CheckResult(
+            name="package_installer",
+            passed=True,
+            message="pip found on system PATH (uv will be downloaded on first SDK install)",
+            critical=False,
+        )
+
+    return CheckResult(
+        name="package_installer",
+        passed=True,
+        message="No installer cached yet; uv will be downloaded on first SDK install",
+        critical=False,
+    )
+
+
+async def _check_ansible_python_interpreter() -> CheckResult:
+    """Verify the configured ANSIBLE_PYTHON_INTERPRETER is functional."""
+    import sys
+
+    if not getattr(sys, "frozen", False):
+        return CheckResult(
+            name="ansible_python_interpreter",
+            passed=True,
+            message=f"Dev mode — using venv Python: {sys.executable}",
+            critical=False,
+        )
+
+    bundle_dir = Path(sys.executable).resolve().parent
+    ansible_python = bundle_dir / "ansible-python"
+    if not ansible_python.is_file():
+        return CheckResult(
+            name="ansible_python_interpreter",
+            passed=False,
+            message=f"Bundled ansible-python not found at {ansible_python}",
+        )
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(ansible_python), "-c", "import sys; print(sys.path)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode == 0:
+            return CheckResult(
+                name="ansible_python_interpreter",
+                passed=True,
+                message=f"ansible-python functional at {ansible_python}",
+                critical=False,
+            )
+        return CheckResult(
+            name="ansible_python_interpreter",
+            passed=False,
+            message=f"ansible-python failed (rc={proc.returncode}): {stderr.decode()[:200]}",
+        )
+    except TimeoutError:
+        return CheckResult(
+            name="ansible_python_interpreter",
+            passed=False,
+            message="ansible-python timed out",
+        )
+    except Exception as e:
+        return CheckResult(
+            name="ansible_python_interpreter",
+            passed=False,
+            message=f"ansible-python error: {e}",
         )

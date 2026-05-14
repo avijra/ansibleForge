@@ -1,6 +1,6 @@
 [project]
 name = "ansible-forge"
-version = "2.0.0"
+version = "3.0.0"
 description = "The definitive AI agent harness for Ansible — generate, validate, execute, and manage any Ansible workflow through natural language."
 readme = "README.md"
 license = { text = "MIT" }
@@ -71,6 +71,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: tests that exercise real subprocess calls and network (may be slow)",
+    "e2e: end-to-end tests validating full agent workflows with mock LLM",
 ]
 
 [tool.mypy]

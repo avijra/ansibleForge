@@ -134,6 +134,47 @@ else
   fi
 fi
 
+# --------------------------------------------------------------------------
+# 6. Validate ansible-python can import from managed site-packages
+# --------------------------------------------------------------------------
+echo "=== Smoke Test: ansible-python managed site-packages ==="
+ANSIBLE_PYTHON="$DIST_DIR/ansible-python"
+if [ -f "$ANSIBLE_PYTHON" ]; then
+  mkdir -p ~/.ansibleforge/site-packages
+  echo "SMOKE_TEST_OK = True" > ~/.ansibleforge/site-packages/_smoke_marker.py
+  if "$ANSIBLE_PYTHON" -c "import _smoke_marker; assert _smoke_marker.SMOKE_TEST_OK; print('OK')" 2>/dev/null; then
+    echo "  OK: ansible-python can import from managed site-packages"
+  else
+    echo "  FAIL: ansible-python cannot import from ~/.ansibleforge/site-packages/"
+    rm -f ~/.ansibleforge/site-packages/_smoke_marker.py
+    exit 1
+  fi
+  rm -f ~/.ansibleforge/site-packages/_smoke_marker.py
+else
+  if [ "$(uname -s)" = "MINGW"* ] || [ "$(uname -s)" = "MSYS"* ] || [ "${OS:-}" = "Windows_NT" ]; then
+    echo "  SKIP: ansible-python not bundled on Windows"
+  else
+    echo "  FAIL: ansible-python missing from bundle"
+    exit 1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 7. Validate ansible-playbook --version works end-to-end
+# --------------------------------------------------------------------------
+echo "=== Smoke Test: ansible-playbook --version ==="
+PLAYBOOK_BIN="$DIST_DIR/ansible-playbook"
+if [ -f "$PLAYBOOK_BIN" ]; then
+  if "$PLAYBOOK_BIN" --version > /dev/null 2>&1; then
+    echo "  OK: ansible-playbook --version works"
+  else
+    echo "  FAIL: ansible-playbook --version returned non-zero"
+    exit 1
+  fi
+else
+  echo "  SKIP: ansible-playbook not in bundle (Windows build)"
+fi
+
 echo ""
 echo "=========================================="
 echo "  ALL SMOKE TESTS PASSED"

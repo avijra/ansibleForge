@@ -28,18 +28,22 @@ _MAX_PLAYBOOK_TIMEOUT = 86400
 def _resolve_python_interpreter() -> str:
     """Return a Python interpreter path suitable for ANSIBLE_PYTHON_INTERPRETER.
 
-    In a PyInstaller bundle sys.executable is the app binary (ansibleforge-backend)
-    which would start a second FastAPI server if Ansible invoked it as a module
-    executor.  We use ``auto_silent`` so Ansible discovers the system Python —
-    this is critical because cloud modules (boto3, azure, google-cloud) live on
-    the user's system Python, not inside the frozen bundle.  This matches the
-    v1.0.22 behavior that worked correctly.
+    In a PyInstaller bundle we point to the bundled ``ansible-python`` binary
+    which shares _internal/ with the main app AND prepends
+    ~/.ansibleforge/site-packages/ to sys.path. This means cloud modules
+    (boto3, kubernetes, azure, etc.) installed on demand by dep_manager are
+    available without requiring a system Python.
 
+    Falls back to ``auto_silent`` if the bundled binary is missing.
     In dev mode we use sys.executable (the venv Python) which has all deps.
     """
     import sys
 
     if getattr(sys, "frozen", False):
+        bundle_dir = Path(sys.executable).resolve().parent
+        ansible_python = bundle_dir / "ansible-python"
+        if ansible_python.is_file():
+            return str(ansible_python)
         return "auto_silent"
     return sys.executable
 

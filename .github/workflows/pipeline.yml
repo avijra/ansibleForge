@@ -98,11 +98,15 @@ jobs:
         run: mypy ansible_forge/ --ignore-missing-imports
 
       - name: Backend tests
-        run: pytest tests/ -v --tb=short --ignore=tests/integration
+        run: pytest tests/ -v --tb=short --ignore=tests/integration --ignore=tests/e2e
 
       - name: Integration tests
         run: pytest tests/integration/ -v --tb=short -m integration
         timeout-minutes: 3
+
+      - name: E2E tests
+        run: pytest tests/e2e/ -v --tb=short -m e2e
+        timeout-minutes: 5
 
       - name: Frontend install
         working-directory: ui

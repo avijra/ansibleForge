@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # ── Agent ──────────────────────────────────────────────────────
     max_agent_steps: int = 200
+    session_timeout_seconds: int = 7200
     default_project_dir: Path = Path.home() / "tuyere-projects"
 
     @field_validator("default_project_dir", mode="before")

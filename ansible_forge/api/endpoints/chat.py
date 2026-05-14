@@ -206,6 +206,13 @@ async def chat(
                 try:
                     item = await asyncio.wait_for(subscriber.get(), timeout=300)
                 except TimeoutError:
+                    yield {
+                        "event": "reconnect",
+                        "data": json.dumps({
+                            "session_id": session_id,
+                            "reason": "idle_timeout",
+                        }),
+                    }
                     break
                 if item is None:
                     break
@@ -258,6 +265,13 @@ async def reconnect_stream(
                 try:
                     item = await asyncio.wait_for(subscriber.get(), timeout=300)
                 except TimeoutError:
+                    yield {
+                        "event": "reconnect",
+                        "data": json.dumps({
+                            "session_id": session_id,
+                            "reason": "idle_timeout",
+                        }),
+                    }
                     break
                 if item is None:
                     break

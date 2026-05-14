@@ -130,8 +130,14 @@ class GalaxyManager(BaseTool):
         if rc != 0:
             return ToolResult.fail(f"Package install failed: {stderr or stdout}")
 
+        # Auto-install Python SDK dependencies for the collection
+        from ansible_forge.dep_manager import ensure_collection_deps
+
+        dep_ok, dep_msg = await ensure_collection_deps(collection_name)
+        extra = f"\n{dep_msg}" if dep_msg else ""
+
         return ToolResult.ok(
-            output=f"Package '{target}' installed successfully.",
+            output=f"Package '{target}' installed successfully.{extra}",
         )
 
     async def _list_installed(self) -> ToolResult:
@@ -254,8 +260,28 @@ class GalaxyManager(BaseTool):
             return ToolResult.fail(
                 f"Failed to install from requirements.yml: {stderr or stdout}"
             )
+
+        # Auto-install Python SDK dependencies for collections in requirements.yml
+        dep_msgs: list[str] = []
+        try:
+            import yaml as _yaml
+
+            req_data = _yaml.safe_load(req_path.read_text(encoding="utf-8"))
+            collections_list = req_data.get("collections", []) if isinstance(req_data, dict) else []
+            from ansible_forge.dep_manager import ensure_collection_deps
+
+            for entry in collections_list:
+                name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+                if name:
+                    _, msg = await ensure_collection_deps(name)
+                    if msg:
+                        dep_msgs.append(msg)
+        except Exception:
+            pass  # Don't fail the install if dep resolution has issues
+
+        dep_extra = (" " + "; ".join(dep_msgs)) if dep_msgs else ""
         return ToolResult.ok(
-            output=f"All requirements installed from {req_path}.{role_msg}",
+            output=f"All requirements installed from {req_path}.{role_msg}{dep_extra}",
         )
 
     @staticmethod
