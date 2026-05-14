@@ -6,8 +6,10 @@ import asyncio
 import contextlib
 import functools
 import os
+import shutil
 import signal
 import stat
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +183,25 @@ def clean_stale_env(ws: Path) -> None:
                 path.unlink()
             except OSError:
                 logger.debug("clean_stale_env_unlink_failed", path=str(path), exc_info=True)
+
+
+@contextlib.contextmanager
+def isolated_runner_dir(ws: Path):
+    """Yield an isolated private_data_dir for ansible-runner.
+
+    Each invocation gets ``ws/.tuyere/runs/<uuid>/`` with a pre-created
+    ``env/`` subdirectory.  This prevents the .artifact_write_lock race
+    condition that occurs when parallel runner calls share the same
+    private_data_dir.  The directory is removed when the context exits.
+    """
+    run_dir = ws / ".tuyere" / "runs" / uuid.uuid4().hex[:12]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "env").mkdir(exist_ok=True)
+    try:
+        yield run_dir
+    finally:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(run_dir, ignore_errors=True)
 
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
@@ -395,8 +416,29 @@ class Executor(BaseTool):
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
+        with isolated_runner_dir(ws) as run_dir:
+            return await self._run_playbook(
+                ws, run_dir, playbook, verbosity, envvars, live_queue,
+                cmdline_args, merged_vars, inventory, mode, timeout, kwargs,
+            )
+
+    async def _run_playbook(
+        self,
+        ws: Path,
+        run_dir: Path,
+        playbook: str,
+        verbosity: int,
+        envvars: dict[str, str],
+        live_queue: asyncio.Queue[dict[str, Any]] | None,
+        cmdline_args: list[str],
+        merged_vars: dict[str, Any],
+        inventory: str,
+        mode: str,
+        timeout: int,
+        kwargs: dict[str, Any],
+    ) -> ToolResult:
         runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
+            "private_data_dir": str(run_dir),
             "project_dir": str(ws),
             "playbook": playbook,
             "verbosity": verbosity,

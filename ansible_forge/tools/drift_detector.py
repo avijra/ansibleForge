@@ -15,6 +15,7 @@ from ansible_forge.logging import get_logger
 from ansible_forge.persistence.infrastructure_store import InfrastructureStore
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import isolated_runner_dir
 
 logger = get_logger(__name__)
 
@@ -117,84 +118,78 @@ class DriftDetector(BaseTool):
             extravars.update(vault.get_all())
         self._materialize_ssh_keys(ws, extravars)
 
-        env_dir = ws / ".tuyere" / "env"
-        if env_dir.exists():
-            for artifact in ("cmdline", "extravars"):
-                p = env_dir / artifact
-                if p.exists():
-                    p.unlink()
-
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "project_dir": str(ws),
-            "playbook": playbook,
-            "inventory": str(inv_path),
-            "cmdline": "--check --diff",
-        }
-        if limit:
-            runner_kwargs["cmdline"] += f" --limit {limit}"
-        if extravars:
-            runner_kwargs["extravars"] = extravars
-
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=300,
-            )
-        except TimeoutError:
-            return ToolResult.fail("Drift detection timed out after 5 minutes.")
-
         drift_items: list[dict[str, Any]] = []
         store = InfrastructureStore.get_instance()
 
-        for event in result.events:
-            ev_type = event.get("event", "")
-            if ev_type not in ("runner_on_changed", "runner_on_failed"):
-                continue
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "project_dir": str(ws),
+                "playbook": playbook,
+                "inventory": str(inv_path),
+                "cmdline": "--check --diff",
+            }
+            if limit:
+                runner_kwargs["cmdline"] += f" --limit {limit}"
+            if extravars:
+                runner_kwargs["extravars"] = extravars
 
-            ed = event.get("event_data", {})
-            host = ed.get("host", "unknown")
-            task = ed.get("task", "unknown")
-            res = ed.get("res", {})
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=300,
+                )
+            except TimeoutError:
+                return ToolResult.fail("Drift detection timed out after 5 minutes.")
 
-            diff_info = res.get("diff", {})
-            before = ""
-            after = ""
-            if isinstance(diff_info, dict):
-                before = str(diff_info.get("before", ""))[:500]
-                after = str(diff_info.get("after", ""))[:500]
-            elif isinstance(diff_info, list):
-                parts = [str(d.get("before", "")) for d in diff_info if isinstance(d, dict)]
-                before = "; ".join(parts)[:500]
-                parts = [str(d.get("after", "")) for d in diff_info if isinstance(d, dict)]
-                after = "; ".join(parts)[:500]
+            for event in result.events:
+                ev_type = event.get("event", "")
+                if ev_type not in ("runner_on_changed", "runner_on_failed"):
+                    continue
 
-            field = task
-            if res.get("invocation", {}).get("module_name"):
-                field = f"{res['invocation']['module_name']}: {task}"
+                ed = event.get("event_data", {})
+                host = ed.get("host", "unknown")
+                task = ed.get("task", "unknown")
+                res = ed.get("res", {})
 
-            drift_id = store.record_drift(
-                host_id=host,
-                field=field,
-                expected_value=after or "desired state",
-                actual_value=before or "current state",
-            )
+                diff_info = res.get("diff", {})
+                before = ""
+                after = ""
+                if isinstance(diff_info, dict):
+                    before = str(diff_info.get("before", ""))[:500]
+                    after = str(diff_info.get("after", ""))[:500]
+                elif isinstance(diff_info, list):
+                    parts = [str(d.get("before", "")) for d in diff_info if isinstance(d, dict)]
+                    before = "; ".join(parts)[:500]
+                    parts = [str(d.get("after", "")) for d in diff_info if isinstance(d, dict)]
+                    after = "; ".join(parts)[:500]
 
-            drift_items.append({
-                "drift_id": drift_id,
-                "host": host,
-                "task": task,
-                "type": "changed" if ev_type == "runner_on_changed" else "failed",
-                "before": before[:200],
-                "after": after[:200],
-                "msg": res.get("msg", ""),
-            })
+                field = task
+                if res.get("invocation", {}).get("module_name"):
+                    field = f"{res['invocation']['module_name']}: {task}"
 
-        skipped = sum(1 for e in result.events if e.get("event") == "runner_on_skipped")
-        ok = sum(1 for e in result.events if e.get("event") == "runner_on_ok")
+                drift_id = store.record_drift(
+                    host_id=host,
+                    field=field,
+                    expected_value=after or "desired state",
+                    actual_value=before or "current state",
+                )
+
+                drift_items.append({
+                    "drift_id": drift_id,
+                    "host": host,
+                    "task": task,
+                    "type": "changed" if ev_type == "runner_on_changed" else "failed",
+                    "before": before[:200],
+                    "after": after[:200],
+                    "msg": res.get("msg", ""),
+                })
+
+            skipped = sum(1 for e in result.events if e.get("event") == "runner_on_skipped")
+            ok = sum(1 for e in result.events if e.get("event") == "runner_on_ok")
 
         if not drift_items:
             return ToolResult.ok(

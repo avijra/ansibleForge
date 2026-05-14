@@ -21,6 +21,7 @@ from ansible_forge.tools.executor import (
     _resolve_python_interpreter,
     _sigkill_after_delay,
     clean_stale_env,
+    isolated_runner_dir,
 )
 from ansible_forge.tools.secret_check import find_missing_secrets
 from ansible_forge.workspace.project_layout import ensure_ansible_cfg
@@ -238,140 +239,141 @@ class AdhocRunner(BaseTool):
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "project_dir": str(ws),
-            "module": module,
-            "host_pattern": host_pattern,
-            "inventory": str(inv_path),
-            "envvars": envvars,
-        }
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "project_dir": str(ws),
+                "module": module,
+                "host_pattern": host_pattern,
+                "inventory": str(inv_path),
+                "envvars": envvars,
+            }
 
-        if live_queue is not None:
-            import contextlib as _ctxlib
+            if live_queue is not None:
+                import contextlib as _ctxlib
 
-            loop_ref = asyncio.get_event_loop()
+                loop_ref = asyncio.get_event_loop()
 
-            def _on_event(event: dict[str, Any]) -> bool:
-                ev_type = event.get("event", "")
-                if ev_type in _LIVE_EVENT_TYPES:
-                    formatted = _format_live_event(event)
-                    if formatted:
-                        with _ctxlib.suppress(Exception):
-                            loop_ref.call_soon_threadsafe(live_queue.put_nowait, formatted)
-                return True
+                def _on_event(event: dict[str, Any]) -> bool:
+                    ev_type = event.get("event", "")
+                    if ev_type in _LIVE_EVENT_TYPES:
+                        formatted = _format_live_event(event)
+                        if formatted:
+                            with _ctxlib.suppress(Exception):
+                                loop_ref.call_soon_threadsafe(live_queue.put_nowait, formatted)
+                    return True
 
-            runner_kwargs["event_handler"] = _on_event
-        if module_args:
-            runner_kwargs["module_args"] = module_args
-        if merged_vars:
-            runner_kwargs["extravars"] = merged_vars
+                runner_kwargs["event_handler"] = _on_event
+            if module_args:
+                runner_kwargs["module_args"] = module_args
+            if merged_vars:
+                runner_kwargs["extravars"] = merged_vars
 
-        cmdline_parts: list[str] = []
-        if become:
-            cmdline_parts.append("--become")
-        if forks and forks > 0:
-            cmdline_parts.extend(["--forks", str(forks)])
-        if cmdline_parts:
-            runner_kwargs["cmdline"] = " ".join(cmdline_parts)
-        if verbosity:
-            runner_kwargs["verbosity"] = verbosity
+            cmdline_parts: list[str] = []
+            if become:
+                cmdline_parts.append("--become")
+            if forks and forks > 0:
+                cmdline_parts.extend(["--forks", str(forks)])
+            if cmdline_parts:
+                runner_kwargs["cmdline"] = " ".join(cmdline_parts)
+            if verbosity:
+                runner_kwargs["verbosity"] = verbosity
 
-        effective_timeout = min(
-            timeout if timeout and timeout > 0 else _DEFAULT_ADHOC_TIMEOUT,
-            _MAX_ADHOC_TIMEOUT,
-        )
-
-        loop = asyncio.get_event_loop()
-        thread, runner = await loop.run_in_executor(
-            None,
-            functools.partial(ansible_runner.run_async, **runner_kwargs),
-        )
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(None, thread.join),
-                timeout=effective_timeout,
+            effective_timeout = min(
+                timeout if timeout and timeout > 0 else _DEFAULT_ADHOC_TIMEOUT,
+                _MAX_ADHOC_TIMEOUT,
             )
-        except asyncio.CancelledError:
-            runner.canceled = True
-            _kill_runner(runner)
-            thread.join(timeout=10)
-            logger.info("adhoc_cancelled", module=module, host_pattern=host_pattern)
-            raise
-        except TimeoutError:
-            runner.canceled = True
-            _kill_runner(runner)
-            thread.join(timeout=10)
-            mins = effective_timeout // 60
-            secs = effective_timeout % 60
-            time_str = f"{mins}m{secs}s" if secs else f"{mins} minute(s)"
-            return ToolResult.fail(
-                f"Command timed out after {time_str}. "
-                f"If this operation legitimately needs more time, retry with a "
-                f"higher timeout parameter."
-            )
-        result = runner
 
-        host_results: dict[str, Any] = {}
-        runner_errors: list[str] = []
-        for event in result.events:
-            ev_type = event.get("event", "")
-            event_data = event.get("event_data", {})
-            if ev_type in ("runner_on_ok", "runner_on_changed", "runner_on_failed",
-                           "runner_on_unreachable", "runner_on_skipped"):
-                host = event_data.get("host", "unknown")
-                res = event_data.get("res", {})
-                host_results[host] = {
-                    "status": ev_type.replace("runner_on_", ""),
-                    "changed": res.get("changed", False),
-                    "msg": res.get("msg", ""),
-                    "stdout": (res.get("stdout", "") or "")[:2000],
-                    "stderr": (res.get("stderr", "") or "")[:1000],
-                    "rc": res.get("rc"),
-                }
-            elif ev_type == "runner_on_no_hosts":
-                runner_errors.append(
-                    f"No hosts matched pattern '{host_pattern}' in inventory."
+            loop = asyncio.get_event_loop()
+            thread, runner = await loop.run_in_executor(
+                None,
+                functools.partial(ansible_runner.run_async, **runner_kwargs),
+            )
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, thread.join),
+                    timeout=effective_timeout,
                 )
-            elif ev_type == "error" or ev_type == "verbose":
-                stderr = event_data.get("data", "")
-                if stderr and len(str(stderr)) > 5:
-                    runner_errors.append(str(stderr)[:500])
+            except asyncio.CancelledError:
+                runner.canceled = True
+                _kill_runner(runner)
+                thread.join(timeout=10)
+                logger.info("adhoc_cancelled", module=module, host_pattern=host_pattern)
+                raise
+            except TimeoutError:
+                runner.canceled = True
+                _kill_runner(runner)
+                thread.join(timeout=10)
+                mins = effective_timeout // 60
+                secs = effective_timeout % 60
+                time_str = f"{mins}m{secs}s" if secs else f"{mins} minute(s)"
+                return ToolResult.fail(
+                    f"Command timed out after {time_str}. "
+                    f"If this operation legitimately needs more time, retry with a "
+                    f"higher timeout parameter."
+                )
+            result = runner
 
-        if not host_results:
-            detail = " ".join(runner_errors) if runner_errors else ""
-            return ToolResult.fail(
-                f"No hosts responded for pattern '{host_pattern}'. "
-                f"{detail} "
-                f"Check that the inventory file contains matching hosts and "
-                f"the host_pattern is correct. If targeting localhost, ensure "
-                f"the inventory has 'ansible_connection=local' set."
-            )
+            host_results: dict[str, Any] = {}
+            runner_errors: list[str] = []
+            for event in result.events:
+                ev_type = event.get("event", "")
+                event_data = event.get("event_data", {})
+                if ev_type in ("runner_on_ok", "runner_on_changed", "runner_on_failed",
+                               "runner_on_unreachable", "runner_on_skipped"):
+                    host = event_data.get("host", "unknown")
+                    res = event_data.get("res", {})
+                    host_results[host] = {
+                        "status": ev_type.replace("runner_on_", ""),
+                        "changed": res.get("changed", False),
+                        "msg": res.get("msg", ""),
+                        "stdout": (res.get("stdout", "") or "")[:2000],
+                        "stderr": (res.get("stderr", "") or "")[:1000],
+                        "rc": res.get("rc"),
+                    }
+                elif ev_type == "runner_on_no_hosts":
+                    runner_errors.append(
+                        f"No hosts matched pattern '{host_pattern}' in inventory."
+                    )
+                elif ev_type == "error" or ev_type == "verbose":
+                    stderr = event_data.get("data", "")
+                    if stderr and len(str(stderr)) > 5:
+                        runner_errors.append(str(stderr)[:500])
 
-        ok = sum(1 for r in host_results.values() if r["status"] in ("ok", "changed"))
-        failed = sum(1 for r in host_results.values() if r["status"] == "failed")
-        unreachable = sum(1 for r in host_results.values() if r["status"] == "unreachable")
+            if not host_results:
+                detail = " ".join(runner_errors) if runner_errors else ""
+                return ToolResult.fail(
+                    f"No hosts responded for pattern '{host_pattern}'. "
+                    f"{detail} "
+                    f"Check that the inventory file contains matching hosts and "
+                    f"the host_pattern is correct. If targeting localhost, ensure "
+                    f"the inventory has 'ansible_connection=local' set."
+                )
 
-        total = len(host_results)
+            ok = sum(1 for r in host_results.values() if r["status"] in ("ok", "changed"))
+            failed = sum(1 for r in host_results.values() if r["status"] == "failed")
+            unreachable = sum(1 for r in host_results.values() if r["status"] == "unreachable")
 
-        if failed or unreachable:
-            parts = []
-            if failed:
-                parts.append(f"{failed} failed")
-            if unreachable:
-                parts.append(f"{unreachable} unreachable")
-            if ok:
-                parts.append(f"{ok} succeeded")
-            return ToolResult.fail(
-                f"Command finished on {total} host(s) with issues: {', '.join(parts)}.",
+            total = len(host_results)
+
+            if failed or unreachable:
+                parts = []
+                if failed:
+                    parts.append(f"{failed} failed")
+                if unreachable:
+                    parts.append(f"{unreachable} unreachable")
+                if ok:
+                    parts.append(f"{ok} succeeded")
+                return ToolResult.fail(
+                    f"Command finished on {total} host(s) with issues: {', '.join(parts)}.",
+                    host_results=host_results,
+                    module=module,
+                    module_args=module_args,
+                )
+
+            return ToolResult.ok(
+                output=f"Command completed on {total} host(s) — all successful.",
                 host_results=host_results,
                 module=module,
                 module_args=module_args,
             )
-
-        return ToolResult.ok(
-            output=f"Command completed on {total} host(s) — all successful.",
-            host_results=host_results,
-            module=module,
-            module_args=module_args,
-        )

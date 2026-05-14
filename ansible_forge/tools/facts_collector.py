@@ -15,7 +15,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import _resolve_python_interpreter
+from ansible_forge.tools.executor import _resolve_python_interpreter, isolated_runner_dir
 
 logger = get_logger(__name__)
 
@@ -158,66 +158,67 @@ class FactsCollector(BaseTool):
             if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
                 envvars[key] = str(value)
 
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "module": "ansible.builtin.setup",
-            "module_args": f"gather_subset={gather_subset}",
-            "host_pattern": host_pattern,
-            "inventory": str(inv_path),
-            "envvars": envvars,
-        }
-        if extravars:
-            runner_kwargs["extravars"] = extravars
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "module": "ansible.builtin.setup",
+                "module_args": f"gather_subset={gather_subset}",
+                "host_pattern": host_pattern,
+                "inventory": str(inv_path),
+                "envvars": envvars,
+            }
+            if extravars:
+                runner_kwargs["extravars"] = extravars
 
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=120,
-            )
-        except TimeoutError:
-            return ToolResult.fail(
-                "Could not gather system information within 2 minutes. "
-                "Check that hosts are reachable and credentials are correct."
-            )
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=120,
+                )
+            except TimeoutError:
+                return ToolResult.fail(
+                    "Could not gather system information within 2 minutes. "
+                    "Check that hosts are reachable and credentials are correct."
+                )
 
-        host_facts: dict[str, Any] = {}
-        for event in result.events:
-            if event.get("event") in ("runner_on_ok", "runner_on_changed"):
-                host = event.get("event_data", {}).get("host", "unknown")
-                facts = event.get("event_data", {}).get("res", {}).get("ansible_facts", {})
-                host_facts[host] = {
-                    "os_family": facts.get("ansible_os_family", ""),
-                    "distribution": facts.get("ansible_distribution", ""),
-                    "distribution_version": facts.get("ansible_distribution_version", ""),
-                    "hostname": facts.get("ansible_hostname", ""),
-                    "fqdn": facts.get("ansible_fqdn", ""),
-                    "kernel": facts.get("ansible_kernel", ""),
-                    "architecture": facts.get("ansible_architecture", ""),
-                    "python_version": facts.get("ansible_python_version", ""),
-                    "interfaces": facts.get("ansible_interfaces", []),
-                    "memory_mb": facts.get("ansible_memtotal_mb", 0),
-                    "processor_count": facts.get("ansible_processor_count", 0),
-                    "pkg_mgr": facts.get("ansible_pkg_mgr", ""),
-                    "service_mgr": facts.get("ansible_service_mgr", ""),
-                    "python_interpreter": facts.get("ansible_python", {}).get("executable", ""),
-                    "selinux": facts.get("ansible_selinux", {}).get("status", ""),
-                    "apparmor": facts.get("ansible_apparmor", {}).get("status", ""),
-                    "default_ipv4": facts.get("ansible_default_ipv4", {}).get("address", ""),
-                    "virtualization_type": facts.get("ansible_virtualization_type", ""),
-                    "mounts": [
-                        {
-                            "mount": m.get("mount", ""),
-                            "size_total": m.get("size_total", 0),
-                            "size_available": m.get("size_available", 0),
-                            "fstype": m.get("fstype", ""),
-                        }
-                        for m in (facts.get("ansible_mounts") or [])
-                        if m.get("mount", "") in ("/", "/var", "/tmp", "/home")
-                    ],
-                }
+            host_facts: dict[str, Any] = {}
+            for event in result.events:
+                if event.get("event") in ("runner_on_ok", "runner_on_changed"):
+                    host = event.get("event_data", {}).get("host", "unknown")
+                    facts = event.get("event_data", {}).get("res", {}).get("ansible_facts", {})
+                    host_facts[host] = {
+                        "os_family": facts.get("ansible_os_family", ""),
+                        "distribution": facts.get("ansible_distribution", ""),
+                        "distribution_version": facts.get("ansible_distribution_version", ""),
+                        "hostname": facts.get("ansible_hostname", ""),
+                        "fqdn": facts.get("ansible_fqdn", ""),
+                        "kernel": facts.get("ansible_kernel", ""),
+                        "architecture": facts.get("ansible_architecture", ""),
+                        "python_version": facts.get("ansible_python_version", ""),
+                        "interfaces": facts.get("ansible_interfaces", []),
+                        "memory_mb": facts.get("ansible_memtotal_mb", 0),
+                        "processor_count": facts.get("ansible_processor_count", 0),
+                        "pkg_mgr": facts.get("ansible_pkg_mgr", ""),
+                        "service_mgr": facts.get("ansible_service_mgr", ""),
+                        "python_interpreter": facts.get("ansible_python", {}).get("executable", ""),
+                        "selinux": facts.get("ansible_selinux", {}).get("status", ""),
+                        "apparmor": facts.get("ansible_apparmor", {}).get("status", ""),
+                        "default_ipv4": facts.get("ansible_default_ipv4", {}).get("address", ""),
+                        "virtualization_type": facts.get("ansible_virtualization_type", ""),
+                        "mounts": [
+                            {
+                                "mount": m.get("mount", ""),
+                                "size_total": m.get("size_total", 0),
+                                "size_available": m.get("size_available", 0),
+                                "fstype": m.get("fstype", ""),
+                            }
+                            for m in (facts.get("ansible_mounts") or [])
+                            if m.get("mount", "") in ("/", "/var", "/tmp", "/home")
+                        ],
+                    }
 
         if not host_facts:
             return ToolResult.fail(

@@ -14,7 +14,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import _resolve_python_interpreter
+from ansible_forge.tools.executor import _resolve_python_interpreter, isolated_runner_dir
 from ansible_forge.tools.secret_check import find_missing_secrets
 
 logger = get_logger(__name__)
@@ -149,46 +149,47 @@ class ConnectivityTester(BaseTool):
             if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
                 envvars[key] = str(value)
 
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "module": "ansible.builtin.ping",
-            "host_pattern": host_pattern,
-            "inventory": str(inv_path),
-            "envvars": envvars,
-        }
-        if extravars:
-            runner_kwargs["extravars"] = extravars
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "module": "ansible.builtin.ping",
+                "host_pattern": host_pattern,
+                "inventory": str(inv_path),
+                "envvars": envvars,
+            }
+            if extravars:
+                runner_kwargs["extravars"] = extravars
 
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=60,
-            )
-        except TimeoutError:
-            return ToolResult.fail(
-                "Connection test timed out after 60 seconds. "
-                "Hosts may be behind a firewall or SSH is not configured."
-            )
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=60,
+                )
+            except TimeoutError:
+                return ToolResult.fail(
+                    "Connection test timed out after 60 seconds. "
+                    "Hosts may be behind a firewall or SSH is not configured."
+                )
 
-        passed: list[str] = []
-        failed: list[dict[str, str]] = []
-        for event in result.events:
-            event_type = event.get("event", "")
-            host = event.get("event_data", {}).get("host", "")
-            if not host:
-                continue
-            if event_type in ("runner_on_ok", "runner_on_changed"):
-                passed.append(host)
-            elif event_type in ("runner_on_failed", "runner_on_unreachable"):
-                msg = event.get("event_data", {}).get("res", {}).get("msg", "")
-                stderr = event.get("event_data", {}).get("res", {}).get("stderr", "")
-                failed.append({
-                    "host": host,
-                    "error": msg or stderr or "host unreachable",
-                })
+            passed: list[str] = []
+            failed: list[dict[str, str]] = []
+            for event in result.events:
+                event_type = event.get("event", "")
+                host = event.get("event_data", {}).get("host", "")
+                if not host:
+                    continue
+                if event_type in ("runner_on_ok", "runner_on_changed"):
+                    passed.append(host)
+                elif event_type in ("runner_on_failed", "runner_on_unreachable"):
+                    msg = event.get("event_data", {}).get("res", {}).get("msg", "")
+                    stderr = event.get("event_data", {}).get("res", {}).get("stderr", "")
+                    failed.append({
+                        "host": host,
+                        "error": msg or stderr or "host unreachable",
+                    })
 
         if failed and not passed:
             diagnostics = "; ".join(

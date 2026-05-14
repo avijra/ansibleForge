@@ -16,6 +16,7 @@ import yaml
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import isolated_runner_dir
 
 logger = get_logger(__name__)
 
@@ -343,30 +344,72 @@ class ComplianceScanner(BaseTool):
                 os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
                 extravars[var_name] = str(key_file)
 
-        env_dir = ws / ".tuyere" / "env"
-        if env_dir.exists():
-            for artifact in ("cmdline", "extravars"):
-                p = env_dir / artifact
-                if p.exists():
-                    p.unlink()
-
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "project_dir": str(ws),
-            "playbook": "_compliance_scan.yml",
-            "inventory": str(inv_path),
-        }
-        if extravars:
-            runner_kwargs["extravars"] = extravars
+        check_map = {f"check_{c['id']}": c for c in checks}
+        results_by_host: dict[str, list[dict[str, Any]]] = {}
 
         loop = asyncio.get_event_loop()
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=300,
-            )
+            with isolated_runner_dir(ws) as run_dir:
+                runner_kwargs: dict[str, Any] = {
+                    "private_data_dir": str(run_dir),
+                    "project_dir": str(ws),
+                    "playbook": "_compliance_scan.yml",
+                    "inventory": str(inv_path),
+                }
+                if extravars:
+                    runner_kwargs["extravars"] = extravars
+
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=300,
+                )
+
+                for event in result.events:
+                    if event.get("event") not in ("runner_on_ok", "runner_on_failed", "runner_on_unreachable"):
+                        continue
+                    ed = event.get("event_data", {})
+                    host = ed.get("host", "unknown")
+                    task_name = ed.get("task", "")
+                    res = ed.get("res", {})
+
+                    check_id_match = None
+                    for cid, cdata in check_map.items():
+                        if cdata.get("id", "") in task_name or cdata.get("name", "") in task_name:
+                            check_id_match = cid
+                            break
+
+                    if not check_id_match:
+                        continue
+
+                    check = check_map[check_id_match]
+                    stdout = (res.get("stdout", "") or "").strip()
+                    rc = res.get("rc", -1)
+
+                    passed = True
+                    reason = ""
+                    if check.get("expect_contains") and check["expect_contains"] not in stdout:
+                        passed = False
+                        reason = f"Expected '{check['expect_contains']}' in output, got: {stdout[:200]}"
+                    if check.get("expect_not") and check["expect_not"] in stdout:
+                        passed = False
+                        reason = f"Found disallowed value '{check['expect_not']}' in output: {stdout[:200]}"
+                    if rc != 0 and event.get("event") == "runner_on_failed":
+                        passed = False
+                        reason = reason or f"Command failed with rc={rc}"
+
+                    results_by_host.setdefault(host, []).append({
+                        "check_id": check.get("id", ""),
+                        "name": check.get("name", ""),
+                        "profile": check.get("profile", ""),
+                        "severity": check.get("severity", "medium"),
+                        "status": "PASS" if passed else "FAIL",
+                        "output": stdout[:300],
+                        "reason": reason,
+                        "remediation": check.get("remediation", "") if not passed else "",
+                    })
+
         except TimeoutError:
             return ToolResult.fail(
                 "Security scan timed out after 5 minutes. "
@@ -374,53 +417,6 @@ class ComplianceScanner(BaseTool):
             )
         finally:
             scan_playbook.unlink(missing_ok=True)
-
-        check_map = {f"check_{c['id']}": c for c in checks}
-        results_by_host: dict[str, list[dict[str, Any]]] = {}
-
-        for event in result.events:
-            if event.get("event") not in ("runner_on_ok", "runner_on_failed", "runner_on_unreachable"):
-                continue
-            ed = event.get("event_data", {})
-            host = ed.get("host", "unknown")
-            task_name = ed.get("task", "")
-            res = ed.get("res", {})
-
-            check_id_match = None
-            for cid, cdata in check_map.items():
-                if cdata.get("id", "") in task_name or cdata.get("name", "") in task_name:
-                    check_id_match = cid
-                    break
-
-            if not check_id_match:
-                continue
-
-            check = check_map[check_id_match]
-            stdout = (res.get("stdout", "") or "").strip()
-            rc = res.get("rc", -1)
-
-            passed = True
-            reason = ""
-            if check.get("expect_contains") and check["expect_contains"] not in stdout:
-                passed = False
-                reason = f"Expected '{check['expect_contains']}' in output, got: {stdout[:200]}"
-            if check.get("expect_not") and check["expect_not"] in stdout:
-                passed = False
-                reason = f"Found disallowed value '{check['expect_not']}' in output: {stdout[:200]}"
-            if rc != 0 and event.get("event") == "runner_on_failed":
-                passed = False
-                reason = reason or f"Command failed with rc={rc}"
-
-            results_by_host.setdefault(host, []).append({
-                "check_id": check.get("id", ""),
-                "name": check.get("name", ""),
-                "profile": check.get("profile", ""),
-                "severity": check.get("severity", "medium"),
-                "status": "PASS" if passed else "FAIL",
-                "output": stdout[:300],
-                "reason": reason,
-                "remediation": check.get("remediation", "") if not passed else "",
-            })
 
         if not results_by_host:
             return ToolResult.fail(

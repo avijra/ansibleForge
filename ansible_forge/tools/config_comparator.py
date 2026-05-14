@@ -15,6 +15,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import isolated_runner_dir
 
 logger = get_logger(__name__)
 
@@ -111,48 +112,49 @@ class ConfigComparator(BaseTool):
                 os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
                 extravars[var_name] = str(key_file)
 
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "module": "ansible.builtin.slurp",
-            "module_args": f"src={file_path}",
-            "host_pattern": host_pattern,
-            "inventory": str(inv_path),
-        }
-        if extravars:
-            runner_kwargs["extravars"] = extravars
-        if become:
-            runner_kwargs["cmdline"] = "--become"
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "module": "ansible.builtin.slurp",
+                "module_args": f"src={file_path}",
+                "host_pattern": host_pattern,
+                "inventory": str(inv_path),
+            }
+            if extravars:
+                runner_kwargs["extravars"] = extravars
+            if become:
+                runner_kwargs["cmdline"] = "--become"
 
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=120,
-            )
-        except TimeoutError:
-            return ToolResult.fail("Config fetch timed out after 2 minutes.")
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=120,
+                )
+            except TimeoutError:
+                return ToolResult.fail("Config fetch timed out after 2 minutes.")
 
-        import base64
-        host_contents: dict[str, str] = {}
-        errors: dict[str, str] = {}
+            import base64
+            host_contents: dict[str, str] = {}
+            errors: dict[str, str] = {}
 
-        for event in result.events:
-            ev_type = event.get("event", "")
-            ed = event.get("event_data", {})
-            host = ed.get("host", "unknown")
+            for event in result.events:
+                ev_type = event.get("event", "")
+                ed = event.get("event_data", {})
+                host = ed.get("host", "unknown")
 
-            if ev_type == "runner_on_ok":
-                res = ed.get("res", {})
-                encoded = res.get("content", "")
-                try:
-                    host_contents[host] = base64.b64decode(encoded).decode("utf-8", errors="replace")
-                except Exception as exc:
-                    errors[host] = f"Failed to decode: {exc}"
-            elif ev_type in ("runner_on_failed", "runner_on_unreachable"):
-                res = ed.get("res", {})
-                errors[host] = res.get("msg", "Failed to fetch file")
+                if ev_type == "runner_on_ok":
+                    res = ed.get("res", {})
+                    encoded = res.get("content", "")
+                    try:
+                        host_contents[host] = base64.b64decode(encoded).decode("utf-8", errors="replace")
+                    except Exception as exc:
+                        errors[host] = f"Failed to decode: {exc}"
+                elif ev_type in ("runner_on_failed", "runner_on_unreachable"):
+                    res = ed.get("res", {})
+                    errors[host] = res.get("msg", "Failed to fetch file")
 
         if not host_contents:
             return ToolResult.fail(

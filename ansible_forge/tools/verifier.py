@@ -14,6 +14,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.executor import isolated_runner_dir
 
 logger = get_logger(__name__)
 
@@ -264,55 +265,56 @@ class Verifier(BaseTool):
                 if p.exists():
                     p.unlink()
 
-        runner_kwargs: dict[str, Any] = {
-            "private_data_dir": str(ws / ".tuyere"),
-            "project_dir": str(ws),
-            "playbook": "_verify.yml",
-            "inventory": str(inv_path),
-        }
-        if extravars:
-            runner_kwargs["extravars"] = extravars
+        with isolated_runner_dir(ws) as run_dir:
+            runner_kwargs: dict[str, Any] = {
+                "private_data_dir": str(run_dir),
+                "project_dir": str(ws),
+                "playbook": "_verify.yml",
+                "inventory": str(inv_path),
+            }
+            if extravars:
+                runner_kwargs["extravars"] = extravars
 
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, functools.partial(ansible_runner.run, **runner_kwargs)
-                ),
-                timeout=120,
-            )
-        except TimeoutError:
-            return ToolResult.fail("Verification timed out after 2 minutes.")
+            loop = asyncio.get_event_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, functools.partial(ansible_runner.run, **runner_kwargs)
+                    ),
+                    timeout=120,
+                )
+            except TimeoutError:
+                return ToolResult.fail("Verification timed out after 2 minutes.")
 
-        results: list[dict[str, Any]] = []
-        for event in result.events:
-            etype = event.get("event", "")
-            edata = event.get("event_data", {})
-            task_name = edata.get("task", "")
-            host = edata.get("host", "")
-            res = edata.get("res", {})
+            results: list[dict[str, Any]] = []
+            for event in result.events:
+                etype = event.get("event", "")
+                edata = event.get("event_data", {})
+                task_name = edata.get("task", "")
+                host = edata.get("host", "")
+                res = edata.get("res", {})
 
-            if etype == "runner_on_ok" and "assert" in task_name.lower():
-                results.append({
-                    "check": task_name,
-                    "host": host,
-                    "status": "PASS",
-                    "message": res.get("msg", "OK"),
-                })
-            elif etype == "runner_on_failed":
-                results.append({
-                    "check": task_name,
-                    "host": host,
-                    "status": "FAIL",
-                    "message": res.get("msg", res.get("assertion", "Failed")),
-                })
-            elif etype == "runner_on_ok" and task_name.startswith("Check "):
-                results.append({
-                    "check": task_name,
-                    "host": host,
-                    "status": "PASS",
-                    "message": "OK",
-                })
+                if etype == "runner_on_ok" and "assert" in task_name.lower():
+                    results.append({
+                        "check": task_name,
+                        "host": host,
+                        "status": "PASS",
+                        "message": res.get("msg", "OK"),
+                    })
+                elif etype == "runner_on_failed":
+                    results.append({
+                        "check": task_name,
+                        "host": host,
+                        "status": "FAIL",
+                        "message": res.get("msg", res.get("assertion", "Failed")),
+                    })
+                elif etype == "runner_on_ok" and task_name.startswith("Check "):
+                    results.append({
+                        "check": task_name,
+                        "host": host,
+                        "status": "PASS",
+                        "message": "OK",
+                    })
 
         passed = sum(1 for r in results if r["status"] == "PASS")
         failed = sum(1 for r in results if r["status"] == "FAIL")
