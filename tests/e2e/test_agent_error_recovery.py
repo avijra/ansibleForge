@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from ansible_forge.agent.orchestrator import SessionState, SessionStatus
-from ansible_forge.tools.base import ToolResult, ToolStatus
+from ansible_forge.agent.orchestrator import SessionState
 
 
 @pytest.mark.e2e

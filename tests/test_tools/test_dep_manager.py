@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ansible_forge.dep_manager import (
-    COLLECTION_DEPS,
     _MODULE_TO_PIP,
+    COLLECTION_DEPS,
     _is_package_installed,
     ensure_collection_deps,
     ensure_packages,
@@ -207,7 +207,7 @@ class TestEnsurePackages:
         with (
             patch("ansible_forge.dep_manager.MANAGED_SITE_PACKAGES", tmp_path),
             patch("ansible_forge.dep_manager._resolve_installer") as mock_resolver,
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
             patch("asyncio.wait_for", side_effect=TimeoutError),
         ):
             mock_resolver.return_value = ("/usr/bin/uv", ["pip", "install", "--target"])

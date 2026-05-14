@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ansible_forge.tools.base import ToolResult, ToolStatus
+from ansible_forge.tools.base import ToolStatus
 
 
 @pytest.mark.e2e

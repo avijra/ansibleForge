@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -10,7 +9,6 @@ import pytest
 
 from ansible_forge.dep_manager import (
     COLLECTION_DEPS,
-    MANAGED_SITE_PACKAGES,
     ensure_collection_deps,
     ensure_packages,
     guess_pip_package,
