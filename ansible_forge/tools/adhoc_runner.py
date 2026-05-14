@@ -6,7 +6,6 @@ import asyncio
 import functools
 import os
 import signal
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +19,8 @@ from ansible_forge.tools.executor import (
     _format_live_event,
     _resolve_python_interpreter,
     _sigkill_after_delay,
-    clean_stale_env,
     isolated_runner_dir,
+    materialize_ssh_keys,
 )
 from ansible_forge.tools.secret_check import find_missing_secrets
 from ansible_forge.workspace.project_layout import ensure_ansible_cfg
@@ -145,28 +144,8 @@ class AdhocRunner(BaseTool):
         }
 
     @staticmethod
-    def _materialize_ssh_keys(ws: Path, merged_vars: dict[str, Any]) -> list[Path]:
-        files: list[Path] = []
-        keys_dir = ws / ".tuyere" / "ssh_keys"
-        for var_name in list(merged_vars):
-            value = merged_vars[var_name]
-            if not isinstance(value, str):
-                continue
-            is_key = (
-                var_name.lower() in _SSH_KEY_SECRET_NAMES
-                or all(h in value for h in _SSH_KEY_HEADERS)
-            )
-            if not is_key:
-                continue
-            keys_dir.mkdir(parents=True, exist_ok=True)
-            key_file = keys_dir / var_name
-            if key_file.exists():
-                os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
-            key_file.write_text(value)
-            os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-            merged_vars[var_name] = str(key_file)
-            files.append(key_file)
-        return files
+    def _materialize_ssh_keys(keys_dir: Path, merged_vars: dict[str, Any]) -> list[Path]:
+        return materialize_ssh_keys(keys_dir, merged_vars)
 
     @staticmethod
     def _resolve_inventory(ws: Path, inventory: str) -> Path:
@@ -219,8 +198,6 @@ class AdhocRunner(BaseTool):
             merged_vars.update(vault.get_all())
         if extra_vars:
             merged_vars.update(extra_vars)
-        self._materialize_ssh_keys(ws, merged_vars)
-        clean_stale_env(ws)
         ensure_ansible_cfg(ws)
         (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
 
@@ -232,14 +209,15 @@ class AdhocRunner(BaseTool):
                     f"Use request_secret to collect them from the user before retrying."
                 )
 
-        envvars = _adhoc_envvars()
-        for key, value in merged_vars.items():
-            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
-                envvars[key] = str(value)
-
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
         with isolated_runner_dir(ws) as run_dir:
+            self._materialize_ssh_keys(run_dir / "ssh_keys", merged_vars)
+
+            envvars = _adhoc_envvars()
+            for key, value in merged_vars.items():
+                if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                    envvars[key] = str(value)
             runner_kwargs: dict[str, Any] = {
                 "private_data_dir": str(run_dir),
                 "project_dir": str(ws),
@@ -297,13 +275,13 @@ class AdhocRunner(BaseTool):
             except asyncio.CancelledError:
                 runner.canceled = True
                 _kill_runner(runner)
-                thread.join(timeout=10)
+                await loop.run_in_executor(None, lambda: thread.join(timeout=10))
                 logger.info("adhoc_cancelled", module=module, host_pattern=host_pattern)
                 raise
             except TimeoutError:
                 runner.canceled = True
                 _kill_runner(runner)
-                thread.join(timeout=10)
+                await loop.run_in_executor(None, lambda: thread.join(timeout=10))
                 mins = effective_timeout // 60
                 secs = effective_timeout % 60
                 time_str = f"{mins}m{secs}s" if secs else f"{mins} minute(s)"

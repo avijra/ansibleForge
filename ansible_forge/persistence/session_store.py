@@ -54,6 +54,9 @@ _db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-db"
 class SessionStore:
     """Persists session metadata and events to a SQLite database."""
 
+    _instance: SessionStore | None = None
+    _cls_lock = threading.Lock()
+
     def __init__(self, db_path: Path | None = None) -> None:
         if db_path is None:
             db_path = Path.home() / ".ansibleforge" / "sessions.db"
@@ -61,6 +64,14 @@ class SessionStore:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._init_db()
+
+    @classmethod
+    def get_instance(cls, db_path: Path | None = None) -> SessionStore:
+        if cls._instance is None:
+            with cls._cls_lock:
+                if cls._instance is None:
+                    cls._instance = cls(db_path)
+        return cls._instance
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path), timeout=10)

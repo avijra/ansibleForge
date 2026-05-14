@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ansible_forge.tools.executor import Executor
+from ansible_forge.tools.executor import clean_stale_env
 
 
 class TestCleanStaleEnv:
@@ -14,7 +14,7 @@ class TestCleanStaleEnv:
         cmdline_file = env_dir / "cmdline"
         cmdline_file.write_text("--check --diff")
 
-        Executor._clean_stale_env(tmp_path)
+        clean_stale_env(tmp_path)
 
         assert not cmdline_file.exists()
 
@@ -24,12 +24,12 @@ class TestCleanStaleEnv:
         extravars_file = env_dir / "extravars"
         extravars_file.write_text('{"ssh_password": "admin"}')
 
-        Executor._clean_stale_env(tmp_path)
+        clean_stale_env(tmp_path)
 
         assert not extravars_file.exists()
 
     def test_noop_when_env_dir_missing(self, tmp_path: Path) -> None:
-        Executor._clean_stale_env(tmp_path)
+        clean_stale_env(tmp_path)
 
     def test_preserves_other_env_files(self, tmp_path: Path) -> None:
         env_dir = tmp_path / ".tuyere" / "env"
@@ -39,7 +39,7 @@ class TestCleanStaleEnv:
         cmdline_file = env_dir / "cmdline"
         cmdline_file.write_text("--check --diff")
 
-        Executor._clean_stale_env(tmp_path)
+        clean_stale_env(tmp_path)
 
         assert not cmdline_file.exists()
         assert settings_file.exists()
@@ -53,5 +53,5 @@ class TestCleanStaleEnv:
         cmdline_file.write_text("--check --diff")
 
         assert cmdline_file.exists()
-        Executor._clean_stale_env(tmp_path)
+        clean_stale_env(tmp_path)
         assert not cmdline_file.exists()

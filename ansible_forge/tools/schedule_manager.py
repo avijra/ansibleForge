@@ -91,21 +91,22 @@ def cron_next_run(expression: str, after: float | None = None) -> float | None:
 
 class ScheduleStore:
     _instance: ScheduleStore | None = None
-    _lock = threading.Lock()
+    _cls_lock = threading.Lock()
 
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or str(
             Path.home() / ".ansibleforge" / "schedules.db"
         )
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._db_path)
-        conn.executescript(_CREATE_SQL)
-        conn.close()
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self._db_path, timeout=10)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.executescript(_CREATE_SQL)
 
     @classmethod
     def get_instance(cls) -> ScheduleStore:
         if cls._instance is None:
-            with cls._lock:
+            with cls._cls_lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
@@ -115,38 +116,36 @@ class ScheduleStore:
         now = time.time()
         next_run = cron_next_run(schedule.get("cron_expression", ""))
 
-        conn = sqlite3.connect(self._db_path)
-        conn.execute(
-            "INSERT INTO schedules (schedule_id, name, workspace_path, playbook, "
-            "inventory, cron_expression, host_limit, extra_vars_json, enabled, "
-            "next_run_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                sid,
-                schedule.get("name", ""),
-                schedule.get("workspace_path", ""),
-                schedule.get("playbook", ""),
-                schedule.get("inventory", ""),
-                schedule.get("cron_expression", ""),
-                schedule.get("host_limit", ""),
-                json.dumps(schedule.get("extra_vars", {})),
-                1,
-                next_run,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO schedules (schedule_id, name, workspace_path, playbook, "
+                "inventory, cron_expression, host_limit, extra_vars_json, enabled, "
+                "next_run_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    sid,
+                    schedule.get("name", ""),
+                    schedule.get("workspace_path", ""),
+                    schedule.get("playbook", ""),
+                    schedule.get("inventory", ""),
+                    schedule.get("cron_expression", ""),
+                    schedule.get("host_limit", ""),
+                    json.dumps(schedule.get("extra_vars", {})),
+                    1,
+                    next_run,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
         return sid
 
     def list_all(self) -> list[dict[str, Any]]:
-        conn = sqlite3.connect(self._db_path)
-        rows = conn.execute(
-            "SELECT schedule_id, name, workspace_path, playbook, inventory, "
-            "cron_expression, host_limit, enabled, last_run_at, next_run_at, "
-            "run_count, last_status, created_at FROM schedules ORDER BY created_at DESC"
-        ).fetchall()
-        conn.close()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT schedule_id, name, workspace_path, playbook, inventory, "
+                "cron_expression, host_limit, enabled, last_run_at, next_run_at, "
+                "run_count, last_status, created_at FROM schedules ORDER BY created_at DESC"
+            ).fetchall()
         return [
             {
                 "schedule_id": r[0], "name": r[1], "workspace_path": r[2],
@@ -159,38 +158,35 @@ class ScheduleStore:
         ]
 
     def delete(self, schedule_id: str) -> bool:
-        conn = sqlite3.connect(self._db_path)
-        cur = conn.execute("DELETE FROM schedules WHERE schedule_id=?", (schedule_id,))
-        conn.commit()
-        conn.close()
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM schedules WHERE schedule_id=?", (schedule_id,))
+            self._conn.commit()
         return cur.rowcount > 0
 
     def toggle(self, schedule_id: str, enabled: bool) -> bool:
         now = time.time()
-        conn = sqlite3.connect(self._db_path)
-        cur = conn.execute(
-            "UPDATE schedules SET enabled=?, updated_at=? WHERE schedule_id=?",
-            (1 if enabled else 0, now, schedule_id),
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE schedules SET enabled=?, updated_at=? WHERE schedule_id=?",
+                (1 if enabled else 0, now, schedule_id),
+            )
+            self._conn.commit()
         return cur.rowcount > 0
 
     def record_run(self, schedule_id: str, status: str) -> None:
         now = time.time()
-        conn = sqlite3.connect(self._db_path)
-        row = conn.execute(
-            "SELECT cron_expression FROM schedules WHERE schedule_id=?",
-            (schedule_id,),
-        ).fetchone()
-        next_run = cron_next_run(row[0], now) if row else None
-        conn.execute(
-            "UPDATE schedules SET last_run_at=?, last_status=?, run_count=run_count+1, "
-            "next_run_at=?, updated_at=? WHERE schedule_id=?",
-            (now, status, next_run, now, schedule_id),
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT cron_expression FROM schedules WHERE schedule_id=?",
+                (schedule_id,),
+            ).fetchone()
+            next_run = cron_next_run(row[0], now) if row else None
+            self._conn.execute(
+                "UPDATE schedules SET last_run_at=?, last_status=?, run_count=run_count+1, "
+                "next_run_at=?, updated_at=? WHERE schedule_id=?",
+                (now, status, next_run, now, schedule_id),
+            )
+            self._conn.commit()
 
 
 class ScheduleManager(BaseTool):

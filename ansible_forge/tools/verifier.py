@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import os
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +12,7 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import isolated_runner_dir
+from ansible_forge.tools.executor import isolated_runner_dir, materialize_ssh_keys
 
 logger = get_logger(__name__)
 
@@ -100,25 +98,8 @@ class Verifier(BaseTool):
         }
 
     @staticmethod
-    def _materialize_ssh_keys(ws: Path, merged_vars: dict[str, Any]) -> None:
-        keys_dir = ws / ".tuyere" / "ssh_keys"
-        for var_name in list(merged_vars):
-            value = merged_vars[var_name]
-            if not isinstance(value, str):
-                continue
-            is_key = (
-                var_name.lower() in _SSH_KEY_SECRET_NAMES
-                or all(h in value for h in _SSH_KEY_HEADERS)
-            )
-            if not is_key:
-                continue
-            keys_dir.mkdir(parents=True, exist_ok=True)
-            key_file = keys_dir / var_name
-            if key_file.exists():
-                os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
-            key_file.write_text(value)
-            os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-            merged_vars[var_name] = str(key_file)
+    def _materialize_ssh_keys(keys_dir: Path, merged_vars: dict[str, Any]) -> list[Path]:
+        return materialize_ssh_keys(keys_dir, merged_vars)
 
     @staticmethod
     def _resolve_inventory(ws: Path, inventory: str) -> Path:
@@ -247,8 +228,11 @@ class Verifier(BaseTool):
             tasks_yaml=tasks_yaml,
         )
 
+        import uuid as _uuid
+
         ws.mkdir(parents=True, exist_ok=True)
-        verify_pb = ws / "_verify.yml"
+        pb_name = f"_verify_{_uuid.uuid4().hex[:8]}.yml"
+        verify_pb = ws / pb_name
         verify_pb.write_text(playbook_content, encoding="utf-8")
 
         extravars: dict[str, Any] = {}
@@ -256,20 +240,14 @@ class Verifier(BaseTool):
         if session_id:
             vault = SecretVault.get_instance().for_session(session_id)
             extravars.update(vault.get_all())
-        self._materialize_ssh_keys(ws, extravars)
-
-        env_dir = ws / ".tuyere" / "env"
-        if env_dir.exists():
-            for artifact in ("cmdline", "extravars"):
-                p = env_dir / artifact
-                if p.exists():
-                    p.unlink()
 
         with isolated_runner_dir(ws) as run_dir:
+            self._materialize_ssh_keys(run_dir / "ssh_keys", extravars)
+
             runner_kwargs: dict[str, Any] = {
                 "private_data_dir": str(run_dir),
                 "project_dir": str(ws),
-                "playbook": "_verify.yml",
+                "playbook": pb_name,
                 "inventory": str(inv_path),
             }
             if extravars:

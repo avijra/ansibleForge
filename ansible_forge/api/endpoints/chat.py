@@ -28,18 +28,13 @@ from ansible_forge.persistence.session_store import SessionStore
 
 logger = get_logger(__name__)
 
-_session_store: SessionStore | None = None
-
-
 def _get_session_store() -> SessionStore:
-    global _session_store
-    if _session_store is None:
-        _session_store = SessionStore()
-    return _session_store
+    return SessionStore.get_instance()
 
 router = APIRouter()
 
 _orchestrator: Orchestrator | None = None
+_active_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 async def _run_reflection(session_id: str, orch: Orchestrator, store: SessionStore) -> None:
@@ -186,12 +181,18 @@ async def chat(
     await store.asave_session(session_id, status="active", project_path=request.project_path)
     await store.asave_event(session_id, "user_message", {"content": request.message})
 
+    prev_task = _active_tasks.get(session_id)
+    if prev_task and not prev_task.done():
+        prev_task.cancel()
+        logger.info("cancelled_previous_run", session_id=session_id)
+
     bus = EventBusRegistry.get_instance().get_or_create(session_id)
     bus_gen = bus.mark_running()
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_agent_background(session_id, request.message, orch, store, bus_gen)
     )
+    _active_tasks[session_id] = task
 
     subscriber = bus.subscribe(from_seq=0)
 

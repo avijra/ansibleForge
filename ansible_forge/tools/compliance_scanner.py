@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import os
-import stat
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -16,7 +14,7 @@ import yaml
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import isolated_runner_dir
+from ansible_forge.tools.executor import isolated_runner_dir, materialize_ssh_keys
 
 logger = get_logger(__name__)
 
@@ -319,8 +317,11 @@ class ComplianceScanner(BaseTool):
         if not checks:
             return ToolResult.fail("No checks to run. Specify profiles or custom_checks.")
 
+        import uuid as _uuid
+
         playbook_content = self._build_playbook(checks, host_pattern, become=True)
-        scan_playbook = ws / "_compliance_scan.yml"
+        pb_name = f"_compliance_scan_{_uuid.uuid4().hex[:8]}.yml"
+        scan_playbook = ws / pb_name
         scan_playbook.parent.mkdir(parents=True, exist_ok=True)
         scan_playbook.write_text(playbook_content, encoding="utf-8")
 
@@ -330,30 +331,18 @@ class ComplianceScanner(BaseTool):
             vault = SecretVault.get_instance().for_session(session_id)
             extravars.update(vault.get_all())
 
-        keys_dir = ws / ".tuyere" / "ssh_keys"
-        for var_name in list(extravars):
-            value = extravars[var_name]
-            if not isinstance(value, str):
-                continue
-            if var_name.lower() in _SSH_KEY_SECRET_NAMES or all(h in value for h in _SSH_KEY_HEADERS):
-                keys_dir.mkdir(parents=True, exist_ok=True)
-                key_file = keys_dir / var_name
-                if key_file.exists():
-                    os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
-                key_file.write_text(value)
-                os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-                extravars[var_name] = str(key_file)
-
         check_map = {f"check_{c['id']}": c for c in checks}
         results_by_host: dict[str, list[dict[str, Any]]] = {}
 
         loop = asyncio.get_event_loop()
         try:
             with isolated_runner_dir(ws) as run_dir:
+                materialize_ssh_keys(run_dir / "ssh_keys", extravars)
+
                 runner_kwargs: dict[str, Any] = {
                     "private_data_dir": str(run_dir),
                     "project_dir": str(ws),
-                    "playbook": "_compliance_scan.yml",
+                    "playbook": pb_name,
                     "inventory": str(inv_path),
                 }
                 if extravars:

@@ -194,7 +194,9 @@ def isolated_runner_dir(ws: Path):
     condition that occurs when parallel runner calls share the same
     private_data_dir.  The directory is removed when the context exits.
     """
-    run_dir = ws / ".tuyere" / "runs" / uuid.uuid4().hex[:12]
+    runs_root = ws / ".tuyere" / "runs"
+    _purge_orphan_runs(runs_root)
+    run_dir = runs_root / uuid.uuid4().hex[:12]
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "env").mkdir(exist_ok=True)
     try:
@@ -204,8 +206,61 @@ def isolated_runner_dir(ws: Path):
             shutil.rmtree(run_dir, ignore_errors=True)
 
 
+_ORPHAN_MAX_AGE_SECS = 3600
+
+
+def _purge_orphan_runs(runs_root: Path) -> None:
+    """Remove run directories older than 1 hour (leftovers from crashed runs)."""
+    if not runs_root.is_dir():
+        return
+    import time
+
+    now = time.time()
+    for entry in runs_root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+            if age > _ORPHAN_MAX_AGE_SECS:
+                shutil.rmtree(entry, ignore_errors=True)
+                logger.debug("purged_orphan_run_dir", path=str(entry), age_secs=int(age))
+        except OSError:
+            pass
+
+
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
+
+
+def materialize_ssh_keys(keys_dir: Path, merged_vars: dict[str, Any]) -> list[Path]:
+    """Write SSH key secrets to disk inside the given directory.
+
+    Scans ``merged_vars`` for values that look like SSH private keys
+    (by variable name or content).  Each match is written with 0600
+    permissions and the variable value is replaced with the file path.
+    """
+    files: list[Path] = []
+    for var_name in list(merged_vars):
+        value = merged_vars[var_name]
+        if not isinstance(value, str):
+            continue
+        is_key = (
+            var_name.lower() in _SSH_KEY_SECRET_NAMES
+            or all(h in value for h in _SSH_KEY_HEADERS)
+        )
+        if not is_key:
+            continue
+
+        keys_dir.mkdir(parents=True, exist_ok=True)
+        key_file = keys_dir / var_name
+        if key_file.exists():
+            os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
+        key_file.write_text(value)
+        os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
+        merged_vars[var_name] = str(key_file)
+        files.append(key_file)
+        logger.info("ssh_key_materialized", variable=var_name, path=str(key_file))
+    return files
 
 
 class Executor(BaseTool):
@@ -299,47 +354,9 @@ class Executor(BaseTool):
         }
 
     @staticmethod
-    def _materialize_ssh_keys(ws: Path, merged_vars: dict[str, Any]) -> list[Path]:
-        """Write SSH key secrets to disk so ansible-runner can use them.
-
-        Scans ``merged_vars`` for values that look like SSH private keys
-        (by variable name or content).  Each match is written to the
-        workspace with ``0600`` permissions and the variable value is
-        replaced with the file path so Ansible picks it up automatically.
-
-        Returns the list of files created (for optional cleanup).
-        """
-        files: list[Path] = []
-        keys_dir = ws / ".tuyere" / "ssh_keys"
-        for var_name in list(merged_vars):
-            value = merged_vars[var_name]
-            if not isinstance(value, str):
-                continue
-            is_key = (
-                var_name.lower() in _SSH_KEY_SECRET_NAMES
-                or all(h in value for h in _SSH_KEY_HEADERS)
-            )
-            if not is_key:
-                continue
-
-            keys_dir.mkdir(parents=True, exist_ok=True)
-            key_file = keys_dir / var_name
-            if key_file.exists():
-                os.chmod(key_file, stat.S_IWUSR | stat.S_IRUSR)
-            key_file.write_text(value)
-            os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-            merged_vars[var_name] = str(key_file)
-            files.append(key_file)
-            logger.info(
-                "ssh_key_materialized",
-                variable=var_name,
-                path=str(key_file),
-            )
-        return files
-
-    @staticmethod
-    def _clean_stale_env(ws: Path) -> None:
-        clean_stale_env(ws)
+    def _materialize_ssh_keys(keys_dir: Path, merged_vars: dict[str, Any]) -> list[Path]:
+        """Write SSH key secrets into keys_dir (should be inside isolated run_dir)."""
+        return materialize_ssh_keys(keys_dir, merged_vars)
 
     @staticmethod
     def _resolve_inventory(ws: Path, inventory: str) -> Path:
@@ -404,19 +421,19 @@ class Executor(BaseTool):
         if extra_vars:
             merged_vars.update(extra_vars)
 
-        self._materialize_ssh_keys(ws, merged_vars)
-        self._clean_stale_env(ws)
         ensure_ansible_cfg(ws)
         (ws / ".tuyere").mkdir(parents=True, exist_ok=True)
-
-        envvars = _runner_envvars()
-        for key, value in merged_vars.items():
-            if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
-                envvars[key] = str(value)
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
         with isolated_runner_dir(ws) as run_dir:
+            self._materialize_ssh_keys(run_dir / "ssh_keys", merged_vars)
+
+            envvars = _runner_envvars()
+            for key, value in merged_vars.items():
+                if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
+                    envvars[key] = str(value)
+
             return await self._run_playbook(
                 ws, run_dir, playbook, verbosity, envvars, live_queue,
                 cmdline_args, merged_vars, inventory, mode, timeout, kwargs,

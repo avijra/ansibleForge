@@ -11,14 +11,8 @@ from ansible_forge.persistence.session_store import SessionStore
 
 router = APIRouter()
 
-_store: SessionStore | None = None
-
-
 def _get_store() -> SessionStore:
-    global _store
-    if _store is None:
-        _store = SessionStore()
-    return _store
+    return SessionStore.get_instance()
 
 
 @router.get("/sessions")

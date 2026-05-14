@@ -101,6 +101,7 @@ class InfrastructureStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._init_db()
 
     async def _offload(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a blocking DB function off the event loop."""
@@ -108,7 +109,6 @@ class InfrastructureStore:
         return await loop.run_in_executor(
             _infra_executor, partial(fn, *args, **kwargs)
         )
-        self._init_db()
 
     @classmethod
     def get_instance(cls) -> InfrastructureStore:

@@ -280,7 +280,7 @@ class Orchestrator:
         self._validator = PlaybookValidator()
         self._diff_analyzer = DiffAnalyzer()
         self._sessions: dict[str, SessionState] = {}
-        self._session_store = SessionStore()
+        self._session_store = SessionStore.get_instance()
         self._experience_store = ExperienceStore()
 
     _EXECUTION_TOOLS = frozenset({"execute_playbook", "run_adhoc", "terraform_exec"})

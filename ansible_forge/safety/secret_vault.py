@@ -161,6 +161,8 @@ class SessionVault:
             self._disk_path().unlink(missing_ok=True)
 
     def create_pending(self, name: str) -> asyncio.Event:
+        if name in self._pending:
+            return self._pending[name]
         evt = asyncio.Event()
         self._pending[name] = evt
         return evt

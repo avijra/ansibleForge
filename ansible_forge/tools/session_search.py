@@ -45,7 +45,7 @@ class SessionSearchTool(BaseTool):
             return ToolResult.fail("'query' is required.")
 
         try:
-            store = SessionStore()
+            store = SessionStore.get_instance()
             results = store.search_events(query, limit=limit)
         except Exception as exc:
             return ToolResult.fail(f"Session search failed: {exc}")

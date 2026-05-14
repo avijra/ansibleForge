@@ -5,15 +5,11 @@ from __future__ import annotations
 from ansible_forge.persistence.session_store import SessionStore
 from ansible_forge.workspace.manager import Workspace, WorkspaceManager
 
-_store: SessionStore | None = None
 _mgr: WorkspaceManager | None = None
 
 
 def _get_store() -> SessionStore:
-    global _store
-    if _store is None:
-        _store = SessionStore()
-    return _store
+    return SessionStore.get_instance()
 
 
 def _get_mgr() -> WorkspaceManager:

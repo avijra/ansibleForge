@@ -34,21 +34,15 @@ class LLMClient:
         if self._settings.ollama_base_url:
             os.environ.setdefault("OLLAMA_API_BASE", self._settings.ollama_base_url)
 
-    def _apply_runtime_overrides(self) -> None:
-        """Push runtime API key / base_url into env so LiteLLM picks them up."""
+    def _runtime_kwargs(self) -> dict[str, Any]:
+        """Return per-call api_key / api_base kwargs instead of mutating os.environ."""
         rt = get_runtime_llm()
+        result: dict[str, Any] = {}
         if rt.api_key and rt.provider:
-            env_key = self._provider_env_key(rt.provider)
-            if env_key:
-                os.environ[env_key] = rt.api_key
+            result["api_key"] = rt.api_key
         if rt.api_base:
-            provider = rt.provider or self._settings.llm_provider
-            base_env_map: dict[str, str] = {
-                "ollama": "OLLAMA_API_BASE",
-                "openai": "OPENAI_API_BASE",
-            }
-            env_var = base_env_map.get(provider.lower(), f"{provider.upper()}_API_BASE")
-            os.environ[env_var] = rt.api_base
+            result["api_base"] = rt.api_base
+        return result
 
     @staticmethod
     def _provider_env_key(provider: str) -> str | None:
@@ -103,7 +97,6 @@ class LLMClient:
 
         Tries the primary model first, then falls back through the fallback chain.
         """
-        self._apply_runtime_overrides()
         model = model or self._effective_model()
         temperature = temperature if temperature is not None else self._effective_temperature()
         max_tokens = max_tokens or self._effective_max_tokens()
@@ -113,6 +106,7 @@ class LLMClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            **self._runtime_kwargs(),
         }
         if tools:
             kwargs["tools"] = tools
@@ -131,7 +125,6 @@ class LLMClient:
         max_tokens: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream a chat completion, yielding delta chunks."""
-        self._apply_runtime_overrides()
         model = model or self._effective_model()
         temperature = temperature if temperature is not None else self._effective_temperature()
         max_tokens = max_tokens or self._effective_max_tokens()
@@ -143,6 +136,7 @@ class LLMClient:
             "max_tokens": max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
+            **self._runtime_kwargs(),
         }
         if tools:
             kwargs["tools"] = tools

@@ -63,8 +63,8 @@ class TestSessionStoreFTS:
 class TestSessionSearchTool:
     async def test_search_success(self, seeded_store: SessionStore, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "ansible_forge.persistence.session_store.SessionStore",
-            lambda *a, **kw: seeded_store,
+            "ansible_forge.persistence.session_store.SessionStore.get_instance",
+            staticmethod(lambda *a, **kw: seeded_store),
         )
         tool = SessionSearchTool()
         result = await tool.execute(query="GPU operator")
@@ -77,8 +77,8 @@ class TestSessionSearchTool:
 
     async def test_search_no_results(self, seeded_store: SessionStore, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "ansible_forge.persistence.session_store.SessionStore",
-            lambda *a, **kw: seeded_store,
+            "ansible_forge.persistence.session_store.SessionStore.get_instance",
+            staticmethod(lambda *a, **kw: seeded_store),
         )
         tool = SessionSearchTool()
         result = await tool.execute(query="xyznonexistent")
