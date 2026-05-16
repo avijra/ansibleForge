@@ -57,6 +57,7 @@ LOOP_BREAK_PROMPT = (
 )
 
 _PROGRESS_INTERVAL = 5
+_CHUNK_DEAD_TICKS = 6
 
 _PARALLELIZABLE_TOOLS = frozenset({
     "collect_facts", "test_connectivity", "search_docs", "web_search",
@@ -706,6 +707,7 @@ class Orchestrator:
                 streamed = False
                 try:
                     llm_progress_tick = 0
+                    empty_ticks = 0
                     stream_iter = self._stream_llm_call(
                         state, self._registry.to_openai_tools()
                     ).__aiter__()
@@ -720,6 +722,18 @@ class Orchestrator:
                             )
                             if not done:
                                 llm_progress_tick += 1
+                                empty_ticks += 1
+                                if empty_ticks >= _CHUNK_DEAD_TICKS:
+                                    logger.error(
+                                        "llm_stream_dead",
+                                        session_id=state.session_id,
+                                        silent_seconds=empty_ticks * _PROGRESS_INTERVAL,
+                                    )
+                                    get_next.cancel()
+                                    raise TimeoutError(
+                                        f"LLM stream dead — no data for "
+                                        f"{empty_ticks * _PROGRESS_INTERVAL}s"
+                                    )
                                 hint = _LLM_THINKING_MESSAGES[
                                     min(llm_progress_tick - 1, len(_LLM_THINKING_MESSAGES) - 1)
                                 ]
@@ -730,6 +744,7 @@ class Orchestrator:
                                 })
                                 continue
 
+                            empty_ticks = 0
                             try:
                                 item = get_next.result()
                             except StopAsyncIteration:
@@ -749,12 +764,15 @@ class Orchestrator:
                         step=state.step_count,
                     )
                     state.memory.add_user(
-                        "The LLM call timed out. Simplify your approach — "
-                        "stop calling tools and present what you have so far."
+                        "Your previous response was too long and the stream "
+                        "timed out. You MUST produce shorter responses. Generate "
+                        "ONE playbook or ONE file per step — never multiple large "
+                        "artifacts in a single response. Break the work into small "
+                        "sequential steps. Resume from where you left off."
                     )
                     yield AgentEvent("error_recovery", {
                         "tool": "llm",
-                        "error": "The AI model took too long to respond. The conversation may be too large — consider starting a new chat.",
+                        "error": "The AI model's response was too long and the connection dropped. Retrying with a shorter response.",
                     })
                     continue
                 except Exception as stream_exc:

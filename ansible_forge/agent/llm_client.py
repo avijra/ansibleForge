@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import litellm
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -17,6 +18,8 @@ logger = get_logger(__name__)
 
 litellm.drop_params = True
 litellm.modify_params = True
+
+_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=45, write=15, pool=30)
 
 
 class LLMClient:
@@ -177,6 +180,7 @@ class LLMClient:
         ),
     )
     async def _stream_with_retry(self, **kwargs: Any) -> Any:
+        kwargs.setdefault("timeout", _LLM_HTTP_TIMEOUT)
         return await litellm.acompletion(**kwargs)
 
     async def _call_with_fallback(self, **kwargs: Any) -> Any:
@@ -217,6 +221,7 @@ class LLMClient:
         ),
     )
     async def _single_call(self, **kwargs: Any) -> Any:
+        kwargs.setdefault("timeout", _LLM_HTTP_TIMEOUT)
         try:
             return await litellm.acompletion(**kwargs)
         except (litellm.exceptions.APIConnectionError, litellm.exceptions.BadRequestError) as exc:
