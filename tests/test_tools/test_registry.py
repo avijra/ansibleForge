@@ -60,9 +60,7 @@ class TestToolRegistry:
     def test_default_registry_has_all_tools(self) -> None:
         registry = create_default_registry()
         expected = {
-            "analyze_logs",
             "collect_facts",
-            "compare_configs",
             "detect_drift",
             "discover_inventory",
             "execute_playbook",
@@ -75,7 +73,6 @@ class TestToolRegistry:
             "manage_galaxy",
             "manage_git",
             "manage_inventory",
-            "manage_schedule",
             "manage_vault",
             "memory",
             "read_file",
@@ -83,9 +80,7 @@ class TestToolRegistry:
             "request_secret",
             "run_adhoc",
             "run_lint",
-            "run_molecule",
             "scaffold_role",
-            "scan_compliance",
             "search_docs",
             "session_search",
             "terraform_exec",

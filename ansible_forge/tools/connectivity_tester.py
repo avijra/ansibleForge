@@ -131,7 +131,7 @@ class ConnectivityTester(BaseTool):
             if extravars:
                 runner_kwargs["extravars"] = extravars
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(

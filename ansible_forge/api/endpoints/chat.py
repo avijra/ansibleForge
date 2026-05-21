@@ -37,40 +37,6 @@ _orchestrator: Orchestrator | None = None
 _active_tasks: dict[str, asyncio.Task[None]] = {}
 
 
-async def _run_reflection(session_id: str, orch: Orchestrator, store: SessionStore) -> None:
-    try:
-        from ansible_forge.knowledge.reflection import reflect_on_session
-
-        events = await store.aget_events(session_id)
-        count = await reflect_on_session(
-            session_id, events, orch._llm, orch._experience_store
-        )
-        if count:
-            logger.info("reflection_complete", session_id=session_id, learnings=count)
-    except Exception:
-        logger.debug("reflection_background_failed", session_id=session_id, exc_info=True)
-
-    try:
-        from ansible_forge.knowledge.consolidation import consolidate_experiences
-
-        total = await orch._experience_store.acount()
-        rule_count = await orch._experience_store.acount("rule")
-        if total >= 10 and total // 15 > rule_count:
-            rules_created = await consolidate_experiences(
-                orch._experience_store, orch._llm
-            )
-            if rules_created:
-                logger.info("auto_consolidation_complete", rules_created=rules_created)
-                pruned = await orch._experience_store.aprune_subsumed()
-                if pruned:
-                    logger.info("auto_prune_subsumed", removed=pruned)
-        deduped = await orch._experience_store.adeduplicate()
-        if deduped:
-            logger.info("auto_dedup_complete", removed=deduped)
-    except Exception:
-        logger.debug("auto_consolidation_failed", session_id=session_id, exc_info=True)
-
-
 def get_orchestrator() -> Orchestrator:
     global _orchestrator
     if _orchestrator is None:
@@ -134,11 +100,6 @@ async def _run_agent_background(
         except Exception:
             logger.debug("finally_mark_done_failed", session_id=session_id, exc_info=True)
 
-        if not session_destroyed:
-            try:
-                asyncio.create_task(_run_reflection(session_id, orch, store))
-            except Exception:
-                logger.debug("finally_reflection_failed", session_id=session_id, exc_info=True)
 
 
 def _classify_error(error_msg: str) -> dict[str, str]:
@@ -176,7 +137,7 @@ async def chat(
     orch = get_orchestrator()
     session_id = request.session_id
     if session_id is None:
-        state = orch.create_session(project_path=request.project_path)
+        state = await orch.create_session(project_path=request.project_path)
         session_id = state.session_id
 
     store = _get_session_store()

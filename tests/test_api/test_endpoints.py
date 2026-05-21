@@ -52,25 +52,6 @@ class TestLLMSettingsEndpoints:
         assert after_delete["temperature"] == before["temperature"]
 
 
-class TestKnowledgeEndpoints:
-    @pytest.mark.asyncio
-    async def test_knowledge_stats_shape(self, async_client: AsyncClient) -> None:
-        response = await async_client.get("/api/v1/knowledge/stats")
-        assert response.status_code == 200
-        data = response.json()
-        assert "stats" in data
-        assert "recent_errors" in data
-        assert isinstance(data["recent_errors"], list)
-
-    @pytest.mark.asyncio
-    async def test_knowledge_graph_shape(self, async_client: AsyncClient) -> None:
-        response = await async_client.get("/api/v1/knowledge/graph")
-        assert response.status_code == 200
-        data = response.json()
-        assert "nodes" in data
-        assert "edges" in data
-        assert isinstance(data["nodes"], list)
-        assert isinstance(data["edges"], list)
 
 
 class TestExecuteEndpoint:

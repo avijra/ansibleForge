@@ -53,7 +53,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
 
     os.close(slave_fd)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     closed = False
 
     async def read_pty() -> None:

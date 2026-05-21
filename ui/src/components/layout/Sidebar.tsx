@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Trash2, Server, GitBranch, Brain, Trash, FolderOpen, RotateCcw } from "lucide-react";
+import { Trash2, Server, GitBranch, Trash, FolderOpen, RotateCcw } from "lucide-react";
 import type { Session } from "@/api/types";
 import { cn } from "@/lib/utils";
 
-export type SidebarView = "chat" | "hosts" | "runs" | "knowledge";
+export type SidebarView = "chat" | "hosts" | "runs";
 
 interface SidebarProps {
   sessions: Session[];
@@ -214,7 +214,6 @@ export function Sidebar({ sessions, activeId, activeView, onSelect, onOpenFolder
         </span>
         <NavLink icon={Server} label="Hosts" active={activeView === "hosts"} onClick={() => onViewChange("hosts")} />
         <NavLink icon={GitBranch} label="Runs" active={activeView === "runs"} onClick={() => onViewChange("runs")} />
-        <NavLink icon={Brain} label="Knowledge" active={activeView === "knowledge"} onClick={() => onViewChange("knowledge")} />
       </div>
     </aside>
   );

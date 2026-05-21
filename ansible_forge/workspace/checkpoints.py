@@ -75,7 +75,7 @@ def _ensure_gitignore(workspace: Path) -> None:
 
 
 async def create_checkpoint(workspace: Path, label: str, step: int = 0) -> str | None:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _create_checkpoint_sync, workspace, label, step)
 
 
@@ -129,7 +129,7 @@ def list_checkpoints(workspace: Path, limit: int = 50) -> list[dict[str, Any]]:
 
 
 async def revert_to_checkpoint(workspace: Path, commit_hash: str) -> dict[str, Any]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _revert_sync, workspace, commit_hash)
 
 

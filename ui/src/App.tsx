@@ -3,7 +3,6 @@ import { Cpu, Settings as SettingsIcon, PanelRightOpen, FolderOpen } from "lucid
 import { Header } from "@/components/layout/Header";
 import { Sidebar, type SidebarView } from "@/components/layout/Sidebar";
 import { HostsView } from "@/components/views/HostsView";
-import { KnowledgeView } from "@/components/views/KnowledgeView";
 import { RunsView } from "@/components/views/RunsView";
 import { ActivityFeed } from "@/components/chat/ActivityFeed";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -550,8 +549,6 @@ export function App() {
             <HostsView />
           ) : activeView === "runs" ? (
             <RunsView />
-          ) : activeView === "knowledge" ? (
-            <KnowledgeView />
           ) : (
             <>
               <ActivityFeed

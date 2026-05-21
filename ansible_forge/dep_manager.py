@@ -271,7 +271,7 @@ def download_uv(version: str = UV_VERSION) -> Path:
 
 
 async def download_uv_async(version: str = UV_VERSION) -> Path:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, download_uv, version)
 
 

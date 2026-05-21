@@ -1,1 +1,1 @@
-"""Knowledge subsystem for cross-session learning."""
+"""Knowledge subsystem — workspace memory for cross-session persistence."""

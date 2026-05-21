@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from functools import partial
+
 from ansible_forge.persistence.session_store import SessionStore
 from ansible_forge.workspace.manager import Workspace, WorkspaceManager
 
@@ -19,12 +22,7 @@ def _get_mgr() -> WorkspaceManager:
     return _mgr
 
 
-def resolve_workspace(session_id: str) -> Workspace | None:
-    """Resolve a workspace for the given session.
-
-    Checks the session store for a ``project_path`` first and falls back
-    to looking up the session ID under the default base directory.
-    """
+def _resolve_sync(session_id: str) -> Workspace | None:
     store = _get_store()
     mgr = _get_mgr()
 
@@ -35,3 +33,12 @@ def resolve_workspace(session_id: str) -> Workspace | None:
             return ws
 
     return mgr.get(session_id)
+
+
+def resolve_workspace(session_id: str) -> Workspace | None:
+    return _resolve_sync(session_id)
+
+
+async def aresolve_workspace(session_id: str) -> Workspace | None:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, partial(_resolve_sync, session_id))

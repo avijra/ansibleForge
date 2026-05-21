@@ -8,26 +8,24 @@ from typing import Any
 
 _JINJA_VAR = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 _BUILTIN_VARS = frozenset({
-    "ansible_playbook_python",
-    "inventory_hostname",
-    "ansible_host",
-    "ansible_user",
-    "ansible_port",
-    "ansible_connection",
-    "groups",
-    "hostvars",
-    "item",
+    "ansible_host", "ansible_port", "ansible_user", "ansible_connection",
+    "ansible_become", "ansible_become_user", "ansible_become_method",
+    "inventory_hostname", "inventory_hostname_short", "group_names",
+    "groups", "hostvars", "ansible_facts", "ansible_play_hosts",
+    "item", "ansible_loop",
 })
 
 
 def find_missing_secrets(
-    inventory_path: Path,
-    provided_vars: dict[str, Any],
+    inventory_path: Path | str, extra_vars: dict[str, Any] | None = None,
 ) -> list[str]:
-    try:
-        content = inventory_path.read_text()
-    except OSError:
+    inv = Path(inventory_path)
+    if not inv.exists():
         return []
-    refs = set(_JINJA_VAR.findall(content))
-    needed = refs - _BUILTIN_VARS
-    return sorted(name for name in needed if name not in provided_vars)
+    try:
+        text = inv.read_text(errors="replace")
+    except Exception:
+        return []
+    refs = set(_JINJA_VAR.findall(text))
+    provided = set((extra_vars or {}).keys())
+    return sorted(refs - _BUILTIN_VARS - provided)

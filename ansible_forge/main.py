@@ -93,26 +93,6 @@ async def _parent_watchdog(check_interval: int = 5) -> None:
             os._exit(0)
 
 
-async def _periodic_consolidation(interval: int = 3600) -> None:
-    """Consolidate repeated experiences into generalized rules and prune stale ones."""
-    await asyncio.sleep(30)
-    while True:
-        try:
-            from ansible_forge.api.endpoints.chat import get_orchestrator
-            from ansible_forge.knowledge.consolidation import consolidate_experiences
-
-            orch = get_orchestrator()
-            pruned = await orch._experience_store.aprune_stale(max_age_days=30, min_confidence=0.3)
-            if pruned:
-                logger.info("periodic_prune_done", pruned=pruned)
-            count = await consolidate_experiences(orch._experience_store, orch._llm)
-            if count:
-                logger.info("periodic_consolidation_done", rules_created=count)
-        except Exception:
-            logger.debug("periodic_consolidation_failed", exc_info=True)
-        await asyncio.sleep(interval)
-
-
 async def _startup_self_check() -> None:
     """Run self-check on first launch after install/update."""
     from ansible_forge.self_check import needs_validation, run_self_check
@@ -128,17 +108,6 @@ async def _startup_self_check() -> None:
             logger.warning("startup_self_check_warnings", warnings=non_critical)
 
 
-async def _health_status_updater() -> None:
-    """Periodically push the main loop's health status to the threaded server."""
-    from ansible_forge import health_thread
-
-    await asyncio.sleep(2)
-    health_thread.update_status("healthy")
-    while True:
-        await asyncio.sleep(10)
-        health_thread.update_status("healthy")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -150,20 +119,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_model=settings.llm_model,
     )
 
-    from ansible_forge import health_thread
-    health_thread.start(settings.port)
-
-    consolidation_task = asyncio.create_task(_periodic_consolidation())
     watchdog_task = asyncio.create_task(_parent_watchdog())
     self_check_task = asyncio.create_task(_startup_self_check())
-    health_updater_task = asyncio.create_task(_health_status_updater())
     try:
         yield
     finally:
-        health_updater_task.cancel()
         self_check_task.cancel()
         watchdog_task.cancel()
-        consolidation_task.cancel()
         logger.info("ansibleforge_shutdown")
 
 

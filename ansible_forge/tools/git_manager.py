@@ -104,7 +104,7 @@ class GitManager(BaseTool):
 
     async def _run_git(self, cwd: Path, *args: str, timeout: int = 30) -> tuple[int, str, str]:
         cmd = ["git"] + list(args)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(

@@ -134,7 +134,7 @@ class ProjectImporter(BaseTool):
             cmd.extend(["--branch", branch])
         cmd.extend([url, str(clone_dir)])
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(

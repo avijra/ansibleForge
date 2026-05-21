@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any
 
+from ansible_forge.agent import infra_tracker
 from ansible_forge.agent.llm_client import LLMClient, LLMResponse, ToolCall, _repair_json
 from ansible_forge.agent.memory import Memory
 from ansible_forge.agent.planner import build_context
@@ -17,12 +18,6 @@ from ansible_forge.agent.prompts.system import SYSTEM_PROMPT
 from ansible_forge.agent.prompts.templates import ERROR_RECOVERY_PROMPT
 from ansible_forge.agent.types import SessionStatus
 from ansible_forge.config import Settings, get_settings
-from ansible_forge.knowledge.experience_store import (
-    Experience,
-    ExperienceStore,
-    abuild_experience_context,
-    extract_modules_from_workspace,
-)
 from ansible_forge.logging import get_logger
 from ansible_forge.persistence.session_store import SessionStore
 from ansible_forge.safety.approval import ApprovalGate, ApprovalStatus
@@ -194,7 +189,6 @@ class SessionState:
         self._rejected_tool: str | None = None
         self._approved_playbooks: set[str] = set()
         self.plan: dict[str, Any] | None = None
-        self._used_experience_ids: list[str] = []
         self._active_tasks: set[asyncio.Task[Any]] = set()
 
     def track_task(self, task: asyncio.Task[Any]) -> None:
@@ -282,7 +276,6 @@ class Orchestrator:
         self._diff_analyzer = DiffAnalyzer()
         self._sessions: dict[str, SessionState] = {}
         self._session_store = SessionStore.get_instance()
-        self._experience_store = ExperienceStore()
 
     _EXECUTION_TOOLS = frozenset({"execute_playbook", "run_adhoc", "terraform_exec"})
     _SEARCH_GATE_THRESHOLD = 2
@@ -372,18 +365,21 @@ class Orchestrator:
             f"{rules}"
         )
 
-    def create_session(
+    async def create_session(
         self,
         session_id: str | None = None,
         project_path: str | None = None,
     ) -> SessionState:
         sid = session_id or uuid.uuid4().hex[:12]
-        workspace = self._workspace_mgr.create(sid, project_path=project_path)
+        loop = asyncio.get_running_loop()
+        workspace = await loop.run_in_executor(
+            None, partial(self._workspace_mgr.create, sid, project_path=project_path),
+        )
         state = SessionState(session_id=sid, workspace=workspace)
         state.memory.attach_vault(self._secret_vault.for_session(sid))
         state.memory.add_system(self._build_system_prompt(workspace))
         self._sessions[sid] = state
-        self._session_store.save_session(sid, project_path=str(workspace.path))
+        await self._session_store.asave_session(sid, project_path=str(workspace.path))
         logger.info("session_created", session_id=sid, project_path=str(workspace.path))
         return state
 
@@ -533,17 +529,6 @@ class Orchestrator:
 
         loop = asyncio.get_running_loop()
         context = await loop.run_in_executor(None, build_context, state.workspace)
-        exp_context = ""
-        try:
-            ws_modules = await loop.run_in_executor(
-                None, extract_modules_from_workspace, state.workspace
-            )
-            exp_context, used_exp_ids = await abuild_experience_context(
-                self._experience_store, user_message, ws_modules
-            )
-            state._used_experience_ids.extend(used_exp_ids)
-        except Exception:
-            logger.debug("experience_context_build_failed", exc_info=True)
 
         mention_context = ""
         try:
@@ -569,8 +554,6 @@ class Orchestrator:
             full_context += f"\n{mention_context}"
         if ws_memory_context:
             full_context += f"\n{ws_memory_context}"
-        if exp_context:
-            full_context += f"\n{exp_context}"
         state.memory.add_user(full_context)
 
         plan = await self._generate_plan(state, user_message)
@@ -701,7 +684,6 @@ class Orchestrator:
                         raw_message=fs_response.raw_message if fs_response else None,
                     )
                     state.status = SessionStatus.COMPLETED
-                    await self._score_used_experiences(state, success=False)
                     yielded_terminal = True
                     yield AgentEvent("message", {"content": content, "usage": usage})
                     return
@@ -883,8 +865,6 @@ class Orchestrator:
                         raw_message=response.raw_message,
                     )
                     state.status = SessionStatus.COMPLETED
-                    had_errors = state._consecutive_errors > 0 or state._loop_break_count > 0
-                    await self._score_used_experiences(state, success=not had_errors)
                     yielded_terminal = True
                     yield AgentEvent("message", {
                         "content": response.content or "",
@@ -1000,11 +980,6 @@ class Orchestrator:
                                 tc.id,
                                 f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
                             )
-                        try:
-                            clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                            await self._capture_experience(tc.name, result, state, clean_args)
-                        except Exception:
-                            logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
                         tool_result_payload: dict[str, Any] = {
                             "tool": tc.name,
                             "tool_call_id": tc.id,
@@ -1014,6 +989,12 @@ class Orchestrator:
                         if result.data:
                             tool_result_payload["data"] = result.data
                         yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
+                        try:
+                            await infra_tracker.update_infrastructure(
+                                tc.name, result, state.session_id,
+                            )
+                        except Exception:
+                            pass
                         if tc.name == "web_search" and result.status != ToolStatus.ERROR:
                             state._searched_since_exec_fail = True
 
@@ -1074,11 +1055,6 @@ class Orchestrator:
                                     error_message=result.error or "Unknown error",
                                     remaining_retries=remaining,
                                 )
-                                knowledge_hint = await self._build_error_knowledge(
-                                    state, tc.name, result.error or "Unknown error",
-                                )
-                                if knowledge_hint:
-                                    error_ctx += knowledge_hint
                                 exec_directive = self._build_exec_fail_directive(
                                     tc.name, result.error or "",
                                     state._exec_fail_count,
@@ -1449,14 +1425,6 @@ class Orchestrator:
                             tc.id,
                             f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
                         )
-                    try:
-                        clean_args = {k: v for k, v in tc.arguments.items() if k != "_session_id"}
-                        await self._capture_experience(
-                            tc.name, result, state, clean_args, pending_run_id,
-                        )
-                    except Exception:
-                        logger.debug("experience_capture_failed", tool=tc.name, exc_info=True)
-
                     tool_result_payload: dict[str, Any] = {
                         "tool": tc.name,
                         "tool_call_id": tc.id,
@@ -1468,6 +1436,12 @@ class Orchestrator:
                     yield AgentEvent("tool_result", session_vault.redact_dict(
                         tool_result_payload
                     ))
+                    try:
+                        await infra_tracker.update_infrastructure(
+                            tc.name, result, state.session_id,
+                        )
+                    except Exception:
+                        pass
 
                     if result.status == ToolStatus.NEEDS_APPROVAL:
                         auto_approved = False
@@ -1507,7 +1481,9 @@ class Orchestrator:
                             if not auto_approved:
                                 yield AgentEvent("approval_granted", {"session_id": state.session_id})
                             if state._rejected_output and state._rejected_tool == tc.name:
-                                await self._capture_correction(state, tc.name, result)
+                                state._rejected_output = None
+                                state._rejected_feedback = None
+                                state._rejected_tool = None
                         else:
                             state.status = SessionStatus.REJECTED
                             feedback = approval.feedback or "User rejected the operation."
@@ -1591,11 +1567,6 @@ class Orchestrator:
                                     error_message=result.error or "Unknown error",
                                     remaining_retries=remaining,
                                 )
-                                knowledge_hint = await self._build_error_knowledge(
-                                    state, tc.name, result.error or "Unknown error",
-                                )
-                                if knowledge_hint:
-                                    error_ctx += knowledge_hint
                                 exec_directive = self._build_exec_fail_directive(
                                     tc.name, result.error or "",
                                     state._exec_fail_count,
@@ -1676,7 +1647,6 @@ class Orchestrator:
                 continue
 
           state.status = SessionStatus.MAX_STEPS_REACHED
-          await self._score_used_experiences(state, success=False)
           yielded_terminal = True
           yield AgentEvent("max_steps", {
               "step_count": state.step_count,
@@ -1760,336 +1730,6 @@ class Orchestrator:
             reasoning_content="".join(reasoning_parts) or None,
         )
 
-    async def _capture_experience(
-        self, tool_name: str, result: ToolResult, state: SessionState,
-        current_args: dict[str, Any] | None = None,
-        pending_run_id: int | None = None,
-    ) -> None:
-        try:
-            if tool_name == "execute_playbook" and result.status == ToolStatus.SUCCESS:
-                await self._capture_recipe(state, result)
-            if result.status != ToolStatus.ERROR and tool_name in state._last_error_by_tool:
-                prev_info = state._last_error_by_tool.pop(tool_name)
-                await self._capture_error_resolution(
-                    state, tool_name, prev_info, result, current_args or {},
-                )
-            await self._update_infrastructure(tool_name, result, state, pending_run_id)
-        except Exception:
-            logger.debug("experience_capture_failed", tool=tool_name, exc_info=True)
-
-    async def _update_infrastructure(
-        self, tool_name: str, result: ToolResult, state: SessionState,
-        pending_run_id: int | None = None,
-    ) -> None:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._update_infrastructure_sync,
-            tool_name, result, state, pending_run_id,
-        )
-
-    def _update_infrastructure_sync(
-        self, tool_name: str, result: ToolResult, state: SessionState,
-        pending_run_id: int | None = None,
-    ) -> None:
-        try:
-            from ansible_forge.persistence.infrastructure_store import InfrastructureStore
-            store = InfrastructureStore.get_instance()
-
-            if tool_name == "collect_facts" and result.status == ToolStatus.SUCCESS:
-                host_facts = result.data.get("host_facts", {})
-                for hostname, facts in host_facts.items():
-                    host_id = store.upsert_host(
-                        hostname=hostname,
-                        ip_address=facts.get("default_ipv4", ""),
-                        status="reachable",
-                    )
-                    drifts = store.detect_drift(host_id, facts)
-                    if drifts:
-                        logger.info(
-                            "drift_detected",
-                            host=hostname,
-                            drifts=drifts,
-                            session_id=state.session_id,
-                        )
-                    store.save_facts(host_id, facts)
-
-            elif tool_name == "test_connectivity" and result.status == ToolStatus.SUCCESS:
-                events = result.data.get("events", [])
-                for event in events:
-                    host = event.get("host", "")
-                    if host:
-                        status = "reachable" if event.get("event") == "runner_on_ok" else "unreachable"
-                        store.upsert_host(hostname=host, status=status)
-
-            elif tool_name == "execute_playbook":
-                data = result.data
-                playbook = data.get("playbook", "unknown")
-                mode = data.get("mode", "unknown")
-                events = data.get("events", [])
-                hosts = list({e.get("host", "") for e in events if e.get("host")})
-                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
-
-                if pending_run_id:
-                    store.update_run(
-                        run_id=pending_run_id,
-                        status=status,
-                        hosts=hosts,
-                        event_count=len(events),
-                        summary=data.get("summary"),
-                    )
-                else:
-                    store.record_run(
-                        session_id=state.session_id,
-                        playbook=playbook,
-                        mode=mode,
-                        hosts=hosts,
-                        status=status,
-                        event_count=len(events),
-                        summary=data.get("summary"),
-                    )
-
-                for host in hosts:
-                    if host:
-                        host_status = "configured" if (result.status == ToolStatus.SUCCESS and mode == "apply") else "reachable"
-                        store.upsert_host(hostname=host, status=host_status)
-
-            elif tool_name == "run_adhoc":
-                data = result.data
-                host_results = data.get("host_results", {})
-                module = data.get("module", "shell")
-                module_args = data.get("module_args", "")
-                hosts = list(host_results.keys())
-                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
-                label = module_args[:80] if module_args else module
-
-                if pending_run_id:
-                    store.update_run(
-                        run_id=pending_run_id,
-                        status=status,
-                        hosts=hosts,
-                        event_count=1,
-                        summary={"module": module},
-                    )
-                else:
-                    store.record_run(
-                        session_id=state.session_id,
-                        playbook=f"adhoc: {label}",
-                        mode="adhoc",
-                        hosts=hosts,
-                        status=status,
-                        event_count=1,
-                        summary={"module": module},
-                    )
-
-                for host in hosts:
-                    if host:
-                        store.upsert_host(hostname=host, status="reachable")
-
-            elif tool_name == "terraform_exec":
-                data = result.data
-                action = data.get("action", "unknown")
-                status = "success" if result.status == ToolStatus.SUCCESS else "failed"
-
-                if pending_run_id:
-                    store.update_run(
-                        run_id=pending_run_id,
-                        status=status,
-                        hosts=["localhost"],
-                        event_count=1,
-                        summary=data.get("output_summary", {}),
-                    )
-                else:
-                    store.record_run(
-                        session_id=state.session_id,
-                        playbook=f"terraform {action}",
-                        mode=action,
-                        hosts=["localhost"],
-                        status=status,
-                        event_count=1,
-                        summary=data.get("output_summary", {}),
-                    )
-
-            elif tool_name == "verify_state":
-                results = result.data.get("results", [])
-                for check in results:
-                    host = check.get("host", "")
-                    if host and check.get("status") == "PASS":
-                        store.update_host_status(
-                            host.replace(".", "_").replace(":", "_"),
-                            "verified",
-                        )
-
-        except Exception:
-            logger.debug("infrastructure_update_failed", tool=tool_name, exc_info=True)
-
-    async def _capture_recipe(self, state: SessionState, result: ToolResult) -> None:
-        data = result.data
-        playbook_name = data.get("playbook", "unknown")
-        events = data.get("events", [])
-        modules = {
-            e.get("result", {}).get("module_fqcn", "")
-            for e in events if e.get("result", {}).get("module_fqcn")
-        }
-        hosts = {e.get("host", "") for e in events if e.get("host")}
-        hosts.discard("")
-
-        user_goal = self._extract_user_goal(state)
-        task_names = [e.get("task", "") for e in events if e.get("task")]
-
-        await self._experience_store.asave(Experience(
-            type="recipe",
-            trigger=user_goal,
-            context={"modules": sorted(modules), "hosts": sorted(hosts), "playbook": playbook_name},
-            solution=f"Playbook '{playbook_name}' with tasks: {', '.join(task_names[:10])}",
-            outcome=f"success ({len(events)} tasks)",
-            confidence=0.6,
-            session_id=state.session_id,
-        ))
-        logger.info("experience_recipe_captured", playbook=playbook_name, session_id=state.session_id)
-
-    async def _capture_error_resolution(
-        self, state: SessionState, tool_name: str,
-        prev_info: dict[str, Any], result: ToolResult,
-        success_args: dict[str, Any],
-    ) -> None:
-        error_msg = prev_info.get("error", "Unknown error")
-        failed_args = prev_info.get("args", {})
-
-        trigger_parts = [tool_name]
-        playbook = failed_args.get("playbook") or success_args.get("playbook")
-        if playbook:
-            trigger_parts.append(playbook)
-        module = failed_args.get("module") or success_args.get("module")
-        if module:
-            trigger_parts.append(module)
-        hosts = failed_args.get("hosts") or success_args.get("hosts")
-        if hosts:
-            trigger_parts.append(f"hosts:{hosts}")
-        trigger_parts.append(error_msg[:300])
-        user_goal = self._extract_user_goal(state)
-        if user_goal and len(user_goal) > 5:
-            trigger_parts.append(user_goal[:150])
-        trigger = " | ".join(trigger_parts)
-
-        changed_keys: list[str] = []
-        for key in set(list(failed_args.keys()) + list(success_args.keys())):
-            old_val = failed_args.get(key)
-            new_val = success_args.get(key)
-            if old_val != new_val:
-                changed_keys.append(key)
-
-        if changed_keys:
-            diffs = []
-            for key in changed_keys[:5]:
-                old_v = str(failed_args.get(key, "(missing)"))[:100]
-                new_v = str(success_args.get(key, "(missing)"))[:100]
-                diffs.append(f"  {key}: '{old_v}' -> '{new_v}'")
-            solution = "Fixed by changing:\n" + "\n".join(diffs)
-        else:
-            solution = f"Same arguments succeeded on retry (transient failure). Output: {result.output[:300]}"
-
-        await self._experience_store.asave(Experience(
-            type="error_resolution",
-            trigger=trigger[:500],
-            context={"tool": tool_name, "changed_args": changed_keys[:5]},
-            solution=solution[:1000],
-            outcome="resolved" if changed_keys else "transient",
-            confidence=0.7 if changed_keys else 0.3,
-            session_id=state.session_id,
-        ))
-        logger.info(
-            "experience_error_resolution_captured",
-            tool=tool_name,
-            changed_args=changed_keys,
-            transient=not changed_keys,
-            session_id=state.session_id,
-        )
-
-    async def _capture_correction(
-        self, state: SessionState, tool_name: str, result: ToolResult
-    ) -> None:
-        try:
-            await self._experience_store.asave(Experience(
-                type="correction",
-                trigger=state._rejected_feedback or "User rejected",
-                context={"tool": tool_name},
-                solution=f"After rejection, approved output: {result.output[:500]}",
-                outcome=f"Rejected: {(state._rejected_output or '')[:300]}",
-                confidence=0.7,
-                session_id=state.session_id,
-            ))
-            logger.info("experience_correction_captured", tool=tool_name, session_id=state.session_id)
-        except Exception:
-            logger.debug("correction_capture_failed", exc_info=True)
-        finally:
-            state._rejected_output = None
-            state._rejected_feedback = None
-            state._rejected_tool = None
-
-    async def _score_used_experiences(self, state: SessionState, success: bool) -> None:
-        if not state._used_experience_ids:
-            return
-        unique_ids = list(dict.fromkeys(state._used_experience_ids))
-        for exp_id in unique_ids:
-            with contextlib.suppress(Exception):
-                await self._experience_store.areward(exp_id, success)
-        logger.info(
-            "experiences_scored",
-            session_id=state.session_id,
-            count=len(unique_ids),
-            success=success,
-        )
-
-    async def _build_error_knowledge(
-        self, state: SessionState, tool_name: str, error_message: str
-    ) -> str:
-        """Query the experience store for fixes matching this error and return
-        a text block to inject alongside ERROR_RECOVERY_PROMPT."""
-        try:
-            query = f"{tool_name} {error_message}"
-            matches = await self._experience_store.asearch(query, limit=3, min_confidence=0.4)
-            module_matches: list[Experience] = []
-            module_ctx = (state._last_error_by_tool.get(tool_name) or {}).get("args", {})
-            module_name = module_ctx.get("module") or module_ctx.get("playbook") or ""
-            if module_name:
-                module_matches = await self._experience_store.aquery_by_context(
-                    exp_type="error_resolution", module=module_name, limit=2,
-                )
-                module_matches = [e for e in module_matches if e.confidence >= 0.5]
-
-            seen_ids: set[str] = set()
-            all_matches: list[Experience] = []
-            for exp in [*matches, *module_matches]:
-                if exp.id not in seen_ids:
-                    seen_ids.add(exp.id)
-                    all_matches.append(exp)
-
-            if not all_matches:
-                return ""
-
-            for exp in all_matches:
-                await self._experience_store.arecord_use(exp.id)
-                state._used_experience_ids.append(exp.id)
-
-            lines = []
-            for exp in all_matches:
-                conf = int(exp.confidence * 100)
-                lines.append(f"  [{exp.type}] (confidence: {conf}%) {exp.solution}")
-
-            logger.info(
-                "error_knowledge_injected",
-                tool=tool_name,
-                match_count=len(all_matches),
-                session_id=state.session_id,
-            )
-            return (
-                "\n\nKnown fixes from past sessions (APPLY THESE FIRST before web-searching):\n"
-                + "\n".join(lines)
-            )
-        except Exception:
-            logger.debug("error_knowledge_lookup_failed", exc_info=True)
-            return ""
-
     _PLAN_PROMPT = (
         "Before executing, create a brief plan. Respond ONLY with a JSON object:\n"
         '{"steps": [{"step": 1, "action": "...", "tool": "tool_name"}, ...]}\n'
@@ -2112,18 +1752,6 @@ class Orchestrator:
             )
             if ws_context:
                 context_parts.append(f"\nWorkspace:\n{ws_context[:500]}")
-            try:
-                ws_modules = await _loop.run_in_executor(
-                    None, extract_modules_from_workspace, state.workspace
-                )
-                exp_text, _ = await abuild_experience_context(
-                    self._experience_store, user_message, ws_modules,
-                    record_usage=False,
-                )
-                if exp_text:
-                    context_parts.append(exp_text[:500])
-            except Exception:
-                logger.debug("plan_experience_lookup_failed", exc_info=True)
             plan_input = "\n".join(context_parts)
 
             response = await asyncio.wait_for(
@@ -2158,18 +1786,6 @@ class Orchestrator:
         except (TimeoutError, json.JSONDecodeError, Exception):
             logger.debug("plan_generation_skipped", exc_info=True)
         return None
-
-    @staticmethod
-    def _extract_user_goal(state: SessionState) -> str:
-        latest = ""
-        for msg in state.memory.messages:
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str) and content:
-                    text = content.split("---")[0].strip()
-                    if text:
-                        latest = text
-        return latest[:300] if latest else "Unknown goal"
 
     async def _execute_tool(
         self, state: SessionState, tool_name: str, arguments: dict[str, Any]
@@ -2339,7 +1955,6 @@ class Orchestrator:
         state._rejected_tool = None
         state._approved_playbooks.clear()
         state.plan = None
-        state._used_experience_ids.clear()
         self._approval_gate.cleanup(session_id)
         logger.info("session_reset", session_id=session_id)
 

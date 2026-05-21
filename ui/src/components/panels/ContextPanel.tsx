@@ -1,22 +1,20 @@
 import { useState } from "react";
-import { ScrollText, Server, GitBranch, Brain, PanelRightClose, FolderTree, BookOpen } from "lucide-react";
+import { ScrollText, Server, GitBranch, PanelRightClose, FolderTree, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ExecutionTimeline } from "./ExecutionTimeline";
 import { HostInventory } from "./HostInventory";
 import { RunHistory } from "./RunHistory";
-import { KnowledgeExplorer } from "./KnowledgeExplorer";
 import { WorkspaceExplorer } from "./WorkspaceExplorer";
 import { RulesEditor } from "./RulesEditor";
 import type { AgentEvent, WorkspaceFile } from "@/api/types";
 
-export type ContextTab = "logs" | "files" | "hosts" | "runs" | "knowledge" | "rules";
+export type ContextTab = "logs" | "files" | "hosts" | "runs" | "rules";
 
 const tabs: { id: ContextTab; label: string; icon: typeof ScrollText }[] = [
   { id: "logs", label: "Logs", icon: ScrollText },
   { id: "files", label: "Files", icon: FolderTree },
   { id: "hosts", label: "Hosts", icon: Server },
   { id: "runs", label: "Playbooks", icon: GitBranch },
-  { id: "knowledge", label: "Knowledge", icon: Brain },
   { id: "rules", label: "Rules", icon: BookOpen },
 ];
 
@@ -104,11 +102,6 @@ export function ContextPanel({
         {activeTab === "runs" && (
           <div className="h-full overflow-y-auto overflow-x-hidden">
             <RunHistory events={events} />
-          </div>
-        )}
-        {activeTab === "knowledge" && (
-          <div className="h-full overflow-y-auto overflow-x-hidden">
-            <KnowledgeExplorer />
           </div>
         )}
         {activeTab === "rules" && (

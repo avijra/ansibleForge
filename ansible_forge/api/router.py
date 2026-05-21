@@ -13,7 +13,6 @@ from ansible_forge.api.endpoints import (
     infrastructure,
     inventory,
     inventory_sources,
-    knowledge,
     lint,
     playbooks,
     plugins,
@@ -37,7 +36,6 @@ api_router.include_router(playbooks.router, tags=["playbooks"])
 api_router.include_router(inventory.router, tags=["inventory"])
 api_router.include_router(collections.router, tags=["collections"])
 api_router.include_router(settings.router, tags=["settings"])
-api_router.include_router(knowledge.router, tags=["knowledge"])
 api_router.include_router(sessions.router, tags=["sessions"])
 api_router.include_router(workspace_files.router, tags=["workspace"])
 api_router.include_router(lint.router, tags=["lint"])

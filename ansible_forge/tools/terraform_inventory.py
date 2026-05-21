@@ -101,7 +101,7 @@ class TerraformInventoryBridge(BaseTool):
                     env[name] = str(value)
         env["TF_IN_AUTOMATION"] = "1"
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(

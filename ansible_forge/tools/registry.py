@@ -57,8 +57,6 @@ class ToolRegistry:
 def create_default_registry() -> ToolRegistry:
     """Instantiate a registry with all built-in tools."""
     from ansible_forge.tools.adhoc_runner import AdhocRunner
-    from ansible_forge.tools.compliance_scanner import ComplianceScanner
-    from ansible_forge.tools.config_comparator import ConfigComparator
     from ansible_forge.tools.connectivity_tester import ConnectivityTester
     from ansible_forge.tools.doc_searcher import DocSearcher
     from ansible_forge.tools.drift_detector import DriftDetector
@@ -72,14 +70,11 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.inventory_manager import InventoryManager
     from ansible_forge.tools.lint_runner import LintRunner
     from ansible_forge.tools.local_exec import LocalExec
-    from ansible_forge.tools.log_analyzer import LogAnalyzer
     from ansible_forge.tools.memory_tool import MemoryTool
-    from ansible_forge.tools.molecule_runner import MoleculeRunner
     from ansible_forge.tools.playbook_generator import PlaybookGenerator
     from ansible_forge.tools.project_importer import ProjectImporter
     from ansible_forge.tools.role_scaffolder import RoleScaffolder
     from ansible_forge.tools.rollback_tool import RollbackTool
-    from ansible_forge.tools.schedule_manager import ScheduleManager
     from ansible_forge.tools.secret_requester import SecretRequester
     from ansible_forge.tools.session_search import SessionSearchTool
     from ansible_forge.tools.template_renderer import TemplateRenderer
@@ -98,7 +93,6 @@ def create_default_registry() -> ToolRegistry:
         InventoryManager,
         VaultManager,
         LintRunner,
-        MoleculeRunner,
         GalaxyManager,
         Executor,
         AdhocRunner,
@@ -115,13 +109,9 @@ def create_default_registry() -> ToolRegistry:
         TemplateRenderer,
         GitManager,
         DriftDetector,
-        ComplianceScanner,
         VariableInspector,
-        ConfigComparator,
-        ScheduleManager,
         ProjectImporter,
         LocalExec,
-        LogAnalyzer,
         TerraformGenerator,
         TerraformExecutor,
         TerraformInventoryBridge,
