@@ -158,15 +158,17 @@ END;
     ) -> None:
         now = time.time()
         conn = self._connect()
-        conn.execute(
-            "INSERT INTO sessions (session_id, title, status, project_path, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(session_id) DO UPDATE SET "
-            "title=COALESCE(?, title), status=?, project_path=COALESCE(?, project_path), updated_at=?",
-            (session_id, title, status, project_path, now, now, title, status, project_path, now),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT INTO sessions (session_id, title, status, project_path, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "title=COALESCE(?, title), status=?, project_path=COALESCE(?, project_path), updated_at=?",
+                (session_id, title, status, project_path, now, now, title, status, project_path, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _save_event_sync(
         self,
@@ -177,26 +179,30 @@ END;
     ) -> None:
         now = time.time()
         conn = self._connect()
-        conn.execute(
-            "INSERT INTO events (session_id, event_type, data, timestamp, seq) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, event_type, json.dumps(data), now, seq),
-        )
-        conn.execute(
-            "UPDATE sessions SET updated_at=? WHERE session_id=?",
-            (now, session_id),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT INTO events (session_id, event_type, data, timestamp, seq) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, event_type, json.dumps(data), now, seq),
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at=? WHERE session_id=?",
+                (now, session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _list_sessions_sync(self, limit: int) -> list[dict[str, Any]]:
         conn = self._connect()
-        rows = conn.execute(
-            "SELECT session_id, title, status, created_at, updated_at, project_path "
-            "FROM sessions ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
+                "FROM sessions ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
         return [
             {
                 "session_id": r[0], "title": r[1], "status": r[2],
@@ -207,12 +213,14 @@ END;
 
     def _get_events_sync(self, session_id: str) -> list[dict[str, Any]]:
         conn = self._connect()
-        rows = conn.execute(
-            "SELECT event_type, data, timestamp FROM events "
-            "WHERE session_id=? ORDER BY id",
-            (session_id,),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                "SELECT event_type, data, timestamp FROM events "
+                "WHERE session_id=? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
         return [
             {"event_type": r[0], "data": json.loads(r[1]), "timestamp": r[2]}
             for r in rows
@@ -220,12 +228,14 @@ END;
 
     def _get_session_sync(self, session_id: str) -> dict[str, Any] | None:
         conn = self._connect()
-        row = conn.execute(
-            "SELECT session_id, title, status, created_at, updated_at, project_path "
-            "FROM sessions WHERE session_id=?",
-            (session_id,),
-        ).fetchone()
-        conn.close()
+        try:
+            row = conn.execute(
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
+                "FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
         if row is None:
             return None
         return {
@@ -235,34 +245,40 @@ END;
 
     def _delete_session_sync(self, session_id: str) -> bool:
         conn = self._connect()
-        conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
-        cur = conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
+            cur = conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+            conn.commit()
+        finally:
+            conn.close()
         return cur.rowcount > 0
 
     def _reset_session_sync(self, session_id: str) -> bool:
         now = time.time()
         conn = self._connect()
-        conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
-        cur = conn.execute(
-            "UPDATE sessions SET status='active', updated_at=? WHERE session_id=?",
-            (now, session_id),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
+            cur = conn.execute(
+                "UPDATE sessions SET status='active', updated_at=? WHERE session_id=?",
+                (now, session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         return cur.rowcount > 0
 
     def _get_events_since_seq_sync(
         self, session_id: str, from_seq: int
     ) -> list[dict[str, Any]]:
         conn = self._connect()
-        rows = conn.execute(
-            "SELECT event_type, data, timestamp, seq FROM events "
-            "WHERE session_id=? AND seq > ? ORDER BY id",
-            (session_id, from_seq),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                "SELECT event_type, data, timestamp, seq FROM events "
+                "WHERE session_id=? AND seq > ? ORDER BY id",
+                (session_id, from_seq),
+            ).fetchall()
+        finally:
+            conn.close()
         return [
             {"event_type": r[0], "data": json.loads(r[1]), "timestamp": r[2], "seq": r[3]}
             for r in rows
@@ -270,12 +286,14 @@ END;
 
     def _list_by_project_path_sync(self, project_path: str) -> list[dict[str, Any]]:
         conn = self._connect()
-        rows = conn.execute(
-            "SELECT session_id, title, status, created_at, updated_at, project_path "
-            "FROM sessions WHERE project_path=? ORDER BY updated_at DESC",
-            (project_path,),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                "SELECT session_id, title, status, created_at, updated_at, project_path "
+                "FROM sessions WHERE project_path=? ORDER BY updated_at DESC",
+                (project_path,),
+            ).fetchall()
+        finally:
+            conn.close()
         return [
             {
                 "session_id": r[0], "title": r[1], "status": r[2],
@@ -292,29 +310,31 @@ END;
         fts_query = " OR ".join(keywords)
         conn = self._connect()
         try:
-            rows = conn.execute(
-                "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
-                "  s.title, s.created_at "
-                "FROM events_fts f "
-                "JOIN events e ON e.id = f.rowid "
-                "JOIN sessions s ON s.session_id = e.session_id "
-                "WHERE events_fts MATCH ? "
-                "ORDER BY rank "
-                "LIMIT ?",
-                (fts_query, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = conn.execute(
-                "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
-                "  s.title, s.created_at "
-                "FROM events e "
-                "JOIN sessions s ON s.session_id = e.session_id "
-                "WHERE e.data LIKE ? "
-                "ORDER BY e.timestamp DESC "
-                "LIMIT ?",
-                (f"%{keywords[0]}%", limit),
-            ).fetchall()
-        conn.close()
+            try:
+                rows = conn.execute(
+                    "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
+                    "  s.title, s.created_at "
+                    "FROM events_fts f "
+                    "JOIN events e ON e.id = f.rowid "
+                    "JOIN sessions s ON s.session_id = e.session_id "
+                    "WHERE events_fts MATCH ? "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    (fts_query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = conn.execute(
+                    "SELECT e.session_id, e.event_type, e.data, e.timestamp, "
+                    "  s.title, s.created_at "
+                    "FROM events e "
+                    "JOIN sessions s ON s.session_id = e.session_id "
+                    "WHERE e.data LIKE ? "
+                    "ORDER BY e.timestamp DESC "
+                    "LIMIT ?",
+                    (f"%{keywords[0]}%", limit),
+                ).fetchall()
+        finally:
+            conn.close()
         results: list[dict[str, Any]] = []
         for r in rows:
             try:

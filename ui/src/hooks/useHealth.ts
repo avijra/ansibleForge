@@ -2,19 +2,30 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api/client";
 import type { HealthResponse } from "@/api/types";
 
+const HEALTH_TIMEOUT_MS = 5_000;
+
 export function useHealth(intervalMs = 30_000) {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const check = useCallback(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
     try {
-      const res = await api.health();
+      const res = await api.health(controller.signal);
       setHealth(res);
       setError(null);
     } catch (err) {
-      setHealth(null);
-      setError(err instanceof Error ? err.message : "Health check failed");
+      if (controller.signal.aborted) {
+        setHealth(null);
+        setError("Health check timed out — backend may be busy");
+      } else {
+        setHealth(null);
+        setError(err instanceof Error ? err.message : "Health check failed");
+      }
+    } finally {
+      clearTimeout(timer);
     }
   }, []);
 

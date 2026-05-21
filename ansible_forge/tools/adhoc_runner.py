@@ -230,7 +230,7 @@ class AdhocRunner(BaseTool):
             if live_queue is not None:
                 import contextlib as _ctxlib
 
-                loop_ref = asyncio.get_event_loop()
+                loop_ref = asyncio.get_running_loop()
 
                 def _on_event(event: dict[str, Any]) -> bool:
                     ev_type = event.get("event", "")
@@ -262,7 +262,7 @@ class AdhocRunner(BaseTool):
                 _MAX_ADHOC_TIMEOUT,
             )
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             thread, runner = await loop.run_in_executor(
                 None,
                 functools.partial(ansible_runner.run_async, **runner_kwargs),

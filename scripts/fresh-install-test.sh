@@ -13,7 +13,9 @@ step()  { echo -e "\n${GREEN}===${NC} $1 ${GREEN}===${NC}"; }
 APP_NAME="Tuyere"
 APP_PATH="/Applications/${APP_NAME}.app"
 DATA_DIR="$HOME/.ansibleforge"
-ELECTRON_DIR="$HOME/Library/Application Support/tuyere-desktop"
+TAURI_DATA_DIR="$HOME/Library/Application Support/com.ansibleforge.app"
+TAURI_CACHE_DIR="$HOME/Library/Caches/com.ansibleforge.app"
+TAURI_LOG_DIR="$HOME/Library/Logs/com.ansibleforge.app"
 DOWNLOAD_DIR="$HOME/Downloads"
 
 step "Stopping all ${APP_NAME} processes"
@@ -64,18 +66,19 @@ else
     info "No backend data"
 fi
 
-step "Wiping Electron state"
-if [ -d "$ELECTRON_DIR" ]; then
-    rm -rf "$ELECTRON_DIR"
-    info "Removed $ELECTRON_DIR"
-else
-    info "No Electron state"
-fi
+step "Wiping Tauri app data"
+for d in "$TAURI_DATA_DIR" "$TAURI_CACHE_DIR" "$TAURI_LOG_DIR"; do
+    if [ -d "$d" ]; then
+        rm -rf "$d"
+        info "Removed $d"
+    fi
+done
+info "Tauri state clean"
 
 step "Verification"
-[ ! -d "$APP_PATH" ]      && info "App: clean"         || warn "App still exists!"
-[ ! -d "$DATA_DIR" ]      && info "Backend data: clean" || warn "Backend data still exists!"
-[ ! -d "$ELECTRON_DIR" ]  && info "Electron state: clean" || warn "Electron state still exists!"
+[ ! -d "$APP_PATH" ]        && info "App: clean"         || warn "App still exists!"
+[ ! -d "$DATA_DIR" ]        && info "Backend data: clean" || warn "Backend data still exists!"
+[ ! -d "$TAURI_DATA_DIR" ]  && info "Tauri data: clean"   || warn "Tauri data still exists!"
 
 PROCS=$(ps aux | grep -iE "tuyere|ansibleforge-backend" | grep -v grep | grep -v "Cursor Helper" | wc -l | tr -d ' ')
 [ "$PROCS" -eq 0 ] && info "Processes: clean" || warn "$PROCS processes still running!"

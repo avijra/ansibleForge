@@ -171,7 +171,7 @@ class LLMClient:
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=2, min=2, max=75),
-        retry=retry_if_exception_type((litellm.RateLimitError, litellm.ServiceUnavailableError)),
+        retry=retry_if_exception_type(litellm.RateLimitError),
         reraise=True,
         before_sleep=lambda rs: logger.info(
             "stream_rate_limit_retry",
@@ -212,7 +212,7 @@ class LLMClient:
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=2, min=2, max=75),
-        retry=retry_if_exception_type((litellm.RateLimitError, litellm.ServiceUnavailableError)),
+        retry=retry_if_exception_type(litellm.RateLimitError),
         reraise=True,
         before_sleep=lambda rs: logger.info(
             "rate_limit_retry",

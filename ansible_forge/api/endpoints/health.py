@@ -58,7 +58,8 @@ def _check_llm_key_configured() -> tuple[str, str]:
     }
 
     key = key_checks.get(provider)
-    if key and key not in ("sk-...", "sk-ant-..."):
+    _placeholder_patterns = ("sk-...", "sk-ant-...", "your-", "YOUR_", "xxx", "placeholder", "CHANGE_ME")
+    if key and not any(key.strip().lower().startswith(p.lower()) for p in _placeholder_patterns):
         return "healthy", ""
 
     return "degraded", f"No API key configured for {provider}"

@@ -403,7 +403,7 @@ class Orchestrator:
             return None
         return state.plan
 
-    def _restore_session(self, session_id: str) -> SessionState | None:
+    async def _arestore_session(self, session_id: str) -> SessionState | None:
         """Restore a session from the workspace on disk.
 
         Instead of replaying raw conversation messages (which breaks
@@ -411,7 +411,7 @@ class Orchestrator:
         the agent receives a workspace summary and a digest of recent user
         requests.  This is model-agnostic and keeps context small.
         """
-        session_meta = self._session_store.get_session(session_id)
+        session_meta = await self._session_store.aget_session(session_id)
         project_path = session_meta.get("project_path") if session_meta else None
 
         workspace = None
@@ -422,7 +422,7 @@ class Orchestrator:
         if workspace is None:
             return None
 
-        all_events = self._session_store.get_events(session_id)
+        all_events = await self._session_store.aget_events(session_id)
         if not all_events:
             return None
 
@@ -430,7 +430,10 @@ class Orchestrator:
         state.memory.attach_vault(self._secret_vault.for_session(session_id))
         state.memory.add_system(self._build_system_prompt(workspace))
 
-        ws_summary = self._build_workspace_summary(workspace)
+        loop = asyncio.get_running_loop()
+        ws_summary = await loop.run_in_executor(
+            None, self._build_workspace_summary, workspace
+        )
         recent_requests = [
             e["data"].get("content", "")
             for e in all_events
@@ -510,7 +513,7 @@ class Orchestrator:
         """Process a user message through the ReAct loop, yielding events."""
         state = self._sessions.get(session_id)
         if state is None:
-            state = self._restore_session(session_id)
+            state = await self._arestore_session(session_id)
         if state is None:
             state = self.create_session(session_id)
 
@@ -528,10 +531,13 @@ class Orchestrator:
         state.status = SessionStatus.ACTIVE
         await asyncio.sleep(0)
 
-        context = build_context(state.workspace)
+        loop = asyncio.get_running_loop()
+        context = await loop.run_in_executor(None, build_context, state.workspace)
         exp_context = ""
         try:
-            ws_modules = extract_modules_from_workspace(state.workspace)
+            ws_modules = await loop.run_in_executor(
+                None, extract_modules_from_workspace, state.workspace
+            )
             exp_context, used_exp_ids = await abuild_experience_context(
                 self._experience_store, user_message, ws_modules
             )
@@ -541,7 +547,9 @@ class Orchestrator:
 
         mention_context = ""
         try:
-            mention_context = build_mention_context(state.workspace.path, user_message)
+            mention_context = await loop.run_in_executor(
+                None, build_mention_context, state.workspace.path, user_message
+            )
         except Exception:
             logger.debug("mention_context_failed", exc_info=True)
 
@@ -550,7 +558,9 @@ class Orchestrator:
             from ansible_forge.knowledge.workspace_memory import WorkspaceMemory
             ws_path = str(state.workspace.path) if state.workspace else ""
             ws_id = ws_path.replace("/", "_").replace("\\", "_").strip("_") or "default"
-            ws_memory_context = WorkspaceMemory(ws_id).inject_context()
+            ws_memory_context = await loop.run_in_executor(
+                None, WorkspaceMemory(ws_id).inject_context
+            )
         except Exception:
             logger.debug("workspace_memory_inject_failed", exc_info=True)
 
@@ -2096,11 +2106,16 @@ class Orchestrator:
 
         try:
             context_parts = [user_message[:1000]]
-            ws_context = build_context(state.workspace)
+            _loop = asyncio.get_running_loop()
+            ws_context = await _loop.run_in_executor(
+                None, build_context, state.workspace
+            )
             if ws_context:
                 context_parts.append(f"\nWorkspace:\n{ws_context[:500]}")
             try:
-                ws_modules = extract_modules_from_workspace(state.workspace)
+                ws_modules = await _loop.run_in_executor(
+                    None, extract_modules_from_workspace, state.workspace
+                )
                 exp_text, _ = await abuild_experience_context(
                     self._experience_store, user_message, ws_modules,
                     record_usage=False,

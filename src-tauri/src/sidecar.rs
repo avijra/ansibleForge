@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 
-const PORT: u16 = 8420;
+pub const PORT: u16 = 8420;
 const MAX_RESTARTS: u32 = 3;
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const HEALTH_MAX_RETRIES: u32 = 30;
@@ -255,11 +255,11 @@ pub fn monitor_backend(app: AppHandle) {
                                 "backend-error",
                                 "Backend has crashed repeatedly and cannot be recovered.",
                             );
+                            break;
                         }
                     }
-                    break;
                 }
-                Ok(None) => {} // still running
+                Ok(None) => {}
                 Err(e) => {
                     log::error!("Error checking backend status: {}", e);
                 }

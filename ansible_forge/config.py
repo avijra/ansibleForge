@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None
     jwt_secret: str | None = None
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8420
     log_level: str = "info"
     cors_origins: list[str] = Field(

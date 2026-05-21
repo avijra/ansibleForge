@@ -78,7 +78,7 @@ fn main() {
             // Start backend sidecar
             let backend_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                if sidecar::is_port_available(8420) {
+                if sidecar::is_port_available(sidecar::PORT) {
                     sidecar::start_backend(&backend_handle);
 
                     if !sidecar::wait_for_backend().await {
@@ -94,7 +94,7 @@ fn main() {
                     let _ = backend_handle.emit("backend-status", "ready");
                     sidecar::monitor_backend(backend_handle);
                 } else {
-                    log::info!("Port 8420 already in use, assuming backend is running");
+                    log::info!("Port {} already in use, assuming backend is running", sidecar::PORT);
                     let _ = backend_handle.emit("backend-status", "ready");
                 }
             });

@@ -21,10 +21,6 @@ from ansible_forge.tools.base import BaseTool, ToolResult
 
 logger = get_logger(__name__)
 
-_BACKEND_PORT = get_settings().port
-_BACKEND_PID = os.getpid()
-_BACKEND_PPID = os.getppid()
-
 _DANGEROUS_PATTERNS = [
     re.compile(r"\brm\s+-[^\s]*r[^\s]*\s+/\s*$"),
     re.compile(r"\bmkfs\b"),
@@ -101,9 +97,9 @@ _ESCAPE_HATCH_THRESHOLD = 2
 
 def _is_self_harm(command: str) -> bool:
     """Return True if the command would kill or disrupt the Tuyere backend."""
-    pid_str = str(_BACKEND_PID)
-    ppid_str = str(_BACKEND_PPID)
-    port_str = str(_BACKEND_PORT)
+    pid_str = str(os.getpid())
+    ppid_str = str(os.getppid())
+    port_str = str(get_settings().port)
 
     kill_pid = re.compile(
         rf"\bkill\s+(?:-\w+\s+)*(?:{re.escape(pid_str)}|{re.escape(ppid_str)})\b"
@@ -213,11 +209,13 @@ class LocalExec(BaseTool):
                 )
 
         if _is_self_harm(command):
+            _port = get_settings().port
+            _pid = os.getpid()
             return ToolResult.fail(
                 f"BLOCKED: this command would kill the Tuyere backend process "
-                f"(PID {_BACKEND_PID}, port {_BACKEND_PORT}). "
-                f"Port {_BACKEND_PORT} is YOUR OWN backend — killing it kills the app. "
-                f"ansible-runner does NOT need port {_BACKEND_PORT}; "
+                f"(PID {_pid}, port {_port}). "
+                f"Port {_port} is YOUR OWN backend — killing it kills the app. "
+                f"ansible-runner does NOT need port {_port}; "
                 f"it runs as a subprocess, not a server."
             )
 

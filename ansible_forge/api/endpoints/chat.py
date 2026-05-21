@@ -92,7 +92,7 @@ async def _run_agent_background(
         async for event in orch.handle_message(session_id, message):
             seq = bus.publish(event.event_type, event.data)
             if event.event_type not in transient_events:
-                store.save_event(session_id, event.event_type, event.data, seq=seq)
+                await store.asave_event(session_id, event.event_type, event.data, seq=seq)
     except Exception as exc:
         logger.error(
             "chat_background_error",
@@ -101,7 +101,7 @@ async def _run_agent_background(
             exc_info=True,
         )
         error_data = _classify_error(str(exc))
-        store.save_event(session_id, "error_recovery", error_data)
+        await store.asave_event(session_id, "error_recovery", error_data)
         bus.publish("error_recovery", error_data)
     finally:
         final_status = "error"
@@ -117,7 +117,9 @@ async def _run_agent_background(
 
         if not session_destroyed:
             try:
-                store.save_session(session_id, status=final_status)
+                await asyncio.shield(
+                    store.asave_session(session_id, status=final_status)
+                )
             except Exception:
                 logger.debug("finally_save_session_failed", session_id=session_id, exc_info=True)
 

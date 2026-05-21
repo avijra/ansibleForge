@@ -66,6 +66,7 @@ hidden_imports = [
     "ansible_forge.knowledge.workspace_memory",
     "ansible_forge.tools.memory_tool",
     "ansible_forge.tools.session_search",
+    "ansible_forge.health_thread",
     "ansible_forge.persistence.session_store",
     "ansible_forge.safety.approval",
     "ansible_forge.safety.diff_analyzer",

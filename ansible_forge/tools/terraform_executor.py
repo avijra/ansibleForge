@@ -149,7 +149,7 @@ class TerraformExecutor(BaseTool):
         timeout: int = 600,
     ) -> tuple[int, str, str]:
         cmd = [tf_binary] + args
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(

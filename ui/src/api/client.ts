@@ -52,7 +52,7 @@ export async function request<T>(
 }
 
 export const api = {
-  health: () => request<HealthResponse>("/health"),
+  health: (signal?: AbortSignal) => request<HealthResponse>("/health", signal ? { signal } : undefined),
   tools: () => request<{ name: string; description: string }[]>("/tools"),
 
   sessionStatus: (id: string) =>

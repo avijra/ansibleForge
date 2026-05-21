@@ -78,7 +78,7 @@ UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
 async def _parent_watchdog(check_interval: int = 5) -> None:
-    """Shut down if parent desktop process (Tauri/Electron) dies (prevents zombie backends)."""
+    """Shut down if parent desktop process (Tauri) dies (prevents zombie backends)."""
     parent_pid_str = os.environ.get("ANSIBLEFORGE_PARENT_PID")
     if not parent_pid_str:
         return
@@ -128,6 +128,17 @@ async def _startup_self_check() -> None:
             logger.warning("startup_self_check_warnings", warnings=non_critical)
 
 
+async def _health_status_updater() -> None:
+    """Periodically push the main loop's health status to the threaded server."""
+    from ansible_forge import health_thread
+
+    await asyncio.sleep(2)
+    health_thread.update_status("healthy")
+    while True:
+        await asyncio.sleep(10)
+        health_thread.update_status("healthy")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -138,12 +149,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_provider=settings.llm_provider,
         llm_model=settings.llm_model,
     )
+
+    from ansible_forge import health_thread
+    health_thread.start(settings.port)
+
     consolidation_task = asyncio.create_task(_periodic_consolidation())
     watchdog_task = asyncio.create_task(_parent_watchdog())
     self_check_task = asyncio.create_task(_startup_self_check())
+    health_updater_task = asyncio.create_task(_health_status_updater())
     try:
         yield
     finally:
+        health_updater_task.cancel()
         self_check_task.cancel()
         watchdog_task.cancel()
         consolidation_task.cancel()

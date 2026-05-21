@@ -20,6 +20,7 @@ interface PerSessionState {
 }
 
 const sessionStates = new Map<string, PerSessionState>();
+const MAX_SESSION_STATES = 50;
 
 const MAX_RECONNECT_ATTEMPTS = 15;
 const BASE_BACKOFF_MS = 1_000;
@@ -27,6 +28,17 @@ const BASE_BACKOFF_MS = 1_000;
 function getSessionState(id: string): PerSessionState {
   let s = sessionStates.get(id);
   if (!s) {
+    if (sessionStates.size >= MAX_SESSION_STATES) {
+      const oldest = sessionStates.keys().next().value;
+      if (oldest !== undefined) {
+        const stale = sessionStates.get(oldest);
+        if (stale && !stale.streaming) {
+          stale.controller?.abort();
+          if (stale.reconnectTimer) clearTimeout(stale.reconnectTimer);
+          sessionStates.delete(oldest);
+        }
+      }
+    }
     const isServerSid = id && !id.startsWith("local-");
     s = {
       serverSid: isServerSid ? id : null,
