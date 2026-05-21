@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from ansible_forge.logging import get_logger
 from ansible_forge.tools.base import ToolResult, ToolStatus

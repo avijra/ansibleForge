@@ -989,12 +989,10 @@ class Orchestrator:
                         if result.data:
                             tool_result_payload["data"] = result.data
                         yield AgentEvent("tool_result", session_vault.redact_dict(tool_result_payload))
-                        try:
+                        with contextlib.suppress(Exception):
                             await infra_tracker.update_infrastructure(
                                 tc.name, result, state.session_id,
                             )
-                        except Exception:
-                            pass
                         if tc.name == "web_search" and result.status != ToolStatus.ERROR:
                             state._searched_since_exec_fail = True
 
@@ -1436,12 +1434,10 @@ class Orchestrator:
                     yield AgentEvent("tool_result", session_vault.redact_dict(
                         tool_result_payload
                     ))
-                    try:
+                    with contextlib.suppress(Exception):
                         await infra_tracker.update_infrastructure(
-                            tc.name, result, state.session_id,
+                            tc.name, result, state.session_id, pending_run_id,
                         )
-                    except Exception:
-                        pass
 
                     if result.status == ToolStatus.NEEDS_APPROVAL:
                         auto_approved = False
