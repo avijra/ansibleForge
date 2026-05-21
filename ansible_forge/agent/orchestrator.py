@@ -52,7 +52,7 @@ LOOP_BREAK_PROMPT = (
 )
 
 _PROGRESS_INTERVAL = 5
-_CHUNK_DEAD_TICKS = 6
+_CHUNK_DEAD_TICKS = 18
 
 _PARALLELIZABLE_TOOLS = frozenset({
     "collect_facts", "test_connectivity", "search_docs", "web_search",
@@ -569,7 +569,9 @@ class Orchestrator:
 
         max_steps = self._settings.max_agent_steps
         progress_check_interval = max(max_steps // 3, 15)
-        llm_timeout = 120
+        llm_timeout = 180
+        consecutive_llm_timeouts = 0
+        max_consecutive_llm_timeouts = 3
         my_generation = state._generation
         yielded_terminal = False
         session_start_mono = _time.monotonic()
@@ -750,11 +752,33 @@ class Orchestrator:
                                 yield item
                     streamed = True
                 except TimeoutError:
+                    consecutive_llm_timeouts += 1
                     logger.error(
                         "llm_timeout",
                         session_id=state.session_id,
                         step=state.step_count,
+                        consecutive=consecutive_llm_timeouts,
                     )
+                    if consecutive_llm_timeouts >= max_consecutive_llm_timeouts:
+                        state.memory.add_assistant(
+                            content=(
+                                "I'm having trouble generating a response for this "
+                                "request — it keeps timing out. This usually happens "
+                                "with very complex requests. Please try breaking it "
+                                "into smaller steps, or rephrase to be more specific."
+                            ),
+                        )
+                        state.status = SessionStatus.COMPLETED
+                        yielded_terminal = True
+                        yield AgentEvent("message", {
+                            "content": (
+                                "I'm having trouble generating a response for this "
+                                "request — it keeps timing out. This usually happens "
+                                "with very complex requests. Please try breaking it "
+                                "into smaller steps, or rephrase to be more specific."
+                            ),
+                        })
+                        return
                     state.memory.add_user(
                         "Your previous response was too long and the stream "
                         "timed out. You MUST produce shorter responses. Generate "
@@ -816,6 +840,8 @@ class Orchestrator:
                         "error": "The AI model returned no response. Retrying with a simpler approach.",
                     })
                     continue
+
+                consecutive_llm_timeouts = 0
 
                 if state._generation != my_generation:
                     return
