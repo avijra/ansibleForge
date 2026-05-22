@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 litellm.drop_params = True
 litellm.modify_params = True
 
-_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=45, write=15, pool=30)
+_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=120, write=15, pool=30)
 
 
 class LLMClient:
