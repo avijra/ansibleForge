@@ -569,7 +569,7 @@ class Orchestrator:
 
         max_steps = self._settings.max_agent_steps
         progress_check_interval = max(max_steps // 3, 15)
-        llm_timeout = 180
+        llm_timeout = 300
         consecutive_llm_timeouts = 0
         max_consecutive_llm_timeouts = 3
         my_generation = state._generation
