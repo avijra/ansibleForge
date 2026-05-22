@@ -702,6 +702,7 @@ class Orchestrator:
                 try:
                     llm_progress_tick = 0
                     empty_ticks = 0
+                    got_first_chunk = False
                     stream_iter = self._stream_llm_call(
                         state, self._registry.to_openai_tools()
                     ).__aiter__()
@@ -717,7 +718,7 @@ class Orchestrator:
                             if not done:
                                 llm_progress_tick += 1
                                 empty_ticks += 1
-                                if empty_ticks >= _CHUNK_DEAD_TICKS:
+                                if got_first_chunk and empty_ticks >= _CHUNK_DEAD_TICKS:
                                     logger.error(
                                         "llm_stream_dead",
                                         session_id=state.session_id,
@@ -739,6 +740,7 @@ class Orchestrator:
                                 continue
 
                             empty_ticks = 0
+                            got_first_chunk = True
                             try:
                                 item = get_next.result()
                             except StopAsyncIteration:
