@@ -17,6 +17,15 @@ import ansible_runner
 
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
+from ansible_forge.tools._log_tailer import (
+    detect_new_log_files as _detect_new_log_files,
+)
+from ansible_forge.tools._log_tailer import (
+    snapshot_log_files as _snapshot_log_files,
+)
+from ansible_forge.tools._log_tailer import (
+    tail_new_logs as _tail_new_logs,
+)
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 from ansible_forge.tools.secret_check import find_missing_secrets
 from ansible_forge.workspace.project_layout import ensure_ansible_cfg
@@ -624,129 +633,6 @@ class Executor(BaseTool):
             "Deployment failed — check the execution log below for details.",
             **result_data,
         )
-
-
-_LOG_EXTENSIONS = {".log", ".out"}
-_LOG_MAX_PREVIEW = 2000
-_LOG_MAX_FILES = 10
-
-
-def _snapshot_log_files(ws: Path) -> dict[str, float]:
-    snapshot: dict[str, float] = {}
-    try:
-        for ext in _LOG_EXTENSIONS:
-            for f in ws.rglob(f"*{ext}"):
-                if ".tuyere" in f.parts or "node_modules" in f.parts:
-                    continue
-                with contextlib.suppress(OSError):
-                    snapshot[str(f.relative_to(ws))] = f.stat().st_mtime
-    except Exception:
-        pass
-    return snapshot
-
-
-_LOG_MAX_READ = 64 * 1024
-
-
-def _tail_text(path: Path, max_chars: int) -> str:
-    size = path.stat().st_size
-    read_bytes = min(size, max_chars * 4)
-    with path.open("rb") as fh:
-        if size > read_bytes:
-            fh.seek(size - read_bytes)
-        raw = fh.read(read_bytes)
-    text = raw.decode("utf-8", errors="replace")
-    return text[-max_chars:] if len(text) > max_chars else text
-
-
-def _detect_new_log_files(
-    ws: Path, before: dict[str, float]
-) -> list[dict[str, str]]:
-    detected: list[dict[str, str]] = []
-    try:
-        for ext in _LOG_EXTENSIONS:
-            for f in ws.rglob(f"*{ext}"):
-                if ".tuyere" in f.parts or "node_modules" in f.parts:
-                    continue
-                try:
-                    real = f.resolve(strict=True)
-                    ws_real = ws.resolve()
-                    if not str(real).startswith(str(ws_real) + os.sep) and real != ws_real:
-                        continue
-                    rel = str(f.relative_to(ws))
-                    mtime = real.stat().st_mtime
-                    fsize = real.stat().st_size
-                    if fsize > _LOG_MAX_READ:
-                        continue
-                    if rel not in before or mtime > before[rel]:
-                        preview = _tail_text(real, _LOG_MAX_PREVIEW)
-                        detected.append({
-                            "path": rel,
-                            "size": str(fsize),
-                            "preview": preview,
-                        })
-                except OSError:
-                    pass
-    except Exception:
-        pass
-    return detected[:_LOG_MAX_FILES]
-
-
-_TAIL_POLL_INTERVAL = 3.0
-_TAIL_MAX_LINE_LEN = 500
-
-
-async def _tail_new_logs(
-    ws: Path, baseline: dict[str, float], queue: asyncio.Queue[dict[str, Any]]
-) -> None:
-    positions: dict[str, int] = {}
-    ws_resolved = ws.resolve()
-
-    while True:
-        await asyncio.sleep(_TAIL_POLL_INTERVAL)
-        try:
-            for ext in _LOG_EXTENSIONS:
-                for f in ws.rglob(f"*{ext}"):
-                    if ".tuyere" in f.parts or "node_modules" in f.parts:
-                        continue
-                    try:
-                        real = f.resolve(strict=True)
-                        if not str(real).startswith(str(ws_resolved) + os.sep) and real != ws_resolved:
-                            continue
-                        rel = str(f.relative_to(ws))
-                        stat_info = real.stat()
-                        if stat_info.st_size > _LOG_MAX_READ:
-                            continue
-                        old_mtime = baseline.get(rel, 0)
-                        if stat_info.st_mtime <= old_mtime and rel not in positions:
-                            continue
-
-                        pos = positions.get(rel, 0)
-                        if stat_info.st_size <= pos:
-                            continue
-
-                        with real.open("r", encoding="utf-8", errors="replace") as fh:
-                            fh.seek(pos)
-                            new_data = fh.read(8192)
-                            positions[rel] = fh.tell()
-
-                        if new_data.strip():
-                            lines = new_data.strip().splitlines()
-                            preview = "\n".join(
-                                ln[:_TAIL_MAX_LINE_LEN] for ln in lines[-10:]
-                            )
-                            with contextlib.suppress(Exception):
-                                queue.put_nowait({
-                                    "source": "log_file",
-                                    "file": rel,
-                                    "content": preview,
-                                })
-                    except OSError:
-                        pass
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
 
 
 _RESULT_KEYS = (

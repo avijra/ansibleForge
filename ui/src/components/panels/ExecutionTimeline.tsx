@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -936,7 +936,27 @@ function formatLiveTask(data: Record<string, unknown>): string {
   return task || "...";
 }
 
+const _LONG_RUN_TOOLS = new Set(["execute_playbook", "run_adhoc", "local_exec", "terraform_exec"]);
+
+type LiveTab = "all" | "output" | "ansible";
+
+function isOutputEvent(ev: AgentEvent): boolean {
+  return ev.data.source === "log_file"
+    || (ev.data.type as string) === "shell_output"
+    || (ev.data.type as string) === "stderr_line";
+}
+
+function isAnsibleEvent(ev: AgentEvent): boolean {
+  return !ev.data.source
+    && (ev.data.type as string) !== "shell_output"
+    && (ev.data.type as string) !== "stderr_line";
+}
+
 function LiveRunSection({ events }: { events: AgentEvent[] }) {
+  const [tab, setTab] = useState<LiveTab>("all");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const userScrolledUp = useRef(false);
+
   const liveLogs = useMemo(
     () => events.filter((e) => e.event === "live_log"),
     [events]
@@ -944,69 +964,218 @@ function LiveRunSection({ events }: { events: AgentEvent[] }) {
 
   const lastToolCall = useMemo(() => {
     const calls = events.filter(
-      (e) => e.event === "tool_call" &&
-        ((e.data.tool as string) === "execute_playbook" || (e.data.tool as string) === "run_adhoc")
+      (e) => e.event === "tool_call" && _LONG_RUN_TOOLS.has(e.data.tool as string)
     );
     return calls[calls.length - 1];
   }, [events]);
 
   const lastToolResult = useMemo(() => {
     const results = events.filter(
-      (e) => e.event === "tool_result" &&
-        ((e.data.tool as string) === "execute_playbook" || (e.data.tool as string) === "run_adhoc")
+      (e) => e.event === "tool_result" && _LONG_RUN_TOOLS.has(e.data.tool as string)
     );
     return results[results.length - 1];
   }, [events]);
 
   const isRunning = lastToolCall && (!lastToolResult || lastToolCall.timestamp > lastToolResult.timestamp);
+
+  const filtered = useMemo(() => {
+    const recent = liveLogs.slice(-80);
+    if (tab === "output") return recent.filter(isOutputEvent);
+    if (tab === "ansible") return recent.filter(isAnsibleEvent);
+    return recent;
+  }, [liveLogs, tab]);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    userScrolledUp.current = !atBottom;
+  }, []);
+
+  useEffect(() => {
+    if (!userScrolledUp.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [filtered]);
+
   if (!isRunning || liveLogs.length === 0) return null;
 
   const args = lastToolCall.data.arguments as Record<string, unknown> | undefined;
-  const playbook = (args?.playbook as string) || (lastToolCall.data.tool as string) || "playbook";
+  const playbook = (args?.playbook as string) || (args?.command as string)?.slice(0, 40) || (lastToolCall.data.tool as string) || "command";
 
   const okCount = liveLogs.filter((e) => (e.data.type as string) === "task_ok").length;
   const failedCount = liveLogs.filter((e) => (e.data.type as string) === "task_failed").length;
   const changedCount = liveLogs.filter((e) => e.data.changed === true).length;
+  const hasCounters = okCount > 0 || failedCount > 0;
+
+  const outputCount = liveLogs.filter(isOutputEvent).length;
+  const ansibleCount = liveLogs.filter(isAnsibleEvent).length;
 
   return (
     <div className="border-b border-zinc-800/50">
+      {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 bg-blue-950/20 border-b border-blue-900/20">
         <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin shrink-0" />
         <span className="text-xs font-medium text-blue-300 truncate">{playbook}</span>
-        <span className="text-[10px] text-blue-400/60 ml-auto whitespace-nowrap">
-          running
-        </span>
+        {hasCounters && (
+          <span className="text-[10px] text-zinc-500 ml-auto whitespace-nowrap">
+            {okCount > 0 && <span className="text-emerald-600">{okCount} ok</span>}
+            {changedCount > 0 && <span className="text-amber-600 ml-1.5">{changedCount} chg</span>}
+            {failedCount > 0 && <span className="text-red-400 ml-1.5">{failedCount} fail</span>}
+          </span>
+        )}
+        {!hasCounters && (
+          <span className="text-[10px] text-blue-400/60 ml-auto whitespace-nowrap">running</span>
+        )}
       </div>
-      {(okCount > 0 || failedCount > 0) && (
-        <div className="flex gap-3 px-3 py-1.5 text-[10px] bg-zinc-950/50">
-          {okCount > 0 && <span className="text-emerald-600">{okCount} ok</span>}
-          {changedCount > 0 && <span className="text-amber-600">{changedCount} changed</span>}
-          {failedCount > 0 && <span className="text-red-400">{failedCount} failed</span>}
-        </div>
-      )}
-      <div className="max-h-48 overflow-y-auto">
-        {liveLogs.slice(-30).map((ev) => (
-          <div
-            key={ev.id}
-            className="flex items-center gap-2 px-3 py-1 text-[11px] hover:bg-zinc-900/30"
+
+      {/* Tab bar */}
+      <div className="flex border-b border-zinc-800/40 bg-zinc-950/40">
+        {([
+          ["all", "All", liveLogs.length],
+          ["output", "Output", outputCount],
+          ["ansible", "Ansible", ansibleCount],
+        ] as [LiveTab, string, number][]).map(([id, label, count]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            className={cn(
+              "flex-1 px-2 py-1.5 text-[10px] transition-colors",
+              tab === id
+                ? "text-blue-300 border-b border-blue-400"
+                : "text-zinc-500 hover:text-zinc-400",
+            )}
           >
-            <LiveTaskIcon type={ev.data.type as string} />
-            <span className={cn(
-              "truncate",
-              (ev.data.type as string) === "task_failed" || (ev.data.type as string) === "host_unreachable"
-                ? "text-red-400"
-                : (ev.data.type as string) === "task_skipped"
-                  ? "text-zinc-600"
-                  : (ev.data.type as string) === "play_start" || (ev.data.type as string) === "task_start"
-                    ? "text-blue-400"
-                    : "text-zinc-400"
-            )}>
-              {formatLiveTask(ev.data)}
-            </span>
-          </div>
+            {label}{count > 0 ? ` (${count})` : ""}
+          </button>
         ))}
       </div>
+
+      {/* Log content */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="max-h-72 overflow-y-auto"
+      >
+        <DedupedLogList events={filtered} />
+        {filtered.length === 0 && (
+          <div className="px-3 py-4 text-[11px] text-zinc-600 text-center">
+            No {tab === "all" ? "" : tab + " "}events yet
+          </div>
+        )}
+      </div>
     </div>
+  );
+}
+
+function LogFileBlock({ ev }: { ev: AgentEvent }) {
+  const file = (ev.data.file as string) || "log";
+  const content = (ev.data.content as string) || "";
+  const lines = content.split("\n").filter(Boolean);
+
+  return (
+    <div className="border-l-2 border-cyan-800/40">
+      <div className="px-3 py-0.5 text-[9px] text-zinc-500 bg-zinc-950/50 truncate">
+        {file}
+      </div>
+      {lines.map((ln, i) => (
+        <div key={`${ev.id}-${i}`} className="px-3 py-0 text-[11px] font-mono text-cyan-300/80 whitespace-pre-wrap break-all">
+          {ln}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AnsibleEventRow({ ev, count }: { ev: AgentEvent; count?: number }) {
+  const type = ev.data.type as string;
+  const isFailed = type === "task_failed" || type === "host_unreachable";
+
+  return (
+    <div className={cn(
+      "flex items-center gap-2 px-3 py-1 text-[11px] hover:bg-zinc-900/30",
+      isFailed && "border-l-2 border-red-500/60 bg-red-950/10",
+    )}>
+      <LiveTaskIcon type={type} />
+      <span className={cn(
+        "truncate",
+        isFailed ? "text-red-400"
+          : type === "task_skipped" ? "text-zinc-600"
+          : type === "play_start" || type === "task_start" ? "text-blue-400"
+          : "text-zinc-400"
+      )}>
+        {formatLiveTask(ev.data)}
+      </span>
+      {count && count > 1 && (
+        <span className="text-[9px] text-zinc-600 shrink-0 ml-auto">×{count}</span>
+      )}
+    </div>
+  );
+}
+
+function DedupedLogList({ events }: { events: AgentEvent[] }) {
+  type RenderItem =
+    | { kind: "output"; ev: AgentEvent }
+    | { kind: "log_file"; ev: AgentEvent }
+    | { kind: "ansible"; ev: AgentEvent; count: number };
+
+  const items = useMemo(() => {
+    const result: RenderItem[] = [];
+    for (const ev of events) {
+      if (ev.data.source === "log_file") {
+        result.push({ kind: "log_file", ev });
+        continue;
+      }
+      const type = ev.data.type as string;
+      if (type === "shell_output" || type === "stderr_line") {
+        result.push({ kind: "output", ev });
+        continue;
+      }
+      const prev = result[result.length - 1];
+      if (
+        prev?.kind === "ansible" &&
+        (type === "task_ok" || type === "task_skipped") &&
+        (prev.ev.data.type as string) === type &&
+        (prev.ev.data.task as string) === (ev.data.task as string)
+      ) {
+        prev.count++;
+        prev.ev = ev;
+      } else {
+        result.push({ kind: "ansible", ev, count: 1 });
+      }
+    }
+    return result;
+  }, [events]);
+
+  return (
+    <>
+      {items.map((item) => {
+        if (item.kind === "log_file") {
+          return <LogFileBlock key={item.ev.id} ev={item.ev} />;
+        }
+        if (item.kind === "output") {
+          const type = item.ev.data.type as string;
+          return (
+            <div
+              key={item.ev.id}
+              className={cn(
+                "px-3 py-0.5 text-[11px] font-mono",
+                type === "stderr_line" ? "text-amber-400/80" : "text-cyan-300/80",
+              )}
+            >
+              {(item.ev.data.line as string) || ""}
+            </div>
+          );
+        }
+        return (
+          <AnsibleEventRow
+            key={item.ev.id}
+            ev={item.ev}
+            count={item.count}
+          />
+        );
+      })}
+    </>
   );
 }
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from ansible_forge.config import get_settings
@@ -299,16 +300,31 @@ class LocalExec(BaseTool):
                                     "line": decoded[:500],
                                 })
 
+            log_watcher: asyncio.Task[None] | None = None
+            if live_queue is not None and cwd:
+                from ansible_forge.tools._log_tailer import snapshot_log_files, tail_new_logs
+                log_snapshot = snapshot_log_files(Path(cwd))
+                log_watcher = asyncio.create_task(
+                    tail_new_logs(Path(cwd), log_snapshot, live_queue)
+                )
+
             assert proc.stdout is not None
             assert proc.stderr is not None
-            await asyncio.wait_for(
-                asyncio.gather(
-                    _stream_pipe(proc.stdout, stdout_parts),
-                    _stream_pipe(proc.stderr, stderr_parts, is_stderr=True),
-                    proc.wait(),
-                ),
-                timeout=timeout,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _stream_pipe(proc.stdout, stdout_parts),
+                        _stream_pipe(proc.stderr, stderr_parts, is_stderr=True),
+                        proc.wait(),
+                    ),
+                    timeout=timeout,
+                )
+            finally:
+                if log_watcher and not log_watcher.done():
+                    log_watcher.cancel()
+                    import contextlib as _ctxlib
+                    with _ctxlib.suppress(asyncio.CancelledError):
+                        await log_watcher
         except asyncio.CancelledError:
             if proc is not None:
                 try:

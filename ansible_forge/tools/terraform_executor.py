@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from typing import Any
 
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
+from ansible_forge.tools._log_tailer import snapshot_log_files, tail_new_logs
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 from ansible_forge.tools.binary_resolver import resolve_terraform_or_download_async
 
@@ -150,9 +152,12 @@ class TerraformExecutor(BaseTool):
     ) -> tuple[int, str, str]:
         cmd = [tf_binary] + args
         proc = None
+        log_watcher: asyncio.Task[None] | None = None
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         try:
+            log_snapshot = snapshot_log_files(tf_dir) if live_queue else {}
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -160,6 +165,11 @@ class TerraformExecutor(BaseTool):
                 cwd=str(tf_dir),
                 env=env,
             )
+
+            if live_queue and tf_dir.is_dir():
+                log_watcher = asyncio.create_task(
+                    tail_new_logs(tf_dir, log_snapshot, live_queue)
+                )
 
             async def _read_stream(
                 stream: asyncio.StreamReader, parts: list[str], is_stderr: bool = False,
@@ -171,7 +181,6 @@ class TerraformExecutor(BaseTool):
                     decoded = line.decode("utf-8", errors="replace").rstrip("\n\r")
                     parts.append(decoded)
                     if live_queue is not None and decoded.strip():
-                        import contextlib
                         with contextlib.suppress(Exception):
                             live_queue.put_nowait({
                                 "type": "stderr_line" if is_stderr else "shell_output",
@@ -201,6 +210,11 @@ class TerraformExecutor(BaseTool):
                 proc.kill()
                 await proc.wait()
             return 1, "", f"Terraform command timed out after {timeout}s"
+        finally:
+            if log_watcher is not None and not log_watcher.done():
+                log_watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await log_watcher
 
     async def execute(
         self,

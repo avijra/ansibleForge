@@ -326,6 +326,7 @@ class AdhocRunner(BaseTool):
 
             is_shell_module = module.split(".")[-1] in ("shell", "command")
             stdout_tailer: asyncio.Task[None] | None = None
+            log_watcher: asyncio.Task[None] | None = None
 
             loop = asyncio.get_running_loop()
             thread, runner = await loop.run_in_executor(
@@ -336,6 +337,11 @@ class AdhocRunner(BaseTool):
             if is_shell_module and live_queue is not None:
                 stdout_tailer = asyncio.create_task(
                     _tail_runner_stdout(run_dir, live_queue)
+                )
+                from ansible_forge.tools._log_tailer import snapshot_log_files, tail_new_logs
+                log_snapshot = snapshot_log_files(ws)
+                log_watcher = asyncio.create_task(
+                    tail_new_logs(ws, log_snapshot, live_queue)
                 )
 
             try:
@@ -362,11 +368,12 @@ class AdhocRunner(BaseTool):
                     f"higher timeout parameter."
                 )
             finally:
-                if stdout_tailer and not stdout_tailer.done():
-                    stdout_tailer.cancel()
-                    import contextlib as _ctxlib2
-                    with _ctxlib2.suppress(asyncio.CancelledError):
-                        await stdout_tailer
+                import contextlib as _ctxlib2
+                for _task in (stdout_tailer, log_watcher):
+                    if _task and not _task.done():
+                        _task.cancel()
+                        with _ctxlib2.suppress(asyncio.CancelledError):
+                            await _task
 
             result = runner
 

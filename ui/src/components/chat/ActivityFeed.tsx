@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageSquare, WifiOff, Circle, XCircle as XC, MinusCircle, Shield, KeyRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageSquare, WifiOff, XCircle as XC, Shield, KeyRound } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { DiffReview } from "@/components/review/DiffReview";
@@ -98,45 +98,12 @@ function isStepGroup(item: AgentEvent | StepGroup): item is StepGroup {
   return "stepNum" in item && "events" in item;
 }
 
-function LiveTaskIcon({ type }: { type: string }) {
-  switch (type) {
-    case "task_ok":
-      return <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />;
-    case "task_failed":
-    case "host_unreachable":
-      return <XC className="h-3 w-3 text-red-400 shrink-0" />;
-    case "task_skipped":
-      return <MinusCircle className="h-3 w-3 text-zinc-600 shrink-0" />;
-    case "task_start":
-    case "play_start":
-      return <Circle className="h-3 w-3 text-blue-400 shrink-0 animate-pulse" />;
-    case "shell_output":
-      return <ChevronRight className="h-3 w-3 text-cyan-500 shrink-0" />;
-    case "stderr_line":
-      return <ChevronRight className="h-3 w-3 text-amber-500 shrink-0" />;
-    default:
-      return <Circle className="h-3 w-3 text-zinc-600 shrink-0" />;
-  }
-}
-
-function formatLiveEvent(data: Record<string, unknown>): string {
-  if (data.source === "log_file") {
-    const file = (data.file as string) || "log";
-    const content = (data.content as string) || "";
-    const lastLine = content.split("\n").filter(Boolean).pop() || "";
-    const short = lastLine.length > 120 ? lastLine.slice(0, 117) + "..." : lastLine;
-    return `[${file}] ${short}`;
-  }
-
+function formatAnsibleEvent(data: Record<string, unknown>): string {
   const type = data.type as string;
   const task = (data.task as string) || "";
   const host = (data.host as string) || "";
   const changed = data.changed as boolean;
 
-  if (type === "shell_output" || type === "stderr_line") {
-    const line = (data.line as string) || "";
-    return line.length > 120 ? line.slice(0, 117) + "..." : line;
-  }
   if (type === "play_start") return (data.play as string) || "Play starting";
   if (type === "task_start") return task || "Task starting";
   if (type === "task_ok") {
@@ -152,6 +119,34 @@ function formatLiveEvent(data: Record<string, unknown>): string {
   if (type === "host_unreachable") return `${host || "host"} — unreachable`;
   if (type === "stats") return "Playbook finished";
   return task || "...";
+}
+
+function extractLogFileLines(events: AgentEvent[]): { file: string; lines: string[] } {
+  const last = [...events].reverse().find((e) => e.data.source === "log_file");
+  if (!last) return { file: "", lines: [] };
+  const file = (last.data.file as string) || "log";
+  const allLines: string[] = [];
+  for (const ev of events) {
+    if (ev.data.source !== "log_file") continue;
+    const content = (ev.data.content as string) || "";
+    for (const ln of content.split("\n")) {
+      const trimmed = ln.trimEnd();
+      if (trimmed) allLines.push(trimmed);
+    }
+  }
+  return { file, lines: allLines.slice(-6) };
+}
+
+function extractOutputLines(events: AgentEvent[]): string[] {
+  const lines: string[] = [];
+  for (const ev of events) {
+    const type = ev.data.type as string;
+    if (type === "shell_output" || type === "stderr_line") {
+      const line = (ev.data.line as string) || "";
+      if (line.trim()) lines.push(line);
+    }
+  }
+  return lines.slice(-6);
 }
 
 function useElapsedTimer(active: boolean) {
@@ -179,15 +174,6 @@ function formatElapsed(secs: number): string {
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
-function liveLogColor(type: string): string {
-  if (type === "task_failed" || type === "host_unreachable") return "text-red-400 truncate";
-  if (type === "task_skipped") return "text-zinc-600 truncate";
-  if (type === "play_start" || type === "task_start") return "text-blue-400 truncate";
-  if (type === "shell_output") return "text-cyan-400/80 truncate font-mono";
-  if (type === "stderr_line") return "text-amber-400/80 truncate font-mono";
-  return "text-emerald-600 truncate";
-}
-
 function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const stepCount = events.filter((e) => e.event === "step_start").length;
   const toolCalls = events.filter((e) => e.event === "tool_call").length;
@@ -206,7 +192,7 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
 
   const recentLiveLogs = useMemo(() => {
     const logs = events.filter((e) => e.event === "live_log");
-    return logs.slice(-8);
+    return logs.slice(-30);
   }, [events]);
 
   const justResumed =
@@ -215,15 +201,49 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
     (!lastProgress || lastApprovalGranted.timestamp > lastProgress.timestamp);
 
   const hasAnyInfo = stepCount > 0 || toolCalls > 0 || activeTool || statusMsg;
-  const hasLiveLogs = recentLiveLogs.length > 0;
 
-  const borderColor = isLongRunning ? "border-cyan-800/60" : "border-emerald-900/40";
+  const logFile = useMemo(() => extractLogFileLines(recentLiveLogs), [recentLiveLogs]);
+  const outputLines = useMemo(() => extractOutputLines(recentLiveLogs), [recentLiveLogs]);
+  const ansibleEvents = useMemo(
+    () => recentLiveLogs.filter(
+      (e) => !e.data.source && e.data.type !== "shell_output" && e.data.type !== "stderr_line"
+    ),
+    [recentLiveLogs],
+  );
+
+  const hasLogFile = logFile.lines.length > 0;
+  const hasOutput = outputLines.length > 0;
+  const hasAnsible = ansibleEvents.length > 0;
+  const hasLiveContent = hasLogFile || hasOutput || hasAnsible;
+
+  const lastAnsibleFailed = ansibleEvents.length > 0 &&
+    (ansibleEvents[ansibleEvents.length - 1].data.type as string) === "task_failed";
+  const lastOutputIsErr = recentLiveLogs.length > 0 &&
+    (recentLiveLogs[recentLiveLogs.length - 1].data.type as string) === "stderr_line";
+  const hasError = lastAnsibleFailed || lastOutputIsErr;
+
+  const borderColor = hasError
+    ? "border-red-800/60"
+    : isLongRunning ? "border-cyan-800/60" : "border-emerald-900/40";
   const bgColor = isLongRunning ? "bg-cyan-950/30" : "bg-black/50";
+
+  const termRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
+  }, [logFile.lines, outputLines]);
+
+  const ansibleOkCount = ansibleEvents.filter((e) => (e.data.type as string) === "task_ok").length;
+  const ansibleFailCount = ansibleEvents.filter((e) => (e.data.type as string) === "task_failed").length;
+  const latestTask = [...ansibleEvents].reverse().find(
+    (e) => (e.data.type as string) === "task_start" || (e.data.type as string) === "task_ok"
+      || (e.data.type as string) === "task_failed"
+  );
 
   return (
     <div className={`rounded-lg border ${borderColor} ${bgColor} px-3 py-2 font-mono`} role="status" aria-live="polite">
+      {/* Header: spinner + tool name + elapsed */}
       <div className="flex items-center gap-2">
-        <Loader2 className={`h-3.5 w-3.5 animate-spin shrink-0 ${isLongRunning ? "text-cyan-500" : "text-emerald-600"}`} />
+        <Loader2 className={`h-3.5 w-3.5 animate-spin shrink-0 ${hasError ? "text-red-400" : isLongRunning ? "text-cyan-500" : "text-emerald-600"}`} />
         <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 min-w-0 flex-1">
           {!hasAnyInfo && <span className="text-emerald-500">Agent is thinking...</span>}
           {justResumed && hasAnyInfo && <span className="text-emerald-500">Resuming...</span>}
@@ -247,21 +267,61 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
           </span>
         )}
       </div>
-      {!justResumed && statusMsg && !hasLiveLogs && (
-        <div className={`mt-1 text-[11px] truncate pl-5 ${isLongRunning ? "text-cyan-400/60" : "text-emerald-600/80"}`}>
-          {statusMsg}
+
+      {/* Priority 1: Log file tail — terminal block */}
+      {!justResumed && hasLogFile && (
+        <div className="mt-1.5">
+          <div className="text-[9px] text-zinc-500 mb-0.5 truncate">{logFile.file}</div>
+          <pre
+            ref={termRef}
+            className={`rounded bg-zinc-950/80 px-2 py-1.5 text-[10px] leading-relaxed max-h-[140px] overflow-y-auto whitespace-pre-wrap break-all ${hasError ? "border-l-2 border-red-500/60" : ""}`}
+          >
+            {logFile.lines.map((ln, i) => (
+              <div key={i} className="text-cyan-300/80">{ln}</div>
+            ))}
+          </pre>
         </div>
       )}
-      {hasLiveLogs && (
-        <div className="mt-1.5 space-y-0.5 pl-1 max-h-[120px] overflow-y-auto">
-          {recentLiveLogs.map((ev) => (
-            <div key={ev.id} className="flex items-center gap-1.5 text-[10px] min-w-0">
-              <LiveTaskIcon type={ev.data.type as string} />
-              <span className={liveLogColor(ev.data.type as string)}>
-                {formatLiveEvent(ev.data)}
-              </span>
-            </div>
-          ))}
+
+      {/* Priority 2: Shell stdout/stderr — terminal block */}
+      {!justResumed && !hasLogFile && hasOutput && (
+        <div className="mt-1.5">
+          <pre
+            ref={termRef}
+            className={`rounded bg-zinc-950/80 px-2 py-1.5 text-[10px] leading-relaxed max-h-[140px] overflow-y-auto whitespace-pre-wrap break-all ${hasError ? "border-l-2 border-red-500/60" : ""}`}
+          >
+            {outputLines.map((ln, i) => (
+              <div key={i} className="text-zinc-300">{ln}</div>
+            ))}
+          </pre>
+        </div>
+      )}
+
+      {/* Priority 3: Ansible-only — compact summary */}
+      {!justResumed && !hasLogFile && !hasOutput && hasAnsible && (
+        <div className="mt-1 flex items-center gap-2 text-[10px] pl-5">
+          {latestTask && (
+            <span className={
+              (latestTask.data.type as string) === "task_failed"
+                ? "text-red-400 truncate"
+                : "text-emerald-600 truncate"
+            }>
+              {formatAnsibleEvent(latestTask.data)}
+            </span>
+          )}
+          {(ansibleOkCount > 0 || ansibleFailCount > 0) && (
+            <span className="text-zinc-600 shrink-0 ml-auto">
+              {ansibleOkCount > 0 && <span className="text-emerald-700">{ansibleOkCount} ok</span>}
+              {ansibleFailCount > 0 && <span className="text-red-400 ml-1.5">{ansibleFailCount} failed</span>}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Fallback: status message when no live content */}
+      {!justResumed && statusMsg && !hasLiveContent && (
+        <div className={`mt-1 text-[11px] truncate pl-5 ${isLongRunning ? "text-cyan-400/60" : "text-emerald-600/80"}`}>
+          {statusMsg}
         </div>
       )}
     </div>

@@ -10,7 +10,7 @@ from ansible_forge.tools.base import BaseTool
 
 logger = get_logger(__name__)
 
-_DEFAULT_TOOL_TIMEOUT = 1800
+_DEFAULT_TOOL_TIMEOUT = 86400
 
 _JSON_SCHEMA_TYPE_MAP: dict[str, tuple[type, ...]] = {
     "string": (str,),
