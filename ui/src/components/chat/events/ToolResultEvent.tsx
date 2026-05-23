@@ -220,6 +220,22 @@ function extractAdhocOutput(data: Record<string, unknown> | undefined): string |
   return parts.length > 0 ? parts.join("\n") : null;
 }
 
+function extractRawOutput(data: Record<string, unknown> | undefined): string | null {
+  if (!data) return null;
+  const raw = (data.raw_stdout || data.combined_output || data.raw_output ||
+    data.apply_output || data.destroy_output || data.plan_output) as string | undefined;
+  if (raw?.trim()) return raw.trim();
+  const stdout = data.stdout as string | undefined;
+  const stderr = data.stderr as string | undefined;
+  if (stdout?.trim() || stderr?.trim()) {
+    const parts: string[] = [];
+    if (stdout?.trim()) parts.push(stdout.trim());
+    if (stderr?.trim()) parts.push(`--- stderr ---\n${stderr.trim()}`);
+    return parts.join("\n\n");
+  }
+  return null;
+}
+
 export function ToolResultEvent({ event }: { event: AgentEvent }) {
   const tool = (event.data.tool as string) || "";
   const status = (event.data.status as string) || "success";
@@ -230,8 +246,10 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
   const summary = data?.summary as AnsibleSummary | undefined;
   const hasAnsibleLogs = ansibleEvents.length > 0;
   const adhocOutput = tool === "run_adhoc" ? extractAdhocOutput(data) : null;
+  const rawOutput = extractRawOutput(data);
 
   const [logsOpen, setLogsOpen] = useState(hasAnsibleLogs);
+  const [rawOpen, setRawOpen] = useState(false);
 
   const Icon =
     status === "success"
@@ -303,6 +321,26 @@ export function ToolResultEvent({ event }: { event: AgentEvent }) {
             <div className="rounded-md bg-zinc-950/40 border border-zinc-800 px-3 py-2">
               <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Results Summary</div>
               <RecapBar stats={summary.stats} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {rawOutput && !adhocOutput && (
+        <div>
+          <button
+            onClick={() => setRawOpen(!rawOpen)}
+            className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-400 transition-colors"
+          >
+            {rawOpen
+              ? <ChevronDown className="h-3.5 w-3.5" />
+              : <ChevronRight className="h-3.5 w-3.5" />
+            }
+            <span className="font-medium">Raw Output</span>
+          </button>
+          {rawOpen && (
+            <div className="mt-1">
+              <TerminalOutput content={rawOutput} maxHeight="max-h-64" />
             </div>
           )}
         </div>

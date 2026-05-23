@@ -110,6 +110,10 @@ function LiveTaskIcon({ type }: { type: string }) {
     case "task_start":
     case "play_start":
       return <Circle className="h-3 w-3 text-blue-400 shrink-0 animate-pulse" />;
+    case "shell_output":
+      return <ChevronRight className="h-3 w-3 text-cyan-500 shrink-0" />;
+    case "stderr_line":
+      return <ChevronRight className="h-3 w-3 text-amber-500 shrink-0" />;
     default:
       return <Circle className="h-3 w-3 text-zinc-600 shrink-0" />;
   }
@@ -129,6 +133,10 @@ function formatLiveEvent(data: Record<string, unknown>): string {
   const host = (data.host as string) || "";
   const changed = data.changed as boolean;
 
+  if (type === "shell_output" || type === "stderr_line") {
+    const line = (data.line as string) || "";
+    return line.length > 120 ? line.slice(0, 117) + "..." : line;
+  }
   if (type === "play_start") return (data.play as string) || "Play starting";
   if (type === "task_start") return task || "Task starting";
   if (type === "task_ok") {
@@ -146,6 +154,40 @@ function formatLiveEvent(data: Record<string, unknown>): string {
   return task || "...";
 }
 
+function useElapsedTimer(active: boolean) {
+  const startRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!active) {
+      startRef.current = Date.now();
+      setElapsed(0);
+      return;
+    }
+    startRef.current = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  return elapsed;
+}
+
+function formatElapsed(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function liveLogColor(type: string): string {
+  if (type === "task_failed" || type === "host_unreachable") return "text-red-400 truncate";
+  if (type === "task_skipped") return "text-zinc-600 truncate";
+  if (type === "play_start" || type === "task_start") return "text-blue-400 truncate";
+  if (type === "shell_output") return "text-cyan-400/80 truncate font-mono";
+  if (type === "stderr_line") return "text-amber-400/80 truncate font-mono";
+  return "text-emerald-600 truncate";
+}
+
 function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const stepCount = events.filter((e) => e.event === "step_start").length;
   const toolCalls = events.filter((e) => e.event === "tool_call").length;
@@ -157,9 +199,14 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const activeTool = lastTool ? friendlyToolName((lastTool.data.tool as string) || "") : null;
   const statusMsg = lastProgress ? (lastProgress.data.message as string) : null;
 
+  const progressElapsed = lastProgress ? (lastProgress.data.elapsed_seconds as number) || 0 : 0;
+  const isLongRunning = progressElapsed > 30;
+
+  const elapsed = useElapsedTimer(!!lastTool);
+
   const recentLiveLogs = useMemo(() => {
     const logs = events.filter((e) => e.event === "live_log");
-    return logs.slice(-5);
+    return logs.slice(-8);
   }, [events]);
 
   const justResumed =
@@ -170,11 +217,14 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
   const hasAnyInfo = stepCount > 0 || toolCalls > 0 || activeTool || statusMsg;
   const hasLiveLogs = recentLiveLogs.length > 0;
 
+  const borderColor = isLongRunning ? "border-cyan-800/60" : "border-emerald-900/40";
+  const bgColor = isLongRunning ? "bg-cyan-950/30" : "bg-black/50";
+
   return (
-    <div className="rounded-lg border border-emerald-900/40 bg-black/50 px-3 py-2 font-mono" role="status" aria-live="polite">
+    <div className={`rounded-lg border ${borderColor} ${bgColor} px-3 py-2 font-mono`} role="status" aria-live="polite">
       <div className="flex items-center gap-2">
-        <Loader2 className="h-3 w-3 text-emerald-600 animate-spin shrink-0" />
-        <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 min-w-0">
+        <Loader2 className={`h-3.5 w-3.5 animate-spin shrink-0 ${isLongRunning ? "text-cyan-500" : "text-emerald-600"}`} />
+        <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 min-w-0 flex-1">
           {!hasAnyInfo && <span className="text-emerald-500">Agent is thinking...</span>}
           {justResumed && hasAnyInfo && <span className="text-emerald-500">Resuming...</span>}
           {!justResumed && stepCount > 0 && (
@@ -187,30 +237,27 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
           {!justResumed && activeTool && (
             <>
               <span className="text-emerald-900">·</span>
-              <span className="text-emerald-500 truncate">{activeTool}</span>
+              <span className={`truncate ${isLongRunning ? "text-cyan-400" : "text-emerald-500"}`}>{activeTool}</span>
             </>
           )}
         </div>
+        {elapsed > 10 && (
+          <span className={`text-[10px] tabular-nums shrink-0 ${isLongRunning ? "text-cyan-500/70" : "text-emerald-700/50"}`}>
+            {formatElapsed(elapsed)}
+          </span>
+        )}
       </div>
       {!justResumed && statusMsg && !hasLiveLogs && (
-        <div className="mt-1 text-[11px] text-emerald-600/80 truncate pl-5">
+        <div className={`mt-1 text-[11px] truncate pl-5 ${isLongRunning ? "text-cyan-400/60" : "text-emerald-600/80"}`}>
           {statusMsg}
         </div>
       )}
       {hasLiveLogs && (
-        <div className="mt-1.5 space-y-0.5 pl-1">
+        <div className="mt-1.5 space-y-0.5 pl-1 max-h-[120px] overflow-y-auto">
           {recentLiveLogs.map((ev) => (
             <div key={ev.id} className="flex items-center gap-1.5 text-[10px] min-w-0">
               <LiveTaskIcon type={ev.data.type as string} />
-              <span className={
-                (ev.data.type as string) === "task_failed" || (ev.data.type as string) === "host_unreachable"
-                  ? "text-red-400 truncate"
-                  : (ev.data.type as string) === "task_skipped"
-                    ? "text-zinc-600 truncate"
-                    : (ev.data.type as string) === "play_start" || (ev.data.type as string) === "task_start"
-                      ? "text-blue-400 truncate"
-                      : "text-emerald-600 truncate"
-              }>
+              <span className={liveLogColor(ev.data.type as string)}>
                 {formatLiveEvent(ev.data)}
               </span>
             </div>

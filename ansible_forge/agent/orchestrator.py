@@ -241,34 +241,46 @@ class SessionState:
         """Detect loop patterns that indicate the agent is stuck.
 
         Catches:
-        - Exact same tool+args repeated 4+ times in a row (genuinely stuck)
-        - Alternating A-B-A-B pattern with identical args over 8 calls
-        - Same tool name with IDENTICAL args 6+ times (retrying same failing call)
+        - Exact same tool+args repeated 3+ times in a row (genuinely stuck)
+        - Alternating A-B-A-B pattern with identical args over 6 calls
+        - Same tool name with IDENTICAL args 5+ times (retrying same failing call)
+        - Same tool with same error pattern 3+ times (error-identical loop)
 
         Does NOT flag:
         - Same tool called many times with different args (legitimate multi-host work)
         """
         calls = self._recent_tool_calls
-        if len(calls) < 4:
+        if len(calls) < 3:
             return None
 
-        if len(set(calls[-4:])) == 1:
+        if len(set(calls[-3:])) == 1:
             return "exact_repeat"
 
-        if len(calls) >= 8:
-            last8 = calls[-8:]
-            if (last8[0] == last8[2] == last8[4] == last8[6]
-                    and last8[1] == last8[3] == last8[5] == last8[7]):
+        if len(calls) >= 6:
+            last6 = calls[-6:]
+            if (last6[0] == last6[2] == last6[4]
+                    and last6[1] == last6[3] == last6[5]):
                 return "alternating"
 
-        if len(calls) >= 20:
-            recent = calls[-20:]
+        if len(calls) >= 15:
+            recent = calls[-15:]
             names = [c.split(":", 1)[0] for c in recent]
             args = [c.split(":", 1)[1] if ":" in c else "" for c in recent]
             if len(set(names)) == 1 and len(set(args)) <= 3:
                 return "same_tool_drift"
 
         return None
+
+    def has_repeated_errors(self) -> bool:
+        """Return True if the same tool has failed with the same error 3+ times."""
+        if len(self._last_error_by_tool) == 0:
+            return False
+        recent_names = [c.split(":", 1)[0] for c in self._recent_tool_calls[-10:]]
+        for tool_name, info in self._last_error_by_tool.items():
+            count = recent_names.count(tool_name)
+            if count >= 3:
+                return True
+        return False
 
 
 class AgentEvent:
@@ -736,6 +748,20 @@ class Orchestrator:
                         "message": f"Agent has been working for {int(stall_elapsed)}s without new results.",
                     })
                     _stall_warned = True
+
+                # ── Step budget warning (fires at 40 steps) ──────────────
+                if state.step_count == 40:
+                    state.memory.add_user(
+                        "BUDGET WARNING: You have used 40 steps. This is excessive for "
+                        "most tasks. You MUST wrap up within 10 more steps. If you cannot "
+                        "complete the task, summarize what you accomplished, what remains, "
+                        "and ask the user how to proceed. Do NOT keep iterating."
+                    )
+                    logger.warning(
+                        "step_budget_warning",
+                        session_id=state.session_id,
+                        step=state.step_count,
+                    )
 
                 # ── Progress checkpoint (fires every N steps) ────────────
                 if (
@@ -1274,6 +1300,8 @@ class Orchestrator:
                     state.record_tool_call(tc.name, tc.arguments)
 
                     pattern = state.loop_pattern
+                    if not pattern and state.has_repeated_errors():
+                        pattern = "error_identical"
                     if pattern:
                         state._loop_break_count += 1
                         logger.warning(
@@ -1284,7 +1312,7 @@ class Orchestrator:
                             step=state.step_count,
                             break_count=state._loop_break_count,
                         )
-                        is_hard_loop = pattern in ("exact_repeat", "alternating")
+                        is_hard_loop = pattern in ("exact_repeat", "alternating", "error_identical")
                         if is_hard_loop:
                             remaining_idx = response.tool_calls.index(tc)
                             for remaining_tc in response.tool_calls[remaining_idx:]:
@@ -1396,8 +1424,41 @@ class Orchestrator:
                         )
                         continue
 
+                    _tool_timeout = tc.arguments.get("timeout", 0) or 0
+                    _is_long_tool = (
+                        tc.name in ("execute_playbook", "run_adhoc", "terraform_exec")
+                        and _tool_timeout > 60
+                    ) or tc.name == "terraform_exec"
+                    if _is_long_tool and not (response.content and response.content.strip()):
+                        _tool_label = tc.name
+                        _tool_detail = ""
+                        if tc.name == "run_adhoc":
+                            _mod_args = tc.arguments.get("module_args", "")
+                            _tool_detail = f" ({_mod_args[:80]})" if _mod_args else ""
+                        elif tc.name == "execute_playbook":
+                            _tool_detail = f" ({tc.arguments.get('playbook', '')})"
+                        elif tc.name == "terraform_exec":
+                            _tool_detail = f" ({tc.arguments.get('action', '')})"
+                        _timeout_hint = ""
+                        if _tool_timeout > 0:
+                            _tm = int(_tool_timeout)
+                            _timeout_hint = (
+                                f" (timeout: {_tm // 60}m)"
+                                if _tm >= 60
+                                else f" (timeout: {_tm}s)"
+                            )
+                        yield AgentEvent("progress", {
+                            "tool": tc.name,
+                            "elapsed_seconds": 0,
+                            "step": state.step_count,
+                            "message": (
+                                f"Starting {_tool_label}{_tool_detail}{_timeout_hint} "
+                                f"— the UI will stream output as it arrives."
+                            ),
+                        })
+
                     live_queue: asyncio.Queue[dict[str, Any]] | None = None
-                    if tc.name in ("execute_playbook", "run_adhoc"):
+                    if tc.name in ("execute_playbook", "run_adhoc", "local_exec", "terraform_exec"):
                         live_queue = asyncio.Queue()
                         tc.arguments["_live_log_queue"] = live_queue
 
@@ -1439,6 +1500,24 @@ class Orchestrator:
                     total_elapsed = 0.0
                     last_progress_at = 0.0
                     msgs = _TOOL_PROGRESS_MESSAGES.get(tc.name, _DEFAULT_PROGRESS_MESSAGES)
+
+                    _tool_ctx_label = ""
+                    if tc.name == "run_adhoc":
+                        _ma = tc.arguments.get("module_args", "")
+                        _mod = tc.arguments.get("module", "shell")
+                        _tool_ctx_label = f" [{_mod}: {_ma[:60]}]" if _ma else f" [{_mod}]"
+                    elif tc.name == "execute_playbook":
+                        _pb = tc.arguments.get("playbook", "")
+                        _tool_ctx_label = f" [{_pb}]" if _pb else ""
+                    elif tc.name == "terraform_exec":
+                        _act = tc.arguments.get("action", "")
+                        _tool_ctx_label = f" [terraform {_act}]" if _act else ""
+                    elif tc.name == "local_exec":
+                        _cmd = tc.arguments.get("command", "")
+                        _tool_ctx_label = f" [{_cmd[:60]}]" if _cmd else ""
+
+                    _timeout_for_display = tc.arguments.get("timeout", 0) or 0
+
                     while not task.done():
                         poll = 1.0 if live_queue else (
                             _PROGRESS_INTERVAL if total_elapsed < 60 else 15
@@ -1479,11 +1558,15 @@ class Orchestrator:
                                 if elapsed >= 60
                                 else f"{elapsed}s"
                             )
+                            timeout_part = ""
+                            if _timeout_for_display > 0:
+                                _tmin = int(_timeout_for_display) // 60
+                                timeout_part = f" | timeout: {_tmin}m" if _tmin > 0 else ""
                             yield AgentEvent("progress", {
                                 "tool": tc.name,
                                 "elapsed_seconds": elapsed,
                                 "step": state.step_count,
-                                "message": f"[{elapsed_str}] {hint}",
+                                "message": f"[{elapsed_str}{timeout_part}]{_tool_ctx_label} {hint}",
                             })
 
                     if live_queue:

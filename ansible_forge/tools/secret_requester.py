@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
+
+_NON_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(?:_|^)(?:region|zone|location)(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:cluster|domain|base)_?(?:name|domain)(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)instance_?type(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:worker|control_plane|master|node)_?(?:count|replicas|type|instance)(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:vpc|subnet|cidr|network)_?(?:id|name|range)?(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:ami|image)_?(?:id|name)?(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:project|namespace|environment|stack)_?(?:name|id)?(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:availability_zone|az)(?:_|$)", re.IGNORECASE),
+    re.compile(r"(?:_|^)(?:dns|fqdn|hostname|host_pattern)(?:_|$)", re.IGNORECASE),
+]
+
+
+def _looks_like_non_secret(name: str) -> bool:
+    for pat in _NON_SECRET_PATTERNS:
+        if pat.search(name):
+            return True
+    return False
 
 
 class SecretRequester(BaseTool):
@@ -24,11 +45,13 @@ class SecretRequester(BaseTool):
     def description(self) -> str:
         return (
             "Request a secret or credential from the user through a secure input prompt. "
-            "Use this whenever you need passwords, API keys, tokens, pull secrets, SSH keys, "
-            "or any sensitive value. The user will be shown a secure password input in the UI. "
+            "ONLY for actual secrets: passwords, API keys, tokens, pull secrets, SSH keys, "
+            "certificates. NEVER use for non-sensitive config like region names, domain names, "
+            "cluster names, instance types, counts, or any value you'd show in a log. "
+            "For non-secret config, ask the user in your message text instead. "
+            "The user will be shown a secure password input in the UI. "
             "You will receive a confirmation with the variable name to use in playbooks — "
-            "the actual value is NEVER sent to you. Use the variable name in playbooks/templates "
-            "and the real value will be injected at execution time."
+            "the actual value is NEVER sent to you."
         )
 
     @property
@@ -87,6 +110,28 @@ class SecretRequester(BaseTool):
             return ToolResult.fail(
                 f"Secret name must be alphanumeric with underscores: got '{name}'"
             )
+
+        if _looks_like_non_secret(name):
+            return ToolResult.fail(
+                f"BLOCKED: '{name}' looks like non-sensitive configuration, not a secret. "
+                f"request_secret is ONLY for passwords, API keys, tokens, SSH keys, and "
+                f"certificates. For non-secret config values (regions, domain names, instance "
+                f"types, counts, etc.), ask the user in your message text and wait for their "
+                f"reply — do NOT use request_secret."
+            )
+
+        session_id = kwargs.get("_session_id")
+        if session_id:
+            vault = SecretVault.get_instance().for_session(session_id)
+            existing = vault.get(name)
+            if existing is not None:
+                return ToolResult.ok(
+                    output=(
+                        f"Secret '{name}' is already stored in the vault. "
+                        f"Use the variable name `{name}` in playbooks — the value "
+                        f"will be injected automatically. No need to ask the user again."
+                    )
+                )
 
         display_desc = description
         if for_host:

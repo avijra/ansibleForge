@@ -6,6 +6,7 @@ import asyncio
 import functools
 import os
 import signal
+import time as _time_mod
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ logger = get_logger(__name__)
 
 _DEFAULT_ADHOC_TIMEOUT = 300
 _MAX_ADHOC_TIMEOUT = 7200
+
+_STDOUT_TAIL_INTERVAL = 2.0
+_STDOUT_TAIL_MAX_LINE = 500
+_STDOUT_MODULES = frozenset({"ansible.builtin.shell", "ansible.builtin.command", "shell", "command"})
 
 
 def _adhoc_envvars() -> dict[str, str]:
@@ -57,6 +62,64 @@ def _kill_runner(runner: Any) -> None:
 
             t = threading.Thread(target=_sigkill_after_delay, args=(pid,), daemon=True)
             t.start()
+
+async def _tail_runner_stdout(
+    run_dir: Path, queue: asyncio.Queue[dict[str, Any]]
+) -> None:
+    """Poll the ansible-runner artifacts stdout file and emit new lines as live_log events.
+
+    For shell/command modules the only Ansible events are play_start, task_start,
+    and the final result.  This fills the gap by streaming raw subprocess output.
+    """
+    import contextlib
+
+    artifacts = run_dir / "artifacts"
+    stdout_file: Path | None = None
+    pos = 0
+
+    while True:
+        await asyncio.sleep(_STDOUT_TAIL_INTERVAL)
+        try:
+            if stdout_file is None:
+                if not artifacts.is_dir():
+                    continue
+                for child in artifacts.iterdir():
+                    candidate = child / "stdout"
+                    if candidate.is_file():
+                        stdout_file = candidate
+                        break
+                if stdout_file is None:
+                    continue
+
+            try:
+                size = stdout_file.stat().st_size
+            except OSError:
+                continue
+            if size <= pos:
+                continue
+
+            with stdout_file.open("r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(pos)
+                chunk = fh.read(16384)
+                pos = fh.tell()
+
+            if not chunk.strip():
+                continue
+
+            lines = chunk.strip().splitlines()
+            for line in lines[-20:]:
+                trimmed = line[:_STDOUT_TAIL_MAX_LINE]
+                if trimmed.strip():
+                    with contextlib.suppress(Exception):
+                        queue.put_nowait({
+                            "type": "shell_output",
+                            "line": trimmed,
+                        })
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
 
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
@@ -262,11 +325,20 @@ class AdhocRunner(BaseTool):
                 _MAX_ADHOC_TIMEOUT,
             )
 
+            is_shell_module = module.split(".")[-1] in ("shell", "command")
+            stdout_tailer: asyncio.Task[None] | None = None
+
             loop = asyncio.get_running_loop()
             thread, runner = await loop.run_in_executor(
                 None,
                 functools.partial(ansible_runner.run_async, **runner_kwargs),
             )
+
+            if is_shell_module and live_queue is not None:
+                stdout_tailer = asyncio.create_task(
+                    _tail_runner_stdout(run_dir, live_queue)
+                )
+
             try:
                 await asyncio.wait_for(
                     loop.run_in_executor(None, thread.join),
@@ -290,6 +362,13 @@ class AdhocRunner(BaseTool):
                     f"If this operation legitimately needs more time, retry with a "
                     f"higher timeout parameter."
                 )
+            finally:
+                if stdout_tailer and not stdout_tailer.done():
+                    stdout_tailer.cancel()
+                    import contextlib as _ctxlib2
+                    with _ctxlib2.suppress(asyncio.CancelledError):
+                        await stdout_tailer
+
             result = runner
 
             host_results: dict[str, Any] = {}

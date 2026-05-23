@@ -261,9 +261,13 @@ class LocalExec(BaseTool):
             except Exception:
                 logger.debug("vault_inject_failed", exc_info=True)
 
+        live_queue: asyncio.Queue | None = kwargs.get("_live_log_queue")
+
         logger.info("local_exec_start", command=command[:200], cwd=cwd, timeout=timeout)
 
         proc = None
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -272,8 +276,38 @@ class LocalExec(BaseTool):
                 cwd=cwd,
                 env=env,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
+
+            async def _stream_pipe(
+                pipe: asyncio.StreamReader, parts: list[bytes], is_stderr: bool = False,
+            ) -> None:
+                total = 0
+                while True:
+                    line = await pipe.readline()
+                    if not line:
+                        break
+                    parts.append(line)
+                    total += len(line)
+                    if total > MAX_OUTPUT_BYTES:
+                        break
+                    if live_queue is not None:
+                        decoded = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                        if decoded.strip():
+                            import contextlib
+                            with contextlib.suppress(Exception):
+                                live_queue.put_nowait({
+                                    "type": "stderr_line" if is_stderr else "shell_output",
+                                    "line": decoded[:500],
+                                })
+
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _stream_pipe(proc.stdout, stdout_parts),
+                    _stream_pipe(proc.stderr, stderr_parts, is_stderr=True),
+                    proc.wait(),
+                ),
+                timeout=timeout,
             )
         except asyncio.CancelledError:
             if proc is not None:
@@ -297,8 +331,8 @@ class LocalExec(BaseTool):
         except Exception as exc:
             return ToolResult.fail(f"Failed to execute: {exc}")
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_BYTES]
-        stderr = stderr_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT_BYTES]
+        stdout = b"".join(stdout_parts).decode("utf-8", errors="replace")[:MAX_OUTPUT_BYTES]
+        stderr = b"".join(stderr_parts).decode("utf-8", errors="replace")[:MAX_OUTPUT_BYTES]
         exit_code = proc.returncode or 0
 
         logger.info(

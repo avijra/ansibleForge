@@ -147,29 +147,60 @@ class TerraformExecutor(BaseTool):
         args: list[str],
         env: dict[str, str],
         timeout: int = 600,
+        live_queue: asyncio.Queue | None = None,
     ) -> tuple[int, str, str]:
         cmd = [tf_binary] + args
-        loop = asyncio.get_running_loop()
+        proc = None
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        subprocess.run, cmd,
-                        cwd=str(tf_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                        env=env,
-                    ),
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(tf_dir),
+                env=env,
+            )
+
+            async def _read_stream(
+                stream: asyncio.StreamReader, parts: list[str], is_stderr: bool = False,
+            ) -> None:
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                    parts.append(decoded)
+                    if live_queue is not None and decoded.strip():
+                        import contextlib
+                        with contextlib.suppress(Exception):
+                            live_queue.put_nowait({
+                                "type": "stderr_line" if is_stderr else "shell_output",
+                                "line": decoded[:500],
+                            })
+
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _read_stream(proc.stdout, stdout_parts),
+                    _read_stream(proc.stderr, stderr_parts, is_stderr=True),
+                    proc.wait(),
                 ),
                 timeout=timeout + 10,
             )
-            return result.returncode, result.stdout, result.stderr
+            rc = proc.returncode or 0
+            return rc, "\n".join(stdout_parts), "\n".join(stderr_parts)
         except asyncio.CancelledError:
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
             logger.info("terraform_cancelled", args=args[:3])
             raise
         except (TimeoutError, subprocess.TimeoutExpired):
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
             return 1, "", f"Terraform command timed out after {timeout}s"
 
     async def execute(
@@ -211,6 +242,8 @@ class TerraformExecutor(BaseTool):
         env["TF_IN_AUTOMATION"] = "1"
         env["TF_INPUT"] = "0"
 
+        live_queue: asyncio.Queue | None = kwargs.get("_live_log_queue")
+
         handler = getattr(self, f"_do_{action}", None)
         if handler is None:
             return ToolResult.fail(f"Unknown action: {action}")
@@ -225,10 +258,11 @@ class TerraformExecutor(BaseTool):
             auto_approve=auto_approve,
             timeout=timeout,
             workspace_name=workspace_name,
+            _live_queue=live_queue,
         )
 
-    async def _do_init(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["init", "-no-color"], env, timeout=_effective_timeout("init", timeout))
+    async def _do_init(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["init", "-no-color"], env, timeout=_effective_timeout("init", timeout), live_queue=_live_queue)
         if rc != 0:
             return ToolResult.fail(f"terraform init failed:\n{err.strip() or out.strip()}")
         return ToolResult.ok(
@@ -236,8 +270,8 @@ class TerraformExecutor(BaseTool):
             stdout=out[-3000:],
         )
 
-    async def _do_validate(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["validate", "-no-color", "-json"], env, timeout=_effective_timeout("validate", timeout))
+    async def _do_validate(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["validate", "-no-color", "-json"], env, timeout=_effective_timeout("validate", timeout), live_queue=_live_queue)
         if rc != 0:
             return ToolResult.fail(f"Terraform validation failed:\n{out.strip() or err.strip()}")
         try:
@@ -250,8 +284,8 @@ class TerraformExecutor(BaseTool):
         except json.JSONDecodeError:
             return ToolResult.ok(output=out.strip())
 
-    async def _do_fmt(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
-        rc, out, err = await self._run_terraform(tf, tf_dir, ["fmt", "-no-color", "-diff"], env, timeout=_effective_timeout("fmt", timeout))
+    async def _do_fmt(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
+        rc, out, err = await self._run_terraform(tf, tf_dir, ["fmt", "-no-color", "-diff"], env, timeout=_effective_timeout("fmt", timeout), live_queue=_live_queue)
         if rc != 0:
             return ToolResult.fail(f"terraform fmt failed: {err}")
         return ToolResult.ok(
@@ -260,7 +294,7 @@ class TerraformExecutor(BaseTool):
 
     async def _do_import(
         self, tf: str, tf_dir: Path, env: dict,
-        import_address: str = "", import_id: str = "", timeout: int = 0, **_: Any,
+        import_address: str = "", import_id: str = "", timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any,
     ) -> ToolResult:
         if not import_address or not import_id:
             return ToolResult.fail(
@@ -270,7 +304,7 @@ class TerraformExecutor(BaseTool):
         rc, out, err = await self._run_terraform(
             tf, tf_dir,
             ["import", "-no-color", "-input=false", import_address, import_id],
-            env, timeout=_effective_timeout("import", timeout),
+            env, timeout=_effective_timeout("import", timeout), live_queue=_live_queue,
         )
         if rc != 0:
             return ToolResult.fail(
@@ -284,7 +318,7 @@ class TerraformExecutor(BaseTool):
 
     async def _do_plan(
         self, tf: str, tf_dir: Path, env: dict,
-        var_file: str = "", variables: dict | None = None, target: str = "", timeout: int = 0, **_: Any,
+        var_file: str = "", variables: dict | None = None, target: str = "", timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any,
     ) -> ToolResult:
         args = ["plan", "-no-color", "-input=false"]
         if var_file:
@@ -295,7 +329,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("plan", timeout))
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("plan", timeout), live_queue=_live_queue)
         combined = out + "\n" + err
 
         if rc != 0:
@@ -327,7 +361,7 @@ class TerraformExecutor(BaseTool):
     async def _do_apply(
         self, tf: str, tf_dir: Path, env: dict,
         var_file: str = "", variables: dict | None = None, target: str = "",
-        auto_approve: bool = False, timeout: int = 0, **_: Any,
+        auto_approve: bool = False, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any,
     ) -> ToolResult:
         if not auto_approve:
             return ToolResult(
@@ -348,7 +382,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("apply", timeout))
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("apply", timeout), live_queue=_live_queue)
         combined = out + "\n" + err
 
         if rc != 0:
@@ -372,7 +406,7 @@ class TerraformExecutor(BaseTool):
     async def _do_destroy(
         self, tf: str, tf_dir: Path, env: dict,
         var_file: str = "", variables: dict | None = None, target: str = "",
-        auto_approve: bool = False, timeout: int = 0, **_: Any,
+        auto_approve: bool = False, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any,
     ) -> ToolResult:
         if not auto_approve:
             return ToolResult(
@@ -393,7 +427,7 @@ class TerraformExecutor(BaseTool):
         if target:
             args.extend(["-target", target])
 
-        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("destroy", timeout))
+        rc, out, err = await self._run_terraform(tf, tf_dir, args, env, timeout=_effective_timeout("destroy", timeout), live_queue=_live_queue)
         if rc != 0:
             return ToolResult.fail(f"terraform destroy failed:\n{(out + err).strip()[-3000:]}")
 
@@ -403,7 +437,7 @@ class TerraformExecutor(BaseTool):
             destroy_output=out[-3000:],
         )
 
-    async def _do_output(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+    async def _do_output(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
         rc, out, err = await self._run_terraform(tf, tf_dir, ["output", "-no-color", "-json"], env, timeout=_effective_timeout("output", timeout))
         if rc != 0:
             return ToolResult.fail(f"terraform output failed: {err}")
@@ -422,7 +456,7 @@ class TerraformExecutor(BaseTool):
         except json.JSONDecodeError:
             return ToolResult.ok(output=out.strip(), raw=out)
 
-    async def _do_state(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, **_: Any) -> ToolResult:
+    async def _do_state(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
         rc, out, err = await self._run_terraform(tf, tf_dir, ["state", "list", "-no-color"], env, timeout=_effective_timeout("state", timeout))
         if rc != 0:
             if "No state file" in err or "no state" in err.lower():
@@ -461,7 +495,7 @@ class TerraformExecutor(BaseTool):
 
     async def _do_workspace(
         self, tf: str, tf_dir: Path, env: dict,
-        workspace_name: str = "", timeout: int = 0, **_: Any,
+        workspace_name: str = "", timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any,
     ) -> ToolResult:
         t = _effective_timeout("workspace", timeout)
         if not workspace_name:

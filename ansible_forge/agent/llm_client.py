@@ -22,6 +22,23 @@ litellm.modify_params = True
 _LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=120, write=15, pool=30)
 
 
+def _patch_deepseek_reasoning(model: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure reasoning_content is present on all DeepSeek V4 assistant messages.
+
+    DeepSeek V4 models (both pro and flash) require reasoning_content to be
+    passed back on every assistant message that contains tool_calls. LiteLLM
+    strips this field, so we re-inject it before sending.
+    """
+    if "deepseek" not in model.lower():
+        return messages
+    patched = []
+    for m in messages:
+        if m.get("role") == "assistant" and "reasoning_content" not in m:
+            m = {**m, "reasoning_content": m.get("reasoning_content") or ""}
+        patched.append(m)
+    return patched
+
+
 class LLMClient:
     """Unified LLM interface wrapping LiteLLM for tool-use agent workflows."""
 
@@ -106,7 +123,7 @@ class LLMClient:
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _patch_deepseek_reasoning(model, messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
             **self._runtime_kwargs(),
@@ -138,7 +155,7 @@ class LLMClient:
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _patch_deepseek_reasoning(model, messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
@@ -220,6 +237,7 @@ class LLMClient:
                 try:
                     logger.info("stream_trying_fallback", model=fallback_model)
                     kwargs["model"] = fallback_model
+                    kwargs["messages"] = _patch_deepseek_reasoning(fallback_model, kwargs["messages"])
                     return await self._stream_with_retry(**kwargs)
                 except Exception as fb_exc:
                     last_error = str(fb_exc)
@@ -250,6 +268,7 @@ class LLMClient:
                 try:
                     logger.info("trying_fallback", model=fallback_model)
                     kwargs["model"] = fallback_model
+                    kwargs["messages"] = _patch_deepseek_reasoning(fallback_model, kwargs["messages"])
                     return await self._single_call(**kwargs)
                 except Exception as fb_exc:
                     last_error = str(fb_exc)
