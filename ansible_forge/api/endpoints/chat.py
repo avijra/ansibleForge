@@ -157,6 +157,12 @@ async def chat(
     )
     _active_tasks[session_id] = task
 
+    def _cleanup_task(t: asyncio.Task[None], sid: str = session_id) -> None:
+        if _active_tasks.get(sid) is t:
+            _active_tasks.pop(sid, None)
+
+    task.add_done_callback(_cleanup_task)
+
     subscriber = bus.subscribe(from_seq=0)
 
     async def event_stream():  # type: ignore[return]
@@ -248,6 +254,39 @@ async def reconnect_stream(
             bus.unsubscribe(subscriber)
 
     return EventSourceResponse(event_stream(), ping=15)
+
+
+@router.post("/chat/{session_id}/cancel")
+async def cancel_session(
+    session_id: str,
+    _: Any = Depends(verify_api_key),
+) -> dict[str, Any]:
+    task = _active_tasks.get(session_id)
+    if task is None or task.done():
+        raise HTTPException(status_code=404, detail="No active run for this session")
+
+    orch = get_orchestrator()
+    state = orch.get_session(session_id)
+    if state is not None:
+        from ansible_forge.agent.types import SessionStatus
+
+        state._generation += 1
+        state.cancel_active_work()
+        state.status = SessionStatus.COMPLETED
+
+        orch._approval_gate.cleanup(session_id)
+        orch._secret_vault.for_session(session_id).cancel_all_pending()
+
+    task.cancel()
+    logger.info("session_cancelled_by_user", session_id=session_id)
+
+    bus = EventBusRegistry.get_instance().get(session_id)
+    if bus is not None:
+        current_gen = bus._run_gen
+        bus.publish("done", {"session_id": session_id, "status": "cancelled"})
+        bus.mark_done(current_gen)
+
+    return {"session_id": session_id, "status": "cancelled"}
 
 
 @router.get("/chat/{session_id}/status", response_model=SessionStatusResponse)

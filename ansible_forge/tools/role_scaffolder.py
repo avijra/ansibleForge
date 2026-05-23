@@ -110,7 +110,10 @@ class RoleScaffolder(BaseTool):
         if not role_name or not workspace_path:
             return ToolResult.fail("role_name and workspace_path are required")
 
-        roles_dir = Path(workspace_path) / "roles" / role_name
+        ws_root = Path(workspace_path).resolve()
+        roles_dir = (Path(workspace_path) / "roles" / role_name).resolve()
+        if not roles_dir.is_relative_to(ws_root):
+            return ToolResult.fail(f"Role name escapes workspace: {role_name}")
         created_dirs: list[str] = []
 
         for d in ROLE_DIRS:

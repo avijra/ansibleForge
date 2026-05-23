@@ -169,7 +169,30 @@ pub fn start_backend(app: &AppHandle) {
 
     match command.spawn()
     {
-        Ok(child) => {
+        Ok(mut child) => {
+            if let Some(stdout) = child.stdout.take() {
+                std::thread::spawn(move || {
+                    let reader = std::io::BufReader::new(stdout);
+                    for line in std::io::BufRead::lines(reader) {
+                        match line {
+                            Ok(l) => log::debug!("[backend:out] {}", l),
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+            if let Some(stderr) = child.stderr.take() {
+                std::thread::spawn(move || {
+                    let reader = std::io::BufReader::new(stderr);
+                    for line in std::io::BufRead::lines(reader) {
+                        match line {
+                            Ok(l) => log::debug!("[backend:err] {}", l),
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+
             let state = app.state::<BackendProcess>();
             *state.child.lock().unwrap() = Some(child);
             log::info!("Backend process started");

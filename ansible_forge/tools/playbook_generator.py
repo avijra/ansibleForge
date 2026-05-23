@@ -75,7 +75,10 @@ class PlaybookGenerator(BaseTool):
         project_dir = Path(workspace_path)
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        playbook_path = project_dir / playbook_name
+        playbook_path = (project_dir / playbook_name).resolve()
+        if not playbook_path.is_relative_to(project_dir.resolve()):
+            return ToolResult.fail(f"Path escapes workspace: {playbook_name}")
+        playbook_path.parent.mkdir(parents=True, exist_ok=True)
         playbook_path.write_text(content, encoding="utf-8")
 
         return ToolResult.ok(

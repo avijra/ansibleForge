@@ -12,6 +12,18 @@ from ansible_forge.workspace.project_layout import list_playbooks
 
 logger = get_logger(__name__)
 
+_MAX_FILENAMES = 50
+_MAX_CACHED_HOSTS = 30
+_MAX_CONTEXT_CHARS = 6000
+
+
+def _cap_list(items: list[str], limit: int) -> str:
+    if not items:
+        return "(none)"
+    if len(items) <= limit:
+        return ", ".join(items)
+    return ", ".join(items[:limit]) + f" [{len(items) - limit} more]"
+
 
 def build_context(workspace: Workspace) -> str:
     """Build a context string describing the current workspace state and known infrastructure."""
@@ -21,9 +33,9 @@ def build_context(workspace: Workspace) -> str:
 
     ctx = PLAYBOOK_CONTEXT.format(
         workspace_path=str(workspace.path),
-        inventory_files=", ".join(inv_files) or "(none)",
-        playbook_files=", ".join(playbooks) or "(none)",
-        role_names=", ".join(roles) or "(none)",
+        inventory_files=_cap_list(inv_files, _MAX_FILENAMES),
+        playbook_files=_cap_list(playbooks, _MAX_FILENAMES),
+        role_names=_cap_list(roles, _MAX_FILENAMES),
     )
 
     facts_summary = _load_cached_facts(workspace.artifacts_dir)
@@ -33,6 +45,9 @@ def build_context(workspace: Workspace) -> str:
     infra_ctx = _load_infrastructure_context()
     if infra_ctx:
         ctx += f"\n{infra_ctx}"
+
+    if len(ctx) > _MAX_CONTEXT_CHARS:
+        ctx = ctx[:_MAX_CONTEXT_CHARS] + "\n[workspace context truncated]"
 
     return ctx
 
@@ -58,8 +73,12 @@ def _load_cached_facts(artifacts_dir: Path) -> str:
         logger.warning("cached_facts_unreadable", path=str(facts_path))
         return ""
 
+    if not isinstance(host_facts, dict):
+        return ""
+
+    items = list(host_facts.items())
     lines = ["Known host facts:"]
-    for host, f in host_facts.items():
+    for host, f in items[:_MAX_CACHED_HOSTS]:
         distro = f.get("distribution", "?")
         version = f.get("distribution_version", "")
         arch = f.get("architecture", "")
@@ -73,6 +92,9 @@ def _load_cached_facts(artifacts_dir: Path) -> str:
             f"  {host}: {distro} {version}, {arch}, {pkg}, {svc}, "
             f"SELinux={se or 'n/a'}, Python={py}, {ram} RAM"
         )
+    remaining = len(items) - _MAX_CACHED_HOSTS
+    if remaining > 0:
+        lines.append(f"  [{remaining} more hosts — use collect_facts to inspect]")
     return "\n".join(lines)
 
 

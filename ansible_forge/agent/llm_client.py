@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 litellm.drop_params = True
 litellm.modify_params = True
 
-_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=None, write=15, pool=30)
+_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=15, read=120, write=15, pool=30)
 
 
 class LLMClient:
@@ -127,7 +127,11 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream a chat completion, yielding delta chunks."""
+        """Stream a chat completion, yielding delta chunks.
+
+        Tries the primary model first.  On non-retryable failures, falls
+        through the configured fallback model chain before giving up.
+        """
         model = model or self._effective_model()
         temperature = temperature if temperature is not None else self._effective_temperature()
         max_tokens = max_tokens or self._effective_max_tokens()
@@ -144,7 +148,7 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        response = await self._stream_with_retry(**kwargs)
+        response = await self._stream_with_fallback(**kwargs)
         async for chunk in response:
             choice = chunk.choices[0] if chunk.choices else None  # type: ignore[union-attr]
             if choice is None:
@@ -155,33 +159,82 @@ class LLMClient:
                         "completion_tokens": usage.completion_tokens or 0,
                         "total_tokens": usage.total_tokens or 0,
                     }}
+                else:
+                    yield {"heartbeat": True}
                 continue
             delta = choice.delta
-            yield {
-                "content": getattr(delta, "content", None),
-                "reasoning_content": getattr(delta, "reasoning_content", None),
-                "tool_calls": (
-                    [tc.model_dump() for tc in delta.tool_calls]
-                    if getattr(delta, "tool_calls", None)
-                    else None
-                ),
-                "finish_reason": choice.finish_reason,
-            }
+            content = getattr(delta, "content", None)
+            reasoning = getattr(delta, "reasoning_content", None)
+            tool_calls = (
+                [tc.model_dump() for tc in delta.tool_calls]
+                if getattr(delta, "tool_calls", None)
+                else None
+            )
+            has_data = content or reasoning or tool_calls or choice.finish_reason
+            if has_data:
+                yield {
+                    "content": content,
+                    "reasoning_content": reasoning,
+                    "tool_calls": tool_calls,
+                    "finish_reason": choice.finish_reason,
+                }
+            else:
+                yield {"heartbeat": True}
 
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=2, min=2, max=75),
-        retry=retry_if_exception_type(litellm.RateLimitError),
+        retry=retry_if_exception_type((
+            litellm.RateLimitError,
+            litellm.ServiceUnavailableError,
+            litellm.Timeout,
+        )),
         reraise=True,
         before_sleep=lambda rs: logger.info(
-            "stream_rate_limit_retry",
+            "stream_retry",
             attempt=rs.attempt_number,
             wait=f"{getattr(rs.next_action, 'sleep', 0):.1f}s",
+            error=str(rs.outcome.exception()) if rs.outcome else "",
         ),
     )
     async def _stream_with_retry(self, **kwargs: Any) -> Any:
         kwargs.setdefault("timeout", _LLM_HTTP_TIMEOUT)
         return await litellm.acompletion(**kwargs)
+
+    async def _stream_with_fallback(self, **kwargs: Any) -> Any:
+        """Try streaming with primary model, then fall through fallbacks."""
+        primary_model = kwargs.get("model", self._settings.llm_model)
+        fallbacks = [m for m in self._model_chain if m != primary_model]
+
+        last_error = ""
+        try:
+            return await self._stream_with_retry(**kwargs)
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning(
+                "stream_primary_failed",
+                model=primary_model,
+                error=last_error,
+            )
+            for fallback_model in fallbacks:
+                try:
+                    logger.info("stream_trying_fallback", model=fallback_model)
+                    kwargs["model"] = fallback_model
+                    return await self._stream_with_retry(**kwargs)
+                except Exception as fb_exc:
+                    last_error = str(fb_exc)
+                    logger.warning(
+                        "stream_fallback_failed",
+                        model=fallback_model,
+                        error=last_error,
+                    )
+                    continue
+
+            tried = [primary_model, *fallbacks] if fallbacks else [primary_model]
+            raise RuntimeError(
+                f"All models failed (stream). Tried: {', '.join(tried)}. "
+                f"Last error: {last_error}"
+            ) from exc
 
     async def _call_with_fallback(self, **kwargs: Any) -> Any:
         primary_model = kwargs.get("model", self._settings.llm_model)
@@ -212,12 +265,17 @@ class LLMClient:
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=2, min=2, max=75),
-        retry=retry_if_exception_type(litellm.RateLimitError),
+        retry=retry_if_exception_type((
+            litellm.RateLimitError,
+            litellm.ServiceUnavailableError,
+            litellm.Timeout,
+        )),
         reraise=True,
         before_sleep=lambda rs: logger.info(
-            "rate_limit_retry",
+            "call_retry",
             attempt=rs.attempt_number,
             wait=f"{getattr(rs.next_action, 'sleep', 0):.1f}s",
+            error=str(rs.outcome.exception()) if rs.outcome else "",
         ),
     )
     async def _single_call(self, **kwargs: Any) -> Any:

@@ -15,6 +15,7 @@ from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
     _resolve_python_interpreter,
     isolated_runner_dir,
+    kill_stale_runner_procs,
     materialize_ssh_keys,
 )
 from ansible_forge.tools.secret_check import find_missing_secrets
@@ -140,6 +141,7 @@ class ConnectivityTester(BaseTool):
                     timeout=60,
                 )
             except TimeoutError:
+                kill_stale_runner_procs(run_dir)
                 return ToolResult.fail(
                     "Connection test timed out after 60 seconds. "
                     "Hosts may be behind a firewall or SSH is not configured."

@@ -169,6 +169,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       ss.reconnectAttempts += 1;
 
       ss.reconnectTimer = setTimeout(async () => {
+        if (!sessionStates.has(sessionId)) return;
         let sessionDone = false;
         let lastKnownStatus = "completed";
         try {
@@ -300,14 +301,24 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
     [opts, markStreaming]
   );
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback(async () => {
     const ss = getSessionState(activeId);
+    const sid = ss.serverSid || activeId;
+
     ss.controller?.abort();
     if (ss.reconnectTimer) {
       clearTimeout(ss.reconnectTimer);
       ss.reconnectTimer = null;
     }
     markStreaming(activeId, false);
+
+    if (sid && !sid.startsWith("local-")) {
+      try {
+        await api.cancelSession(sid);
+      } catch {
+        /* best-effort — session may already be done */
+      }
+    }
   }, [activeId, markStreaming]);
 
   const cleanupSession = useCallback((sessionId: string) => {
@@ -319,6 +330,41 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
     }
     clearLastSeq(sessionId);
   }, []);
+
+  useEffect(() => {
+    if (!activeId || activeId.startsWith("local-")) return;
+
+    const ss = getSessionState(activeId);
+    if (ss.streaming || ss.controller) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await api.sessionStatus(activeId);
+        if (cancelled) return;
+        const isRunning = status.status === "active" || status.status === "awaiting_approval" || status.status === "awaiting_secret";
+        if (!isRunning) return;
+
+        markStreaming(activeId, true);
+        opts.updateStatus(activeId, "active");
+
+        const controller = reconnectStream(
+          activeId,
+          getLastSeq(activeId),
+          (event) => handleEvent(activeId, ss, event),
+          async (doneStatus) => {
+            await finishSession(activeId, ss, activeId, doneStatus);
+          },
+          () => tryReconnect(activeId),
+        );
+        ss.controller = controller;
+      } catch {
+        /* session not found or backend down — nothing to reconnect */
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {

@@ -31,8 +31,11 @@ function stripLargeData(session: Session): StoredSession {
 function restoreSession(stored: StoredSession): Session {
   return {
     ...stored,
+    events: Array.isArray(stored.events) ? stored.events : [],
+    playbooks: stored.playbooks && typeof stored.playbooks === "object" ? stored.playbooks : {},
+    inventory: stored.inventory && typeof stored.inventory === "object" ? stored.inventory : {},
     workspaceFiles: [],
-    projectPath: stored.projectPath,
+    projectPath: stored.projectPath ?? "",
   };
 }
 
@@ -57,9 +60,11 @@ export function loadSessions(): Session[] {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
     if (!raw) return [];
-    const parsed: StoredSession[] = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(restoreSession);
+    return parsed
+      .filter((s: unknown): s is StoredSession => s != null && typeof s === "object" && "id" in s)
+      .map(restoreSession);
   } catch {
     return [];
   }

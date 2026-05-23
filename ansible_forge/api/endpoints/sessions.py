@@ -46,10 +46,19 @@ async def reset_session(
     if not await store.areset_session(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
 
-    from ansible_forge.api.endpoints.chat import get_orchestrator
+    from ansible_forge.agent.event_bus import EventBusRegistry
+    from ansible_forge.api.endpoints.chat import _active_tasks, get_orchestrator
+
+    active_task = _active_tasks.get(session_id)
+    if active_task and not active_task.done():
+        active_task.cancel()
 
     orch = get_orchestrator()
     orch.reset_session(session_id)
+
+    bus = EventBusRegistry.get_instance().get(session_id)
+    if bus is not None:
+        bus.mark_done(bus._run_gen)
 
     return {"session_id": session_id, "status": "reset"}
 
@@ -89,7 +98,11 @@ async def delete_session(
     deleted = await store.adelete_session(session_id)
 
     from ansible_forge.agent.event_bus import EventBusRegistry
-    from ansible_forge.api.endpoints.chat import get_orchestrator
+    from ansible_forge.api.endpoints.chat import _active_tasks, get_orchestrator
+
+    active_task = _active_tasks.get(session_id)
+    if active_task and not active_task.done():
+        active_task.cancel()
 
     orch = get_orchestrator()
     orch.destroy_session(session_id)

@@ -120,10 +120,11 @@ export function App() {
   useEffect(() => {
     const sid = session.active?.id;
     if (!sid || sid.startsWith("local-")) return;
+    let cancelled = false;
 
     if (session.active && session.active.workspaceFiles.length === 0) {
       api.workspaceFiles(sid)
-        .then((ws) => session.setWorkspaceFiles(sid, ws.files))
+        .then((ws) => { if (!cancelled) session.setWorkspaceFiles(sid, ws.files); })
         .catch(() => {});
     }
 
@@ -135,6 +136,7 @@ export function App() {
         `/sessions/${sid}/events`
       )
         .then((res) => {
+          if (cancelled) return;
           if (!res.events || res.events.length === 0) return;
           const TRANSIENT = new Set(["progress", "thinking_delta", "message_delta"]);
           const mapped: AgentEvent[] = res.events
@@ -151,6 +153,8 @@ export function App() {
         })
         .catch(() => {});
     }
+
+    return () => { cancelled = true; };
   }, [session.active?.id]);
 
   const FILE_MUTATING_TOOLS = useMemo(() => new Set([

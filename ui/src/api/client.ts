@@ -40,15 +40,25 @@ export async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: authHeaders(),
-    ...options,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`API ${res.status}: ${body}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const signal = options?.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: authHeaders(),
+      ...options,
+      signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`API ${res.status}: ${body}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 export const api = {
@@ -57,6 +67,11 @@ export const api = {
 
   sessionStatus: (id: string) =>
     request<SessionStatusResponse>(`/chat/${id}/status`),
+
+  cancelSession: (id: string) =>
+    request<{ session_id: string; status: string }>(`/chat/${id}/cancel`, {
+      method: "POST",
+    }),
 
   approve: (id: string) =>
     request<ApprovalResponse>(`/chat/${id}/approve`, { method: "POST" }),
@@ -192,6 +207,29 @@ export const api = {
 let eventCounter = 0;
 
 const sessionLastSeq = new Map<string, number>();
+const SEQ_STORAGE_KEY = "ansibleforge_last_seq";
+
+function _loadPersistedSeqs(): void {
+  try {
+    const raw = localStorage.getItem(SEQ_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      for (const [k, v] of Object.entries(parsed)) {
+        sessionLastSeq.set(k, v);
+      }
+    }
+  } catch { /* ignore corrupt data */ }
+}
+
+function _persistSeqs(): void {
+  try {
+    const obj: Record<string, number> = {};
+    for (const [k, v] of sessionLastSeq) obj[k] = v;
+    localStorage.setItem(SEQ_STORAGE_KEY, JSON.stringify(obj));
+  } catch { /* storage full or unavailable */ }
+}
+
+_loadPersistedSeqs();
 
 export function getLastSeq(sessionId: string): number {
   return sessionLastSeq.get(sessionId) ?? 0;
@@ -199,10 +237,12 @@ export function getLastSeq(sessionId: string): number {
 
 function setLastSeq(sessionId: string, seq: number): void {
   sessionLastSeq.set(sessionId, seq);
+  _persistSeqs();
 }
 
 export function clearLastSeq(sessionId: string): void {
   sessionLastSeq.delete(sessionId);
+  _persistSeqs();
 }
 
 export function reconnectStream(

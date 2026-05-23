@@ -2,12 +2,55 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from ansible_forge.logging import get_logger
 from ansible_forge.tools.base import BaseTool
 
 logger = get_logger(__name__)
+
+_DEFAULT_TOOL_TIMEOUT = 1800
+
+_JSON_SCHEMA_TYPE_MAP: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+}
+
+
+def _validate_tool_args(
+    schema: dict[str, Any], arguments: dict[str, Any]
+) -> str | None:
+    """Lightweight JSON Schema validation — checks required fields and types.
+
+    Returns an error message or None if valid.
+    """
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+
+    public_args = {k: v for k, v in arguments.items() if not k.startswith("_")}
+
+    missing = required - set(public_args.keys())
+    if missing:
+        return f"Missing required parameters: {', '.join(sorted(missing))}"
+
+    errors: list[str] = []
+    for key, value in public_args.items():
+        if key not in props:
+            continue
+        expected_type = props[key].get("type")
+        if not expected_type:
+            continue
+        py_types = _JSON_SCHEMA_TYPE_MAP.get(expected_type)
+        if py_types and not isinstance(value, py_types):
+            actual = type(value).__name__
+            errors.append(f"'{key}' expected {expected_type}, got {actual}")
+
+    return "; ".join(errors) if errors else None
 
 
 class ToolRegistry:
@@ -44,14 +87,47 @@ class ToolRegistry:
         """Return all tools as OpenAI-compatible function definitions."""
         return [tool.to_openai_tool() for tool in self._tools.values()]
 
+    def to_openai_tools_subset(self, names: frozenset[str]) -> list[dict[str, Any]]:
+        """Return OpenAI tool definitions for only the named subset."""
+        return [
+            tool.to_openai_tool()
+            for tool in self._tools.values()
+            if tool.name in names
+        ]
+
     async def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tools.get(name)
         if tool is None:
             from ansible_forge.tools.base import ToolResult
 
             return ToolResult.fail(f"Unknown tool: {name}")
+
+        validation_error = _validate_tool_args(tool.parameters, arguments)
+        if validation_error:
+            from ansible_forge.tools.base import ToolResult
+
+            logger.warning(
+                "tool_args_invalid",
+                tool=name,
+                error=validation_error,
+            )
+            return ToolResult.fail(
+                f"Invalid arguments for '{name}': {validation_error}"
+            )
+
         logger.info("tool_executing", tool=name, args=list(arguments.keys()))
-        return await tool.execute(**arguments)
+        try:
+            return await asyncio.wait_for(
+                tool.execute(**arguments), timeout=_DEFAULT_TOOL_TIMEOUT
+            )
+        except TimeoutError:
+            from ansible_forge.tools.base import ToolResult
+
+            logger.error("tool_timeout", tool=name, timeout=_DEFAULT_TOOL_TIMEOUT)
+            return ToolResult.fail(
+                f"Tool '{name}' timed out after {_DEFAULT_TOOL_TIMEOUT}s. "
+                f"The operation took too long and was cancelled."
+            )
 
 
 def create_default_registry() -> ToolRegistry:

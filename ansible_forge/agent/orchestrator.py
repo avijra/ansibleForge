@@ -12,7 +12,7 @@ from typing import Any
 
 from ansible_forge.agent import infra_tracker
 from ansible_forge.agent.llm_client import LLMClient, LLMResponse, ToolCall, _repair_json
-from ansible_forge.agent.memory import Memory
+from ansible_forge.agent.memory import Memory, _estimate_message_tokens
 from ansible_forge.agent.planner import build_context
 from ansible_forge.agent.prompts.system import SYSTEM_PROMPT
 from ansible_forge.agent.prompts.templates import ERROR_RECOVERY_PROMPT
@@ -52,14 +52,42 @@ LOOP_BREAK_PROMPT = (
 )
 
 _PROGRESS_INTERVAL = 5
-_CHUNK_DEAD_TICKS = 18
+_CHUNK_DEAD_TICKS = 24
 
 _PARALLELIZABLE_TOOLS = frozenset({
     "collect_facts", "test_connectivity", "search_docs", "web_search",
     "run_lint", "inspect_variables", "compare_configs", "detect_drift",
     "scan_compliance", "analyze_logs", "verify_state", "discover_inventory",
-    "run_adhoc",
 })
+
+_CORE_TOOLS = frozenset({
+    "read_file", "write_file", "web_search", "search_docs", "memory",
+    "request_secret", "session_search", "local_exec",
+})
+
+_RECON_TOOLS = frozenset({
+    "collect_facts", "test_connectivity", "discover_inventory",
+    "inspect_variables", "detect_drift", "import_project",
+})
+
+_GENERATION_TOOLS = frozenset({
+    "generate_playbook", "scaffold_role", "manage_inventory",
+    "manage_vault", "run_lint", "manage_galaxy",
+    "render_template", "generate_rollback", "manage_git",
+})
+
+_EXECUTION_VERIFY_TOOLS = frozenset({
+    "execute_playbook", "run_adhoc", "verify_state",
+})
+
+_TERRAFORM_TOOLS = frozenset({
+    "generate_terraform", "terraform_exec", "terraform_to_inventory",
+})
+
+_ALL_TOOL_NAMES = (
+    _CORE_TOOLS | _RECON_TOOLS | _GENERATION_TOOLS
+    | _EXECUTION_VERIFY_TOOLS | _TERRAFORM_TOOLS
+)
 
 _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
     "execute_playbook": [
@@ -188,6 +216,7 @@ class SessionState:
         self._rejected_feedback: str | None = None
         self._rejected_tool: str | None = None
         self._approved_playbooks: set[str] = set()
+        self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
         self._active_tasks: set[asyncio.Task[Any]] = set()
 
@@ -279,6 +308,56 @@ class Orchestrator:
 
     _EXECUTION_TOOLS = frozenset({"execute_playbook", "run_adhoc", "terraform_exec"})
     _SEARCH_GATE_THRESHOLD = 2
+    _DYNAMIC_TOOL_RECENT_LOOKBACK = 10
+
+    def _select_tools(self, state: SessionState) -> frozenset[str]:
+        """Pick the active tool subset based on recent conversation history.
+
+        For the first few steps, returns ALL registered tools so the model
+        can discover what's available (including plugin tools).
+
+        After step 3, starts with the full registry set and *removes*
+        hardcoded categories that haven't been recently used or mentioned.
+        This keeps core tools, plugin tools, and any recently-active
+        category always visible.
+        """
+        all_registered = frozenset(self._registry.tool_names)
+        if state.step_count < 3:
+            return all_registered
+
+        recent = state.memory._messages[-Orchestrator._DYNAMIC_TOOL_RECENT_LOOKBACK:]
+        recent_tool_names: set[str] = set()
+        mentioned_categories: set[frozenset[str]] = set()
+        for m in recent:
+            if m.get("role") == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    recent_tool_names.add(tc.get("function", {}).get("name", ""))
+            content = m.get("content", "")
+            if isinstance(content, str):
+                lower = content.lower()
+                if "terraform" in lower or "tf " in lower:
+                    mentioned_categories.add(_TERRAFORM_TOOLS)
+                if "playbook" in lower or "ansible" in lower or "deploy" in lower:
+                    mentioned_categories.add(_GENERATION_TOOLS)
+                    mentioned_categories.add(_EXECUTION_VERIFY_TOOLS)
+                if "inventory" in lower or "host" in lower or "fact" in lower:
+                    mentioned_categories.add(_RECON_TOOLS)
+
+        removable: set[str] = set()
+        for category in (
+            _RECON_TOOLS, _GENERATION_TOOLS,
+            _EXECUTION_VERIFY_TOOLS, _TERRAFORM_TOOLS,
+        ):
+            if category in mentioned_categories:
+                continue
+            if recent_tool_names & category:
+                continue
+            removable |= category
+
+        removable -= _CORE_TOOLS
+        removable -= recent_tool_names
+
+        return all_registered - removable
 
     @staticmethod
     def _check_search_gate(state: SessionState, tool_name: str) -> ToolResult | None:
@@ -344,6 +423,8 @@ class Orchestrator:
             "Read the results, then fix based on what you find."
         )
 
+    _MAX_USER_RULES_CHARS = 2000
+
     @staticmethod
     def _load_user_rules(workspace: Workspace) -> str | None:
         rules_file = workspace.runner_dir / "rules.md"
@@ -351,7 +432,11 @@ class Orchestrator:
             return None
         try:
             content = rules_file.read_text().strip()
-            return content if content else None
+            if not content:
+                return None
+            if len(content) > Orchestrator._MAX_USER_RULES_CHARS:
+                content = content[:Orchestrator._MAX_USER_RULES_CHARS] + "\n[rules truncated]"
+            return content
         except Exception:
             return None
 
@@ -511,7 +596,7 @@ class Orchestrator:
         if state is None:
             state = await self._arestore_session(session_id)
         if state is None:
-            state = self.create_session(session_id)
+            state = await self.create_session(session_id)
 
         state._generation += 1
         state.cancel_active_work()
@@ -528,7 +613,11 @@ class Orchestrator:
         await asyncio.sleep(0)
 
         loop = asyncio.get_running_loop()
-        context = await loop.run_in_executor(None, build_context, state.workspace)
+        try:
+            context = await loop.run_in_executor(None, build_context, state.workspace)
+        except Exception:
+            logger.warning("build_context_failed", session_id=session_id, exc_info=True)
+            context = ""
 
         mention_context = ""
         try:
@@ -554,6 +643,14 @@ class Orchestrator:
             full_context += f"\n{mention_context}"
         if ws_memory_context:
             full_context += f"\n{ws_memory_context}"
+        _max_ctx = 12000
+        if len(full_context) > _max_ctx:
+            user_len = len(user_message)
+            available = _max_ctx - user_len - 100
+            if available > 500:
+                full_context = f"{user_message}\n\n---\nWorkspace context:\n{context[:available]}\n[context truncated]"
+            else:
+                full_context = user_message[:_max_ctx]
         state.memory.add_user(full_context)
 
         plan = await self._generate_plan(state, user_message)
@@ -569,7 +666,7 @@ class Orchestrator:
 
         max_steps = self._settings.max_agent_steps
         progress_check_interval = max(max_steps // 3, 15)
-        llm_timeout = 300
+        llm_timeout = 600
         consecutive_llm_timeouts = 0
         max_consecutive_llm_timeouts = 3
         my_generation = state._generation
@@ -596,6 +693,8 @@ class Orchestrator:
                     "elapsed_seconds": int(elapsed),
                     "reason": "wall_clock",
                 })
+                state.status = SessionStatus.COMPLETED
+                yielded_terminal = True
                 yield AgentEvent("message", {
                     "content": (
                         f"Session timed out after {int(elapsed // 60)} minutes. "
@@ -652,6 +751,34 @@ class Orchestrator:
                         step=state.step_count,
                     )
 
+                # ── LLM compaction: summarize old turns when context is large ──
+                if state.step_count > 0 and state.step_count % 10 == 0:
+                    try:
+                        compacted = await state.memory.compact_with_llm(self._llm)
+                        if compacted:
+                            logger.info(
+                                "conversation_compacted_by_llm",
+                                session_id=state.session_id,
+                                step=state.step_count,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "compaction_failed",
+                            session_id=state.session_id,
+                            step=state.step_count,
+                            exc_info=True,
+                        )
+
+                # ── Compress old tool results to reduce context size ────────
+                compressed = state.memory.compress_old_tool_results(keep_recent=20)
+                if compressed:
+                    logger.info(
+                        "tool_results_compressed",
+                        session_id=state.session_id,
+                        count=compressed,
+                        step=state.step_count,
+                    )
+
                 # ── Validate message integrity before every LLM call ─────────
                 repairs = state.memory.ensure_integrity()
                 if repairs:
@@ -690,11 +817,30 @@ class Orchestrator:
                     yield AgentEvent("message", {"content": content, "usage": usage})
                     return
 
+                # ── Dynamic tool selection + token budget partitioning ─────
+                active_tools = self._select_tools(state)
+                tools_json = self._registry.to_openai_tools_subset(active_tools)
+                tool_tokens = sum(
+                    len(json.dumps(t)) // 4 + 4 for t in tools_json
+                )
+                system_tokens = sum(
+                    _estimate_message_tokens(m)
+                    for m in state.memory._messages
+                    if m.get("role") == "system"
+                )
+                completion_reserve = self._settings.llm_max_tokens
+                fixed_overhead = system_tokens + tool_tokens + completion_reserve
+                context_window = self._settings.llm_model_context_window
+                history_budget = max(context_window - fixed_overhead, 4000)
+                state.memory.set_history_budget(history_budget)
+
                 logger.info(
                     "llm_call_start",
                     session_id=state.session_id,
                     step=state.step_count,
                     message_count=state.memory.message_count,
+                    history_budget=history_budget,
+                    context_window=context_window,
                 )
 
                 response: LLMResponse | None = None
@@ -702,9 +848,8 @@ class Orchestrator:
                 try:
                     llm_progress_tick = 0
                     empty_ticks = 0
-                    got_first_chunk = False
                     stream_iter = self._stream_llm_call(
-                        state, self._registry.to_openai_tools()
+                        state, tools_json
                     ).__aiter__()
                     get_next: asyncio.Future[AgentEvent | LLMResponse] | None = None
 
@@ -718,7 +863,7 @@ class Orchestrator:
                             if not done:
                                 llm_progress_tick += 1
                                 empty_ticks += 1
-                                if got_first_chunk and empty_ticks >= _CHUNK_DEAD_TICKS:
+                                if empty_ticks >= _CHUNK_DEAD_TICKS:
                                     logger.error(
                                         "llm_stream_dead",
                                         session_id=state.session_id,
@@ -740,7 +885,6 @@ class Orchestrator:
                                 continue
 
                             empty_ticks = 0
-                            got_first_chunk = True
                             try:
                                 item = get_next.result()
                             except StopAsyncIteration:
@@ -750,6 +894,8 @@ class Orchestrator:
 
                             if isinstance(item, LLMResponse):
                                 response = item
+                            elif item.event_type == "heartbeat":
+                                pass
                             else:
                                 yield item
                     streamed = True
@@ -781,16 +927,9 @@ class Orchestrator:
                             ),
                         })
                         return
-                    state.memory.add_user(
-                        "Your previous response was too long and the stream "
-                        "timed out. You MUST produce shorter responses. Generate "
-                        "ONE playbook or ONE file per step — never multiple large "
-                        "artifacts in a single response. Break the work into small "
-                        "sequential steps. Resume from where you left off."
-                    )
                     yield AgentEvent("error_recovery", {
                         "tool": "llm",
-                        "error": "The AI model's response was too long and the connection dropped. Retrying with a shorter response.",
+                        "error": "The AI model is taking longer than expected. Retrying...",
                     })
                     continue
                 except Exception as stream_exc:
@@ -803,7 +942,7 @@ class Orchestrator:
                         response = await asyncio.wait_for(
                             self._llm.complete(
                                 messages=state.memory.messages,
-                                tools=self._registry.to_openai_tools(),
+                                tools=tools_json,
                             ),
                             timeout=llm_timeout,
                         )
@@ -887,6 +1026,26 @@ class Orchestrator:
                 })
 
                 if not response.has_tool_calls:
+                    content = (response.content or "").strip()
+                    if not content and state._empty_response_retries < 2:
+                        state._empty_response_retries += 1
+                        logger.warning(
+                            "empty_llm_response",
+                            session_id=state.session_id,
+                            step=state.step_count,
+                            retry=state._empty_response_retries,
+                            finish_reason=response.finish_reason,
+                        )
+                        state.memory.add_user(
+                            "Your previous response was empty. Please respond with "
+                            "either a message summarizing progress or a tool call "
+                            "to continue work."
+                        )
+                        yield AgentEvent("error_recovery", {
+                            "error": "The model returned an empty response. Retrying...",
+                        })
+                        continue
+                    state._empty_response_retries = 0
                     state.memory.add_assistant(
                         content=response.content,
                         reasoning_content=response.reasoning_content,
@@ -1052,9 +1211,6 @@ class Orchestrator:
                                             "tool": "dep_manager",
                                             "message": f"Auto-installed {_pkg}",
                                         }))
-                                        state.memory.add_tool_result(
-                                            tc.id, result.model_dump_json()
-                                        )
                                         continue
 
                             state._consecutive_errors += 1
@@ -1367,7 +1523,7 @@ class Orchestrator:
                         tool=tc.name,
                         tool_call_id=tc.id,
                         status=result.status.value,
-                        output_preview=result.output[:500] if result.output else "",
+                        output_preview=session_vault.redact(result.output[:500]) if result.output else "",
                     )
 
                     if (
@@ -1708,6 +1864,10 @@ class Orchestrator:
             messages=state.memory.messages,
             tools=tools,
         ):
+            if chunk.get("heartbeat"):
+                yield AgentEvent("heartbeat", {})
+                continue
+
             if chunk.get("tool_calls"):
                 saw_tool_call = True
                 for tc_delta in chunk["tool_calls"]:

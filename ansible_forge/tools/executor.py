@@ -162,6 +162,30 @@ def _kill_runner(runner: Any) -> None:
             t.start()
 
 
+def kill_stale_runner_procs(private_data_dir: str | Path) -> None:
+    """Kill any ansible-runner child processes left after a timeout.
+
+    Scans the artifacts directory for PID files and sends SIGTERM/SIGKILL.
+    """
+    import contextlib
+    import threading
+
+    artifacts = Path(private_data_dir) / "artifacts"
+    if not artifacts.is_dir():
+        return
+    for pid_file in artifacts.rglob("pid"):
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            continue
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+        t = threading.Thread(target=_sigkill_after_delay, args=(pid,), daemon=True)
+        t.start()
+
+
 def clean_stale_env(ws: Path) -> None:
     """Remove env artifacts left by prior ansible-runner invocations.
 
@@ -558,7 +582,8 @@ class Executor(BaseTool):
                     "result": _summarize_event_result(event.get("event_data", {}).get("res", {})),
                 })
 
-        raw_stdout = result.stdout.read() if hasattr(result.stdout, "read") else str(result.stdout)
+        _raw = result.stdout.read() if hasattr(result.stdout, "read") else str(result.stdout)
+        raw_stdout = _raw[-8000:] if len(_raw) > 8000 else _raw
 
         summary = {
             "status": result.status,

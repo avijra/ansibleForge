@@ -80,23 +80,23 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 if sidecar::is_port_available(sidecar::PORT) {
                     sidecar::start_backend(&backend_handle);
-
-                    if !sidecar::wait_for_backend().await {
-                        log::error!("Backend failed to start within timeout");
-                        let _ = backend_handle.emit(
-                            "backend-error",
-                            "Backend did not respond within the expected time.",
-                        );
-                        return;
-                    }
-
-                    log::info!("Backend is ready");
-                    let _ = backend_handle.emit("backend-status", "ready");
-                    sidecar::monitor_backend(backend_handle);
                 } else {
-                    log::info!("Port {} already in use, assuming backend is running", sidecar::PORT);
-                    let _ = backend_handle.emit("backend-status", "ready");
+                    log::info!("Port {} already in use, checking health", sidecar::PORT);
                 }
+
+                if !sidecar::wait_for_backend().await {
+                    log::error!("Backend failed to start within timeout");
+                    sidecar::stop_backend(&backend_handle);
+                    let _ = backend_handle.emit(
+                        "backend-error",
+                        "Backend did not respond within the expected time. Try restarting the app.",
+                    );
+                    return;
+                }
+
+                log::info!("Backend is ready");
+                let _ = backend_handle.emit("backend-status", "ready");
+                sidecar::monitor_backend(backend_handle);
             });
 
             // Check for updates (production only)

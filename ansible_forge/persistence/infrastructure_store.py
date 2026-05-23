@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -117,10 +119,18 @@ class InfrastructureStore:
         return cls._instance
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
+        conn = sqlite3.connect(str(self._db_path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    @contextlib.contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._lock:
@@ -160,8 +170,7 @@ class InfrastructureStore:
     ) -> str:
         host_id = hostname.replace(".", "_").replace(":", "_")
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "INSERT INTO hosts (host_id, hostname, ip_address, groups_json, vars_json, "
                 "connection_type, ansible_user, status, source_id, created_at, updated_at) "
@@ -178,19 +187,16 @@ class InfrastructureStore:
                 ),
             )
             conn.commit()
-            conn.close()
         return host_id
 
     def get_host(self, host_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             row = conn.execute(
                 "SELECT host_id, hostname, ip_address, groups_json, vars_json, "
                 "connection_type, ansible_user, status, source_id, created_at, updated_at "
                 "FROM hosts WHERE host_id=?",
                 (host_id,),
             ).fetchone()
-            conn.close()
         if not row:
             return None
         return self._host_row_to_dict(row)
@@ -198,8 +204,7 @@ class InfrastructureStore:
     def list_hosts(
         self, group: str | None = None, source_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             base = (
                 "SELECT host_id, hostname, ip_address, groups_json, vars_json, "
                 "connection_type, ansible_user, status, source_id, created_at, updated_at "
@@ -215,34 +220,28 @@ class InfrastructureStore:
                 params.append(source_id)
             where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = conn.execute(f"{base}{where} ORDER BY hostname", params).fetchall()
-            conn.close()
         return [self._host_row_to_dict(r) for r in rows]
 
     def delete_host(self, host_id: str) -> bool:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             cur = conn.execute("DELETE FROM hosts WHERE host_id=?", (host_id,))
             conn.commit()
-            conn.close()
             return cur.rowcount > 0
 
     def update_host_status(self, host_id: str, status: str) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "UPDATE hosts SET status=?, updated_at=? WHERE host_id=?",
                 (status, now, host_id),
             )
             conn.commit()
-            conn.close()
 
     # ── Facts ─────────────────────────────────────────────────────────
 
     def save_facts(self, host_id: str, facts: dict[str, Any]) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "INSERT INTO host_facts (host_id, facts_json, collected_at) "
                 "VALUES (?, ?, ?) "
@@ -250,27 +249,22 @@ class InfrastructureStore:
                 (host_id, json.dumps(facts), now, json.dumps(facts), now),
             )
             conn.commit()
-            conn.close()
 
     def get_facts(self, host_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             row = conn.execute(
                 "SELECT facts_json, collected_at FROM host_facts WHERE host_id=?",
                 (host_id,),
             ).fetchone()
-            conn.close()
         if not row:
             return None
         return {**json.loads(row[0]), "_collected_at": row[1]}
 
     def get_all_facts(self) -> dict[str, dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             rows = conn.execute(
                 "SELECT host_id, facts_json, collected_at FROM host_facts"
             ).fetchall()
-            conn.close()
         return {
             r[0]: {**json.loads(r[1]), "_collected_at": r[2]}
             for r in rows
@@ -287,25 +281,21 @@ class InfrastructureStore:
         status: str = "success",
     ) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "INSERT INTO applied_roles (host_id, role_name, playbook, session_id, applied_at, status) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (host_id, role_name, playbook, session_id, now, status),
             )
             conn.commit()
-            conn.close()
 
     def get_applied_roles(self, host_id: str) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             rows = conn.execute(
                 "SELECT role_name, playbook, session_id, applied_at, status "
                 "FROM applied_roles WHERE host_id=? ORDER BY applied_at DESC LIMIT 50",
                 (host_id,),
             ).fetchall()
-            conn.close()
         return [
             {
                 "role_name": r[0],
@@ -330,8 +320,7 @@ class InfrastructureStore:
         summary: dict[str, Any] | None = None,
     ) -> int:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO run_history (session_id, playbook, mode, hosts_json, status, "
                 "event_count, summary_json, started_at, finished_at) "
@@ -343,7 +332,6 @@ class InfrastructureStore:
             )
             run_id = cur.lastrowid
             conn.commit()
-            conn.close()
         return run_id or 0
 
     def update_run(
@@ -355,8 +343,7 @@ class InfrastructureStore:
         summary: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             parts = ["status=?", "finished_at=?"]
             params: list[Any] = [status, now]
             if hosts is not None:
@@ -371,11 +358,9 @@ class InfrastructureStore:
             params.append(run_id)
             conn.execute(f"UPDATE run_history SET {', '.join(parts)} WHERE id=?", params)
             conn.commit()
-            conn.close()
 
     def list_runs(self, limit: int = 50, session_id: str | None = None) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             if session_id:
                 rows = conn.execute(
                     "SELECT id, session_id, playbook, mode, hosts_json, status, "
@@ -390,7 +375,6 @@ class InfrastructureStore:
                     "FROM run_history ORDER BY started_at DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
-            conn.close()
         return [
             {
                 "id": r[0],
@@ -417,8 +401,7 @@ class InfrastructureStore:
         actual_value: str,
     ) -> int:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO drift_records (host_id, field, expected_value, actual_value, detected_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -426,12 +409,10 @@ class InfrastructureStore:
             )
             drift_id = cur.lastrowid
             conn.commit()
-            conn.close()
         return drift_id or 0
 
     def get_unresolved_drift(self, host_id: str | None = None) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             if host_id:
                 rows = conn.execute(
                     "SELECT id, host_id, field, expected_value, actual_value, detected_at "
@@ -445,7 +426,6 @@ class InfrastructureStore:
                     "FROM drift_records WHERE resolved_at IS NULL "
                     "ORDER BY detected_at DESC",
                 ).fetchall()
-            conn.close()
         return [
             {
                 "id": r[0],
@@ -460,14 +440,12 @@ class InfrastructureStore:
 
     def resolve_drift(self, drift_id: int) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "UPDATE drift_records SET resolved_at=? WHERE id=?",
                 (now, drift_id),
             )
             conn.commit()
-            conn.close()
 
     def detect_drift(self, host_id: str, new_facts: dict[str, Any]) -> list[dict[str, str]]:
         old_facts_record = self.get_facts(host_id)
@@ -504,8 +482,7 @@ class InfrastructureStore:
         filters: dict[str, Any] | None = None,
     ) -> str:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "INSERT INTO inventory_sources "
                 "(source_id, name, plugin_type, config_yaml, regions_json, filters_json, "
@@ -520,37 +497,31 @@ class InfrastructureStore:
                 ),
             )
             conn.commit()
-            conn.close()
         return source_id
 
     def get_source(self, source_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             row = conn.execute(
                 "SELECT source_id, name, plugin_type, config_yaml, regions_json, "
                 "filters_json, last_synced_at, host_count, status, created_at, updated_at "
                 "FROM inventory_sources WHERE source_id=?",
                 (source_id,),
             ).fetchone()
-            conn.close()
         if not row:
             return None
         return self._source_row_to_dict(row)
 
     def list_sources(self) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             rows = conn.execute(
                 "SELECT source_id, name, plugin_type, config_yaml, regions_json, "
                 "filters_json, last_synced_at, host_count, status, created_at, updated_at "
                 "FROM inventory_sources ORDER BY name",
             ).fetchall()
-            conn.close()
         return [self._source_row_to_dict(r) for r in rows]
 
     def delete_source(self, source_id: str, remove_hosts: bool = False) -> bool:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             if remove_hosts:
                 conn.execute("DELETE FROM hosts WHERE source_id=?", (source_id,))
             else:
@@ -561,7 +532,6 @@ class InfrastructureStore:
                 "DELETE FROM inventory_sources WHERE source_id=?", (source_id,),
             )
             conn.commit()
-            conn.close()
             return cur.rowcount > 0
 
     def update_source_sync_status(
@@ -571,8 +541,7 @@ class InfrastructureStore:
         host_count: int | None = None,
     ) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             if host_count is not None:
                 conn.execute(
                     "UPDATE inventory_sources SET status=?, host_count=?, "
@@ -585,7 +554,6 @@ class InfrastructureStore:
                     (status, now, source_id),
                 )
             conn.commit()
-            conn.close()
 
     def purge_stale_hosts(self, source_id: str, current_hostnames: set[str]) -> int:
         existing = self.list_hosts(source_id=source_id)
@@ -614,6 +582,9 @@ class InfrastructureStore:
 
     # ── Context for the agent ──────────────────────────────────────────
 
+    _MAX_CONTEXT_HOSTS = 30
+    _MAX_CONTEXT_FACTS = 30
+
     def build_infrastructure_context(self) -> str:
         hosts = self.list_hosts()
         if not hosts:
@@ -625,7 +596,8 @@ class InfrastructureStore:
         lines = ["Known infrastructure:"]
         if sources:
             lines.append(f"  Inventory sources: {', '.join(s['name'] for s in sources)}")
-        for h in hosts:
+        displayed = hosts[:self._MAX_CONTEXT_HOSTS]
+        for h in displayed:
             groups = ", ".join(h["groups"]) if h["groups"] else "ungrouped"
             status = h["status"]
             line = f"  {h['hostname']}"
@@ -636,11 +608,15 @@ class InfrastructureStore:
             if src:
                 line += f" source={src}"
             lines.append(line)
+        remaining = len(hosts) - len(displayed)
+        if remaining > 0:
+            lines.append(f"  [{remaining} more hosts — use collect_facts or discover_inventory to inspect]")
 
         all_facts = self.get_all_facts()
         if all_facts:
             lines.append("\nHost details:")
-            for host_id, facts in all_facts.items():
+            fact_items = list(all_facts.items())[:self._MAX_CONTEXT_FACTS]
+            for host_id, facts in fact_items:
                 distro = facts.get("distribution", "?")
                 version = facts.get("distribution_version", "")
                 arch = facts.get("architecture", "")
@@ -651,6 +627,9 @@ class InfrastructureStore:
                 lines.append(
                     f"  {host_id}: {distro} {version}, {arch}, {pkg}, {svc}, {ram} RAM"
                 )
+            remaining_facts = len(all_facts) - len(fact_items)
+            if remaining_facts > 0:
+                lines.append(f"  [{remaining_facts} more hosts with facts]")
 
         drifts = self.get_unresolved_drift()
         if drifts:
@@ -676,8 +655,7 @@ class InfrastructureStore:
     # ── Stats ──────────────────────────────────────────────────────────
 
     def get_stats(self) -> dict[str, Any]:
-        with self._lock:
-            conn = self._connect()
+        with self._lock, self._conn() as conn:
             host_count = conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0]
             facts_count = conn.execute("SELECT COUNT(*) FROM host_facts").fetchone()[0]
             run_count = conn.execute("SELECT COUNT(*) FROM run_history").fetchone()[0]
@@ -687,7 +665,6 @@ class InfrastructureStore:
             source_count = conn.execute(
                 "SELECT COUNT(*) FROM inventory_sources"
             ).fetchone()[0]
-            conn.close()
         return {
             "hosts": host_count,
             "hosts_with_facts": facts_count,

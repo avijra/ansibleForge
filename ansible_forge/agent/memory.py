@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,22 @@ if TYPE_CHECKING:
     from ansible_forge.safety.secret_vault import SessionVault
 
 _CHARS_PER_TOKEN = 4
+
+logger = logging.getLogger(__name__)
+
+_COMPACTION_PROMPT = (
+    "You are a concise note-taker for an infrastructure automation session. "
+    "Summarize the following conversation segment into a compact progress report. "
+    "Focus on:\n"
+    "1. Key DECISIONS made and WHY (e.g. 'chose us-east-1 because existing VPC is there')\n"
+    "2. Infrastructure STATE changes (resources created/modified/destroyed with IDs/IPs)\n"
+    "3. Errors encountered and HOW they were resolved\n"
+    "4. Credentials collected (names only, never values)\n"
+    "5. Current deployment phase and what remains\n\n"
+    "Format as a bullet list. Be extremely concise — max 30 bullets. "
+    "Omit tool call IDs, reasoning tokens, and verbose output. "
+    "Preserve all hostnames, IPs, resource IDs, file paths, and config values."
+)
 
 
 def _estimate_message_tokens(msg: dict[str, Any]) -> int:
@@ -45,12 +62,19 @@ class Memory:
     they ever enter the message list (and are therefore never sent to the LLM).
     """
 
+    _JOURNAL_MAX_ENTRIES = 200
+    _JOURNAL_ENTRY_MAX_CHARS = 120
+    _COMPACTION_THRESHOLD_TOKENS = 32000
+    _COMPACTION_KEEP_RECENT = 30
+
     def __init__(self, max_messages: int = 500, max_context_tokens: int = 0) -> None:
         self._messages: list[dict[str, Any]] = []
         self._max_messages = max_messages
         self._max_context_tokens = max_context_tokens
+        self._dynamic_history_budget: int = 0
         self._metadata: dict[str, Any] = {}
         self._pinned_goal: str | None = None
+        self._progress_journal: list[str] = []
         self.created_at = time.time()
         self._vault: SessionVault | None = None
 
@@ -69,36 +93,56 @@ class Memory:
         """Return messages for LLM consumption.
 
         Internal fields prefixed with ``_`` (like ``_raw_message``) are
-        stripped.  ``reasoning_content`` is preserved because thinking-mode
-        models (e.g. DeepSeek) require it passed back on every subsequent
-        call.
+        stripped.  ``reasoning_content`` is preserved only on the LAST
+        assistant message — older reasoning is stripped to save tokens
+        (thinking-mode models only need the most recent reasoning context).
 
         If older user messages have been pruned, a compact goal-reminder
         message is injected right after the system prompt so the LLM
         never loses track of the user's original request.
         """
+        last_assistant_idx = -1
+        for i in range(len(self._messages) - 1, -1, -1):
+            if self._messages[i].get("role") == "assistant":
+                last_assistant_idx = i
+                break
+
         result: list[Any] = []
-        goal_injected = False
-        for m in self._messages:
-            result.append({k: v for k, v in m.items() if not k.startswith("_")})
+        context_injected = False
+        for i, m in enumerate(self._messages):
+            cleaned = {k: v for k, v in m.items() if not k.startswith("_")}
             if (
-                not goal_injected
-                and self._pinned_goal
-                and m.get("role") == "system"
-                and self._goal_pruned()
+                m.get("role") == "assistant"
+                and i != last_assistant_idx
+                and "reasoning_content" in cleaned
             ):
-                result.append({
-                    "role": "user",
-                    "content": (
-                        f"[CONTEXT REMINDER — original user goal, do NOT lose "
-                        f"track of this]\n{self._pinned_goal}"
-                    ),
-                })
-                result.append({
-                    "role": "assistant",
-                    "content": "Understood — I have the original goal in context.",
-                })
-                goal_injected = True
+                del cleaned["reasoning_content"]
+            result.append(cleaned)
+            if not context_injected and m.get("role") == "system":
+                parts: list[str] = []
+                if self._pinned_goal and self._goal_pruned():
+                    parts.append(
+                        f"[CONTEXT REMINDER — original user goal]\n{self._pinned_goal}"
+                    )
+                if self._progress_journal:
+                    journal_text = "\n".join(self._progress_journal)
+                    parts.append(
+                        f"[PROGRESS LOG — actions from earlier steps, "
+                        f"oldest first]\n{journal_text}"
+                    )
+                if parts:
+                    result.append({
+                        "role": "user",
+                        "content": "\n\n".join(parts),
+                    })
+                    result.append({
+                        "role": "assistant",
+                        "content": (
+                            "Understood — I have the original goal and "
+                            "progress history in context."
+                        ),
+                    })
+                context_injected = True
         return result
 
     def _goal_pruned(self) -> bool:
@@ -160,6 +204,158 @@ class Memory:
     def get_metadata(self, key: str, default: Any = None) -> Any:
         return self._metadata.get(key, default)
 
+    def compress_old_tool_results(self, keep_recent: int = 20) -> int:
+        """Truncate verbose tool results that are far from the conversation tail.
+
+        Tool results older than *keep_recent* non-system messages keep only
+        the JSON ``status`` field and the first 200 characters of ``output``.
+        This preserves the conversation flow (what was called, pass/fail) while
+        dramatically reducing token cost of stale context.
+
+        Returns the number of messages compressed.
+        """
+        non_system = [m for m in self._messages if m.get("role") != "system"]
+        if len(non_system) <= keep_recent:
+            return 0
+
+        cutoff_idx = len(non_system) - keep_recent
+        old_msgs = set(id(m) for m in non_system[:cutoff_idx])
+        compressed = 0
+
+        for msg in self._messages:
+            if id(msg) not in old_msgs or msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if len(content) <= 300:
+                continue
+            try:
+                parsed = json.loads(content)
+                status = parsed.get("status", "unknown")
+                output = parsed.get("output", "")
+                summary = output[:200] + "..." if len(output) > 200 else output
+                msg["content"] = json.dumps({"status": status, "output": summary})
+                compressed += 1
+            except (json.JSONDecodeError, AttributeError):
+                if len(content) > 300:
+                    msg["content"] = content[:200] + "...[truncated]"
+                    compressed += 1
+        return compressed
+
+    async def compact_with_llm(self, llm_client: Any) -> bool:
+        """Summarize old conversation turns using an LLM call.
+
+        When total estimated tokens exceed ``_COMPACTION_THRESHOLD_TOKENS``,
+        the older portion of the conversation (everything before the most
+        recent ``_COMPACTION_KEEP_RECENT`` messages) is sent to the LLM for
+        summarization.  The old messages are then replaced with a single
+        compact digest message.
+
+        Returns True if compaction was performed.
+        """
+        total_tokens = sum(_estimate_message_tokens(m) for m in self._messages)
+        if total_tokens < self._COMPACTION_THRESHOLD_TOKENS:
+            return False
+
+        system_msgs = [m for m in self._messages if m.get("role") == "system"]
+        other_msgs = [m for m in self._messages if m.get("role") != "system"]
+
+        if len(other_msgs) <= self._COMPACTION_KEEP_RECENT:
+            return False
+
+        raw_split = len(other_msgs) - self._COMPACTION_KEEP_RECENT
+        split = self._align_cut_to_tool_boundary(other_msgs, raw_split)
+        old_block = other_msgs[:split]
+        recent_block = other_msgs[split:]
+
+        old_tokens = sum(_estimate_message_tokens(m) for m in old_block)
+        if old_tokens < 2000:
+            return False
+
+        for m in old_block:
+            self._journal_from_message(m)
+
+        serialized = self._serialize_for_summary(old_block)
+
+        try:
+            response = await llm_client.complete(
+                messages=[
+                    {"role": "system", "content": _COMPACTION_PROMPT},
+                    {"role": "user", "content": serialized},
+                ],
+                tools=None,
+                max_tokens=1500,
+                temperature=0.0,
+            )
+            summary = response.content or ""
+        except Exception:
+            logger.warning("compaction_llm_failed", exc_info=True)
+            return False
+
+        if not summary.strip():
+            return False
+
+        digest_msg = {
+            "role": "user",
+            "content": (
+                f"[SESSION HISTORY — LLM-generated summary of "
+                f"steps completed so far]\n{summary.strip()}"
+            ),
+        }
+        ack_msg = {
+            "role": "assistant",
+            "content": "Understood — I have the session history summary in context.",
+        }
+
+        self._messages = system_msgs + [digest_msg, ack_msg] + recent_block
+        logger.info(
+            "conversation_compacted",
+            old_tokens=old_tokens,
+            new_tokens=_estimate_message_tokens(digest_msg),
+            remaining_messages=len(self._messages),
+        )
+        return True
+
+    @staticmethod
+    def _serialize_for_summary(messages: list[dict[str, Any]]) -> str:
+        """Convert messages into a plain-text format for the summarizer."""
+        lines: list[str] = []
+        for m in messages:
+            role = m.get("role", "?")
+            if role == "assistant":
+                tc = m.get("tool_calls")
+                if tc:
+                    tools = ", ".join(
+                        t.get("function", {}).get("name", "?") for t in tc
+                    )
+                    lines.append(f"ASSISTANT: [called {tools}]")
+                content = m.get("content", "")
+                if content:
+                    lines.append(f"ASSISTANT: {content[:300]}")
+            elif role == "tool":
+                content = m.get("content", "")[:200]
+                lines.append(f"TOOL_RESULT: {content}")
+            elif role == "user":
+                content = m.get("content", "")[:300]
+                lines.append(f"USER: {content}")
+        return "\n".join(lines)
+
+    def set_history_budget(self, budget_tokens: int) -> None:
+        """Set a dynamic token budget for conversation history.
+
+        Called by the orchestrator before each LLM call with the remaining
+        tokens after accounting for system prompt, tool definitions, and
+        completion reserve.  Takes precedence over ``_max_context_tokens``
+        when positive.  Triggers an immediate prune so messages are
+        trimmed before the LLM call.
+        """
+        self._dynamic_history_budget = max(budget_tokens, 0)
+        if self._dynamic_history_budget > 0:
+            self._prune()
+
+    def estimated_tokens(self) -> int:
+        """Return the estimated total token count across all messages."""
+        return sum(_estimate_message_tokens(m) for m in self._messages)
+
     def _prune(self) -> None:
         """Keep system message + last N messages, preserving tool_call/result pairs.
 
@@ -168,8 +364,53 @@ class Memory:
         2. Token-budget cap (estimates tokens, drops oldest turns until under budget).
         """
         self._prune_by_count()
-        if self._max_context_tokens > 0:
-            self._prune_by_tokens()
+        budget = self._dynamic_history_budget or self._max_context_tokens
+        if budget > 0:
+            self._prune_by_tokens(budget)
+
+    def _journal_from_message(self, msg: dict[str, Any]) -> None:
+        """Extract a compact progress entry from a message about to be pruned."""
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            tools = []
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                tools.append(fn.get("name", "?"))
+            entry = f"called {', '.join(tools)}"
+            content = msg.get("content", "")
+            if content and len(content) > 5:
+                snippet = content[:80].replace("\n", " ").strip()
+                entry += f" — {snippet}"
+            self._append_journal(entry)
+        elif msg.get("role") == "tool":
+            try:
+                parsed = json.loads(msg.get("content", "{}"))
+                status = parsed.get("status", "?")
+                output = parsed.get("output", "")[:60].replace("\n", " ")
+                self._append_journal(f"  → {status}: {output}")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    def _append_journal(self, entry: str) -> None:
+        trimmed = entry[:self._JOURNAL_ENTRY_MAX_CHARS]
+        self._progress_journal.append(trimmed)
+        if len(self._progress_journal) > self._JOURNAL_MAX_ENTRIES:
+            self._progress_journal = self._progress_journal[-self._JOURNAL_MAX_ENTRIES:]
+
+    @staticmethod
+    def _align_cut_to_tool_boundary(msgs: list[dict[str, Any]], cut: int) -> int:
+        """Advance cut past orphaned tool messages and any assistant whose
+        tool results would be split across the boundary."""
+        while cut < len(msgs) and msgs[cut].get("role") == "tool":
+            cut += 1
+        if cut < len(msgs) and msgs[cut].get("role") == "assistant" and "tool_calls" in msgs[cut]:
+            expected_ids = {tc.get("id") for tc in msgs[cut]["tool_calls"]}
+            has_results_after = any(
+                m.get("role") == "tool" and m.get("tool_call_id") in expected_ids
+                for m in msgs[cut + 1:]
+            )
+            if not has_results_after:
+                cut += 1
+        return cut
 
     def _prune_by_count(self) -> None:
         if len(self._messages) <= self._max_messages:
@@ -183,38 +424,42 @@ class Memory:
             return
 
         cut = len(other_msgs) - keep
-        while cut < len(other_msgs):
-            msg = other_msgs[cut]
-            if msg.get("role") == "tool":
-                cut += 1
-            else:
-                break
+        cut = self._align_cut_to_tool_boundary(other_msgs, cut)
 
+        for m in other_msgs[:cut]:
+            self._journal_from_message(m)
         self._messages = system_msgs + other_msgs[cut:]
 
-    def _prune_by_tokens(self) -> None:
+    def _prune_by_tokens(self, budget_override: int = 0) -> None:
+        cap = budget_override or self._max_context_tokens
         total = sum(_estimate_message_tokens(m) for m in self._messages)
-        if total <= self._max_context_tokens:
+        if total <= cap:
             return
 
         system_msgs = [m for m in self._messages if m["role"] == "system"]
         other_msgs = [m for m in self._messages if m["role"] != "system"]
-        system_tokens = sum(_estimate_message_tokens(m) for m in system_msgs)
-        budget = self._max_context_tokens - system_tokens
+        if budget_override:
+            budget = budget_override
+        else:
+            system_tokens = sum(_estimate_message_tokens(m) for m in system_msgs)
+            budget = cap - system_tokens
 
         while other_msgs and sum(_estimate_message_tokens(m) for m in other_msgs) > budget:
             removed = other_msgs.pop(0)
+            self._journal_from_message(removed)
             if removed.get("role") == "assistant" and "tool_calls" in removed:
-                expected_ids = {tc["id"] for tc in removed["tool_calls"]}
+                expected_ids = {tc.get("id") for tc in removed["tool_calls"]} - {None}
                 while other_msgs and other_msgs[0].get("role") == "tool" and other_msgs[0].get("tool_call_id") in expected_ids:
-                    other_msgs.pop(0)
+                    dropped_tool = other_msgs.pop(0)
+                    self._journal_from_message(dropped_tool)
 
         self._messages = system_msgs + other_msgs
 
     def ensure_integrity(self) -> int:
         """Ensure all assistant tool_calls have matching tool result messages.
 
-        Performs two repairs:
+        Performs three repairs:
+        0. Removes orphaned tool-result messages whose assistant was pruned.
         1. Moves non-tool messages that are wedged between an assistant
            tool_calls message and its tool results to after the tool results.
            Many LLM providers (e.g. DeepSeek) require tool results to be
@@ -224,6 +469,22 @@ class Memory:
         Returns the number of repairs made.  Call before sending to the LLM.
         """
         repairs = 0
+
+        all_tc_ids: set[str] = set()
+        for m in self._messages:
+            if m.get("role") == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    tc_id = tc.get("id")
+                    if tc_id:
+                        all_tc_ids.add(tc_id)
+        before = len(self._messages)
+        self._messages = [
+            m for m in self._messages
+            if not (m.get("role") == "tool" and m.get("tool_call_id") not in all_tc_ids)
+        ]
+        orphans_removed = before - len(self._messages)
+        repairs += orphans_removed
+
         i = 0
         while i < len(self._messages):
             msg = self._messages[i]
@@ -231,7 +492,7 @@ class Memory:
                 i += 1
                 continue
 
-            expected_ids = {tc["id"] for tc in msg["tool_calls"]}
+            expected_ids = {tc.get("id") for tc in msg["tool_calls"]} - {None}
 
             tool_msgs: list[dict[str, Any]] = []
             displaced_msgs: list[dict[str, Any]] = []
@@ -262,10 +523,11 @@ class Memory:
                     insert_at += 1
 
                 for tc in msg["tool_calls"]:
-                    if tc["id"] in missing:
+                    tc_id = tc.get("id")
+                    if tc_id and tc_id in missing:
                         self._messages.insert(insert_at, {
                             "role": "tool",
-                            "tool_call_id": tc["id"],
+                            "tool_call_id": tc_id,
                             "content": '{"status":"error","output":"Tool call was not executed (loop break or timeout)."}',
                         })
                         insert_at += 1
@@ -285,3 +547,4 @@ class Memory:
         system_msgs = [m for m in self._messages if m["role"] == "system"]
         self._messages = system_msgs
         self._metadata.clear()
+        self._progress_journal.clear()

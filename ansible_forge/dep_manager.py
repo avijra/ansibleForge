@@ -12,6 +12,7 @@ and cache packages locally.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import platform
 import re
@@ -366,6 +367,9 @@ async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, 
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
     except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
         msg = f"Package install timed out after 300s: {needed}"
         logger.error("dep_install_timeout", packages=needed)
         return False, msg

@@ -13,7 +13,11 @@ from ansible_forge.logging import get_logger
 from ansible_forge.persistence.infrastructure_store import InfrastructureStore
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import isolated_runner_dir, materialize_ssh_keys
+from ansible_forge.tools.executor import (
+    isolated_runner_dir,
+    kill_stale_runner_procs,
+    materialize_ssh_keys,
+)
 
 logger = get_logger(__name__)
 
@@ -124,6 +128,7 @@ class DriftDetector(BaseTool):
                     timeout=300,
                 )
             except TimeoutError:
+                kill_stale_runner_procs(run_dir)
                 return ToolResult.fail("Drift detection timed out after 5 minutes.")
 
             for event in result.events:

@@ -46,7 +46,12 @@ export function useTauriIPC(handlers: UseTauriIPCHandlers) {
         handlers.onToggleTerminal
       );
 
-      cleanups = [unlisten1, unlisten2, unlisten3, unlisten4];
+      const fns = [unlisten1, unlisten2, unlisten3, unlisten4];
+      if (!mounted) {
+        fns.forEach((fn) => fn());
+        return;
+      }
+      cleanups = fns;
     })();
 
     return () => {

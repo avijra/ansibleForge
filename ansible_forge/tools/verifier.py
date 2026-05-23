@@ -12,7 +12,11 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
-from ansible_forge.tools.executor import isolated_runner_dir, materialize_ssh_keys
+from ansible_forge.tools.executor import (
+    isolated_runner_dir,
+    kill_stale_runner_procs,
+    materialize_ssh_keys,
+)
 
 logger = get_logger(__name__)
 
@@ -262,6 +266,7 @@ class Verifier(BaseTool):
                     timeout=120,
                 )
             except TimeoutError:
+                kill_stale_runner_procs(run_dir)
                 return ToolResult.fail("Verification timed out after 2 minutes.")
 
             results: list[dict[str, Any]] = []

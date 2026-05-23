@@ -17,6 +17,7 @@ from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
     _resolve_python_interpreter,
     isolated_runner_dir,
+    kill_stale_runner_procs,
     materialize_ssh_keys,
 )
 
@@ -146,6 +147,7 @@ class FactsCollector(BaseTool):
                     timeout=120,
                 )
             except TimeoutError:
+                kill_stale_runner_procs(run_dir)
                 return ToolResult.fail(
                     "Could not gather system information within 2 minutes. "
                     "Check that hosts are reachable and credentials are correct."

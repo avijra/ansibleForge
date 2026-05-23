@@ -100,7 +100,19 @@ class PlaybookValidator:
                 ],
             )
 
-        content = playbook_path.read_text(encoding="utf-8")
+        try:
+            content = playbook_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return ValidationResult(
+                passed=False,
+                issues=[
+                    ValidationIssue(
+                        severity="error",
+                        rule="file_read_error",
+                        message=str(exc),
+                    )
+                ],
+            )
 
         try:
             plays = yaml.safe_load(content)

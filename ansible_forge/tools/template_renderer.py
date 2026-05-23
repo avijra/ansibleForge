@@ -185,7 +185,10 @@ class TemplateRenderer(BaseTool):
             return ToolResult.fail("workspace_path is required when using template_path")
 
         if template_path:
-            full_path = Path(workspace_path) / template_path
+            ws_root = Path(workspace_path).resolve()
+            full_path = (Path(workspace_path) / template_path).resolve()
+            if not full_path.is_relative_to(ws_root):
+                return ToolResult.fail(f"Path escapes workspace: {template_path}")
             if not full_path.exists():
                 return ToolResult.fail(f"Template file not found: {template_path}")
             template_content = full_path.read_text(encoding="utf-8")
