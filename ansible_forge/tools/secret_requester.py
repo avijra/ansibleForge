@@ -22,10 +22,7 @@ _NON_SECRET_PATTERNS: list[re.Pattern[str]] = [
 
 
 def _looks_like_non_secret(name: str) -> bool:
-    for pat in _NON_SECRET_PATTERNS:
-        if pat.search(name):
-            return True
-    return False
+    return any(pat.search(name) for pat in _NON_SECRET_PATTERNS)
 
 
 class SecretRequester(BaseTool):

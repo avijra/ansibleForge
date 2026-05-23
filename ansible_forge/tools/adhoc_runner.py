@@ -6,7 +6,6 @@ import asyncio
 import functools
 import os
 import signal
-import time as _time_mod
 from pathlib import Path
 from typing import Any
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from ansible_forge.agent.llm_client import _patch_deepseek_reasoning
 
 
