@@ -225,7 +225,7 @@ class SessionState:
         self._consecutive_errors = 0
         self._max_error_retries = 3
         self._generation = 0
-        self._last_error_by_tool: dict[str, dict[str, Any]] = {}
+        self._consec_fails_by_tool: dict[str, int] = {}
         self._exec_fail_count = 0
         self._searched_since_exec_fail = False
         self._total_prompt_tokens = 0
@@ -291,15 +291,8 @@ class SessionState:
         return None
 
     def has_repeated_errors(self) -> bool:
-        """Return True if the same tool has failed with the same error 3+ times."""
-        if len(self._last_error_by_tool) == 0:
-            return False
-        recent_names = [c.split(":", 1)[0] for c in self._recent_tool_calls[-10:]]
-        for tool_name in self._last_error_by_tool:
-            count = recent_names.count(tool_name)
-            if count >= 3:
-                return True
-        return False
+        """Return True if any single tool has failed 3+ times consecutively."""
+        return any(c >= 3 for c in self._consec_fails_by_tool.values())
 
 
 class AgentEvent:
@@ -1261,15 +1254,18 @@ class Orchestrator:
 
                             state._consecutive_errors += 1
                             state.last_error = result.error
+                            tool_fails = state._consec_fails_by_tool[tc.name] = (
+                                state._consec_fails_by_tool.get(tc.name, 0) + 1
+                            )
                             if tc.name in self._EXECUTION_TOOLS:
                                 state._exec_fail_count += 1
-                            remaining = max(state._max_error_retries - state._consecutive_errors, 0)
+                            remaining = max(state._max_error_retries - tool_fails, 0)
 
                             if remaining <= 0:
                                 deferred_user_msgs_p.append(
-                                    "You have exhausted all error retries. STOP trying the same "
-                                    "approach. Summarize exactly what went wrong, what you tried, "
-                                    "and ask the user for guidance on how to proceed."
+                                    f"`{tc.name}` has failed {tool_fails} times in a row. "
+                                    "STOP retrying this tool. Switch to an alternative approach "
+                                    "or explain what is blocking you."
                                 )
                                 deferred_events_p.append(AgentEvent("error_recovery", {
                                     "tool": tc.name,
@@ -1298,7 +1294,7 @@ class Orchestrator:
                                 }))
                         else:
                             state._consecutive_errors = 0
-                            state._last_error_by_tool.pop(tc.name, None)
+                            state._consec_fails_by_tool.pop(tc.name, None)
                             if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                                 state._exec_fail_count = 0
                                 state._searched_since_exec_fail = False
@@ -1342,7 +1338,7 @@ class Orchestrator:
                                     '{"status":"error","output":"Tool call skipped — identical call loop detected."}',
                                 )
                             state._recent_tool_calls.clear()
-                            state._last_error_by_tool.clear()
+                            state._consec_fails_by_tool.clear()
                             deferred_user_msgs.append(LOOP_BREAK_PROMPT)
                             deferred_events.append(AgentEvent("error_recovery", {
                                 "tool": tc.name,
@@ -1350,6 +1346,7 @@ class Orchestrator:
                             }))
                             loop_broken = True
                             break
+                        state._recent_tool_calls[:] = state._recent_tool_calls[-5:]
                         deferred_user_msgs.append(LOOP_BREAK_PROMPT)
                         deferred_events.append(AgentEvent("error_recovery", {
                             "tool": tc.name,
@@ -1827,19 +1824,18 @@ class Orchestrator:
                         if not _auto_fixed:
                             state._consecutive_errors += 1
                             state.last_error = result.error
-                            state._last_error_by_tool[tc.name] = {
-                                "error": result.error or "Unknown error",
-                                "args": {k: v for k, v in tc.arguments.items() if k != "_session_id"},
-                            }
+                            tool_fails = state._consec_fails_by_tool[tc.name] = (
+                                state._consec_fails_by_tool.get(tc.name, 0) + 1
+                            )
                             if tc.name in self._EXECUTION_TOOLS:
                                 state._exec_fail_count += 1
-                            remaining = max(state._max_error_retries - state._consecutive_errors, 0)
+                            remaining = max(state._max_error_retries - tool_fails, 0)
 
                             if remaining <= 0:
                                 deferred_user_msgs.append(
-                                    "You have exhausted all error retries. STOP trying the same "
-                                    "approach. Summarize exactly what went wrong, what you tried, "
-                                    "and ask the user for guidance on how to proceed."
+                                    f"`{tc.name}` has failed {tool_fails} times in a row. "
+                                    "STOP retrying this tool. Switch to an alternative approach "
+                                    "or explain what is blocking you."
                                 )
                                 deferred_events.append(AgentEvent("error_recovery", {
                                     "tool": tc.name,
@@ -1868,7 +1864,7 @@ class Orchestrator:
                                 }))
                     else:
                         state._consecutive_errors = 0
-                        state._last_error_by_tool.pop(tc.name, None)
+                        state._consec_fails_by_tool.pop(tc.name, None)
                         if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                             state._exec_fail_count = 0
                             state._searched_since_exec_fail = False
@@ -2240,7 +2236,7 @@ class Orchestrator:
         state._total_cost = 0.0
         state._generation += 1
         state.cancel_active_work()
-        state._last_error_by_tool.clear()
+        state._consec_fails_by_tool.clear()
         state._rejected_output = None
         state._rejected_feedback = None
         state._rejected_tool = None
