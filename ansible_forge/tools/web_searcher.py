@@ -51,7 +51,7 @@ class WebSearcher(BaseTool):
                         "Search query. Be specific. Good examples: "
                         "'ansible template module j2 file not found fix', "
                         "'ansible.builtin.get_url status_code 304 handling', "
-                        "'ansible openshift install-config.yaml example'"
+                        "'ansible kubernetes deployment manifest example'"
                     ),
                 },
                 "scope": {

@@ -71,7 +71,7 @@ class SecretRequester(BaseTool):
                     "description": (
                         "Human-readable description shown to the user explaining what "
                         "this secret is for. Be specific so the user knows exactly what "
-                        "to provide. Example: 'OpenShift pull secret JSON from cloud.redhat.com'"
+                        "to provide. Example: 'Pull secret JSON from the vendor portal'"
                     ),
                 },
                 "sensitive_type": {

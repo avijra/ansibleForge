@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from functools import partial
@@ -53,6 +54,24 @@ LOOP_BREAK_PROMPT = (
 
 _PROGRESS_INTERVAL = 5
 _CHUNK_DEAD_TICKS = 24
+
+_NATIVE_TOOL_XML_RE = re.compile(
+    r"<[｜\|]{2}DSML[｜\|]{2}tool_calls>.*?</[｜\|]{2}DSML[｜\|]{2}tool_calls>",
+    re.DOTALL,
+)
+
+
+def _strip_native_tool_xml(content: str | None) -> str | None:
+    """Strip leaked native tool-call XML from LLM content.
+
+    Some models (e.g. DeepSeek) occasionally emit tool calls in their native
+    XML format instead of through the function-calling API.  This prevents
+    that raw XML from reaching the user.
+    """
+    if not content:
+        return content
+    cleaned = _NATIVE_TOOL_XML_RE.sub("", content).rstrip()
+    return cleaned or None
 
 _PARALLELIZABLE_TOOLS = frozenset({
     "collect_facts", "test_connectivity", "search_docs", "web_search",
@@ -1052,7 +1071,7 @@ class Orchestrator:
                 })
 
                 if not response.has_tool_calls:
-                    content = (response.content or "").strip()
+                    content = (_strip_native_tool_xml(response.content) or "").strip()
                     if not content and state._empty_response_retries < 2:
                         state._empty_response_retries += 1
                         logger.warning(
@@ -1080,7 +1099,7 @@ class Orchestrator:
                     state.status = SessionStatus.COMPLETED
                     yielded_terminal = True
                     yield AgentEvent("message", {
-                        "content": response.content or "",
+                        "content": _strip_native_tool_xml(response.content) or "",
                         "usage": response.usage,
                     })
                     return
@@ -1103,8 +1122,9 @@ class Orchestrator:
                 if not streamed:
                     if response.reasoning_content:
                         yield AgentEvent("thinking", {"content": response.reasoning_content})
-                    if response.content:
-                        yield AgentEvent("thinking", {"content": response.content})
+                    cleaned_content = _strip_native_tool_xml(response.content)
+                    if cleaned_content:
+                        yield AgentEvent("thinking", {"content": cleaned_content})
 
                 loop_broken = False
                 deferred_user_msgs: list[str] = []
@@ -1320,6 +1340,8 @@ class Orchestrator:
                                     remaining_tc.id,
                                     '{"status":"error","output":"Tool call skipped — identical call loop detected."}',
                                 )
+                            state._recent_tool_calls.clear()
+                            state._last_error_by_tool.clear()
                             deferred_user_msgs.append(LOOP_BREAK_PROMPT)
                             deferred_events.append(AgentEvent("error_recovery", {
                                 "tool": tc.name,
