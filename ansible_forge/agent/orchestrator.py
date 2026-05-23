@@ -276,7 +276,7 @@ class SessionState:
         if len(self._last_error_by_tool) == 0:
             return False
         recent_names = [c.split(":", 1)[0] for c in self._recent_tool_calls[-10:]]
-        for tool_name, info in self._last_error_by_tool.items():
+        for tool_name in self._last_error_by_tool:
             count = recent_names.count(tool_name)
             if count >= 3:
                 return True
