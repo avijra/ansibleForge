@@ -1298,6 +1298,7 @@ class Orchestrator:
                                 }))
                         else:
                             state._consecutive_errors = 0
+                            state._last_error_by_tool.pop(tc.name, None)
                             if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                                 state._exec_fail_count = 0
                                 state._searched_since_exec_fail = False
@@ -1867,6 +1868,7 @@ class Orchestrator:
                                 }))
                     else:
                         state._consecutive_errors = 0
+                        state._last_error_by_tool.pop(tc.name, None)
                         if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                             state._exec_fail_count = 0
                             state._searched_since_exec_fail = False
