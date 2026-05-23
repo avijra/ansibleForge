@@ -307,7 +307,7 @@ class Memory:
         }
 
         self._messages = system_msgs + [digest_msg, ack_msg] + recent_block
-        logger.info(
+        logger.info(  # type: ignore[call-arg]
             "conversation_compacted",
             old_tokens=old_tokens,
             new_tokens=_estimate_message_tokens(digest_msg),
