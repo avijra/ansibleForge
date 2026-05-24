@@ -52,7 +52,7 @@ async function pickDirectory(): Promise<string | null> {
 }
 
 export function App() {
-  const { health, error: healthError, refresh: refreshHealth } = useHealth();
+  const { health, error: healthError, starting: backendStarting, refresh: refreshHealth } = useHealth();
   const session = useSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
@@ -507,7 +507,7 @@ export function App() {
         )}
 
         <main className="flex flex-1 min-w-0 flex-col overflow-hidden">
-          {healthError && (
+          {healthError && !backendStarting && (
             <div className="mx-4 mt-3 flex items-center gap-3 rounded-lg border border-red-700/50 bg-red-950/30 px-4 py-2">
               <span className="text-xs text-red-300">
                 <span className="font-medium">Backend unreachable</span> —{" "}
@@ -519,6 +519,14 @@ export function App() {
               >
                 Retry
               </button>
+            </div>
+          )}
+          {backendStarting && (
+            <div className="mx-4 mt-3 flex items-center gap-2 rounded-lg border border-zinc-700/50 bg-zinc-900/50 px-4 py-2">
+              <div className="h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+              <span className="text-xs text-zinc-400">
+                Starting backend...
+              </span>
             </div>
           )}
 

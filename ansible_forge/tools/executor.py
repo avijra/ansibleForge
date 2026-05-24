@@ -382,6 +382,14 @@ class Executor(BaseTool):
                     "minimum": 0,
                     "maximum": 4,
                 },
+                "skip_dry_run": {
+                    "type": "boolean",
+                    "description": (
+                        "Skip automatic dry-run before apply. Use ONLY for "
+                        "playbooks where check mode is known to fail "
+                        "(shell/command-heavy playbooks). Default: false."
+                    ),
+                },
             },
             "required": ["workspace_path", "playbook", "mode"],
         }
@@ -420,6 +428,7 @@ class Executor(BaseTool):
         timeout: int = 0,
         become: bool = False,
         verbosity: int = 0,
+        skip_dry_run: bool = False,
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not playbook:

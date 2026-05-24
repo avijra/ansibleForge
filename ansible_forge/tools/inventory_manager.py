@@ -59,6 +59,14 @@ class InventoryManager(BaseTool):
                     "description": "Host or group variables to set",
                     "additionalProperties": {},
                 },
+                "environment": {
+                    "type": "string",
+                    "description": (
+                        "Environment name (e.g. 'production', 'staging'). When provided, "
+                        "creates inventory under inventory/<environment>/ with group_vars/ "
+                        "and host_vars/ directories following Ansible best practices."
+                    ),
+                },
             },
             "required": ["action", "workspace_path"],
         }
@@ -72,13 +80,21 @@ class InventoryManager(BaseTool):
         host: str = "",
         group: str = "all",
         variables: dict[str, Any] | None = None,
+        environment: str = "",
         **kwargs: Any,
     ) -> ToolResult:
         if not action or not workspace_path:
             return ToolResult.fail("action and workspace_path are required")
 
-        inv_dir = Path(workspace_path) / "inventory"
+        if environment:
+            inv_dir = Path(workspace_path) / "inventory" / environment
+        else:
+            inv_dir = Path(workspace_path) / "inventory"
         inv_dir.mkdir(parents=True, exist_ok=True)
+
+        if environment:
+            (inv_dir / "group_vars").mkdir(exist_ok=True)
+            (inv_dir / "host_vars").mkdir(exist_ok=True)
 
         ext = ".yml" if format == "yaml" else ".ini"
         inv_file = inv_dir / f"hosts{ext}"

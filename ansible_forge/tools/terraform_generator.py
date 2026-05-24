@@ -113,6 +113,38 @@ variable "hcloud_token" {
 """,
 }
 
+BACKEND_TEMPLATES: dict[str, str] = {
+    "s3": """\
+terraform {{
+  backend "s3" {{
+    bucket         = "{bucket}"
+    key            = "{key}"
+    region         = "{region}"
+    use_lockfile   = true
+    encrypt        = true
+  }}
+}}
+""",
+    "gcs": """\
+terraform {{
+  backend "gcs" {{
+    bucket = "{bucket}"
+    prefix = "{key}"
+  }}
+}}
+""",
+    "azurerm": """\
+terraform {{
+  backend "azurerm" {{
+    resource_group_name  = "{resource_group}"
+    storage_account_name = "{storage_account}"
+    container_name       = "{container}"
+    key                  = "{key}"
+  }}
+}}
+""",
+}
+
 ANSIBLE_OUTPUT_BLOCK = """\
 
 # ── Outputs for Ansible handoff ──────────────────────────────────────
@@ -170,6 +202,21 @@ class TerraformGenerator(BaseTool):
                         "(instance IPs, hostnames). Default: false"
                     ),
                 },
+                "backend": {
+                    "type": "object",
+                    "description": (
+                        "Remote state backend configuration. Generates backend.tf. "
+                        "Requires 'type' (s3, gcs, azurerm) and type-specific config "
+                        "like bucket, key, region, etc."
+                    ),
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["s3", "gcs", "azurerm"],
+                        },
+                    },
+                    "additionalProperties": {"type": "string"},
+                },
             },
             "required": ["workspace_path"],
         }
@@ -181,13 +228,14 @@ class TerraformGenerator(BaseTool):
         content: str = "",
         provider: str = "",
         append_ansible_outputs: bool = False,
+        backend: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path:
             return ToolResult.fail("workspace_path is required")
 
-        if not filename and not provider:
-            return ToolResult.fail("Provide either filename+content or provider for auto-generation")
+        if not filename and not provider and not backend:
+            return ToolResult.fail("Provide filename+content, provider, or backend configuration")
 
         ws = Path(workspace_path)
         tf_dir = ws / "terraform"
@@ -206,6 +254,26 @@ class TerraformGenerator(BaseTool):
             provider_file.write_text(provider_block, encoding="utf-8")
             written_files.append("provider.tf")
             logger.info("terraform_provider_written", provider=provider)
+
+        if backend:
+            backend_type = backend.get("type", "")
+            template = BACKEND_TEMPLATES.get(backend_type)
+            if not template:
+                return ToolResult.fail(
+                    f"Unknown backend type: {backend_type}. "
+                    f"Available: {', '.join(BACKEND_TEMPLATES.keys())}"
+                )
+            config = {k: v for k, v in backend.items() if k != "type"}
+            config.setdefault("bucket", "my-terraform-state")
+            config.setdefault("key", "terraform.tfstate")
+            config.setdefault("region", "us-east-1")
+            config.setdefault("resource_group", "terraform-state-rg")
+            config.setdefault("storage_account", "tfstateaccount")
+            config.setdefault("container", "tfstate")
+            backend_file = tf_dir / "backend.tf"
+            backend_file.write_text(template.format(**config), encoding="utf-8")
+            written_files.append("backend.tf")
+            logger.info("terraform_backend_written", backend_type=backend_type)
 
         if filename and content:
             target = (tf_dir / filename).resolve()

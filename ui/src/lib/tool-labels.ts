@@ -25,6 +25,7 @@ export const toolLabels: Record<string, string> = {
   compare_configs: "Comparing Configurations",
   manage_schedule: "Managing Schedule",
   import_project: "Importing Project",
+  request_config: "Collecting Configuration",
   analyze_logs: "Analyzing Run History",
   generate_rollback: "Generating Rollback Plan",
   verify_state: "Verifying State",

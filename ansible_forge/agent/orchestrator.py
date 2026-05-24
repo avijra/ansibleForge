@@ -9,6 +9,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from ansible_forge.agent import infra_tracker
@@ -23,6 +24,8 @@ from ansible_forge.logging import get_logger
 from ansible_forge.persistence.session_store import SessionStore
 from ansible_forge.safety.approval import ApprovalGate, ApprovalStatus
 from ansible_forge.safety.diff_analyzer import DiffAnalyzer
+from ansible_forge.safety.dry_run import DryRunner
+from ansible_forge.safety.risk_scorer import RiskLevel, score_playbook_risk
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.safety.validators import PlaybookValidator
 from ansible_forge.tools.base import ToolResult, ToolStatus
@@ -53,7 +56,7 @@ LOOP_BREAK_PROMPT = (
 )
 
 _PROGRESS_INTERVAL = 5
-_CHUNK_DEAD_TICKS = 24
+_CHUNK_DEAD_TICKS = 6
 
 _NATIVE_TOOL_XML_RE = re.compile(
     r"<[｜\|]{2}DSML[｜\|]{2}tool_calls>.*?</[｜\|]{2}DSML[｜\|]{2}tool_calls>",
@@ -138,7 +141,7 @@ _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
         "Package installation continues — downloading required libraries.",
         "Almost done with collection and dependency installation.",
     ],
-    "run_molecule_test": [
+    "run_molecule": [
         "Running Molecule tests to validate the role...",
         "Tests still running — waiting for all scenarios to complete.",
         "Test execution in progress. Will report pass/fail results.",
@@ -235,6 +238,7 @@ class SessionState:
         self._rejected_feedback: str | None = None
         self._rejected_tool: str | None = None
         self._approved_playbooks: set[str] = set()
+        self._checked_playbooks: dict[str, dict[str, Any]] = {}
         self._tf_plan_ran: set[str] = set()
         self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
@@ -1386,45 +1390,111 @@ class Orchestrator:
 
                     if self._requires_unapproved_apply_gate(tc, state):
                         playbook_name = tc.arguments.get("playbook", "unknown")
-                        state.status = SessionStatus.AWAITING_APPROVAL
-                        gate_msg = (
-                            f"Apply mode requested for '{playbook_name}' without a prior "
-                            f"dry-run approval. Approval is required before live execution."
-                        )
-                        yield AgentEvent("approval_required", {
-                            "session_id": state.session_id,
-                            "output": gate_msg,
-                            "data": {"playbook": playbook_name, "mode": "apply"},
-                        })
-                        approval = self._approval_gate.create_request(
-                            session_id=state.session_id,
-                            description=f"Apply {playbook_name} (no prior dry-run)",
-                            diff_summary=gate_msg,
-                            metadata={"playbook": playbook_name, "mode": "apply"},
-                        )
-                        gate_status = await approval.wait(timeout=600)
-                        if state._generation != my_generation:
-                            return
-                        if gate_status == ApprovalStatus.APPROVED:
-                            state.status = SessionStatus.ACTIVE
+                        ws_path = tc.arguments.get("workspace_path", str(state.workspace.path))
+                        skip_dry = tc.arguments.get("skip_dry_run", False)
+
+                        risk = RiskLevel.MEDIUM
+                        diff_summary = ""
+                        auto_checked = False
+
+                        if not skip_dry and playbook_name not in state._checked_playbooks:
+                            try:
+                                yield AgentEvent("progress", {
+                                    "tool": "execute_playbook",
+                                    "elapsed_seconds": 0,
+                                    "message": f"Auto-running dry-run for '{playbook_name}'...",
+                                })
+                                dr = DryRunner()
+                                check_result = await dr.run(
+                                    workspace_path=ws_path,
+                                    playbook=playbook_name,
+                                    inventory=tc.arguments.get("inventory", ""),
+                                    extra_vars=tc.arguments.get("extra_vars"),
+                                    limit=tc.arguments.get("limit", ""),
+                                    tags=tc.arguments.get("tags", ""),
+                                )
+                                if state._generation != my_generation:
+                                    return
+                                check_data = check_result.data or {}
+                                diff_report = check_data.get("diff_summary")
+                                if isinstance(diff_report, dict):
+                                    diff_summary = diff_report.get("summary", "")
+                                elif check_result.output:
+                                    diff_summary = check_result.output[:2000]
+                                playbook_path = Path(ws_path) / playbook_name
+                                risk = score_playbook_risk(playbook_path, diff_report if isinstance(diff_report, dict) else None)
+                                state._checked_playbooks[playbook_name] = {
+                                    "risk": risk, "diff": diff_summary,
+                                }
+                                auto_checked = True
+                            except Exception:
+                                logger.warning("enforced_dryrun_failed", playbook=playbook_name, exc_info=True)
+                        elif playbook_name in state._checked_playbooks:
+                            cached = state._checked_playbooks[playbook_name]
+                            risk = RiskLevel(cached.get("risk", "medium"))
+                            diff_summary = cached.get("diff", "")
+                            auto_checked = True
+
+                        if risk == RiskLevel.LOW and auto_checked:
                             state._approved_playbooks.add(playbook_name)
-                            yield AgentEvent("approval_granted", {
-                                "session_id": state.session_id,
+                            yield AgentEvent("progress", {
+                                "tool": "execute_playbook",
+                                "elapsed_seconds": 0,
+                                "message": f"Dry-run passed (LOW risk) — auto-approved '{playbook_name}'.",
                             })
                         else:
-                            state.status = SessionStatus.REJECTED
-                            feedback = approval.feedback or "User rejected apply without dry-run."
-                            state.memory.add_tool_result(
-                                tc.id,
-                                f'{{"status":"error","output":"Rejected: {feedback}"}}',
+                            state.status = SessionStatus.AWAITING_APPROVAL
+                            gate_msg = (
+                                f"Apply '{playbook_name}' — risk: {risk.upper()}"
                             )
-                            state.memory.add_user(f"User rejected: {feedback}")
-                            yield AgentEvent("approval_rejected", {
+                            if diff_summary:
+                                gate_msg += f"\n\n{diff_summary}"
+                            elif skip_dry:
+                                gate_msg += "\n\nDry-run was skipped (skip_dry_run=true)."
+                            yield AgentEvent("approval_required", {
                                 "session_id": state.session_id,
-                                "feedback": feedback,
+                                "output": gate_msg,
+                                "data": {
+                                    "playbook": playbook_name,
+                                    "mode": "apply",
+                                    "risk_level": str(risk),
+                                    "diff_summary": diff_summary,
+                                    "skip_dry_run": skip_dry,
+                                },
                             })
-                            early_return = True
-                            break
+                            approval = self._approval_gate.create_request(
+                                session_id=state.session_id,
+                                description=f"Apply {playbook_name} ({risk} risk)",
+                                diff_summary=gate_msg,
+                                metadata={
+                                    "playbook": playbook_name,
+                                    "mode": "apply",
+                                    "risk_level": str(risk),
+                                },
+                            )
+                            gate_status = await approval.wait(timeout=600)
+                            if state._generation != my_generation:
+                                return
+                            if gate_status == ApprovalStatus.APPROVED:
+                                state.status = SessionStatus.ACTIVE
+                                state._approved_playbooks.add(playbook_name)
+                                yield AgentEvent("approval_granted", {
+                                    "session_id": state.session_id,
+                                })
+                            else:
+                                state.status = SessionStatus.REJECTED
+                                feedback = approval.feedback or "User rejected execution."
+                                state.memory.add_tool_result(
+                                    tc.id,
+                                    f'{{"status":"error","output":"Rejected: {feedback}"}}',
+                                )
+                                state.memory.add_user(f"User rejected: {feedback}")
+                                yield AgentEvent("approval_rejected", {
+                                    "session_id": state.session_id,
+                                    "feedback": feedback,
+                                })
+                                early_return = True
+                                break
 
                     if is_file_writing_tool(tc.name):
                         try:
@@ -2184,8 +2254,6 @@ class Orchestrator:
         if not inv_path:
             return False
         try:
-            from pathlib import Path
-
             import yaml
 
             inv_file = Path(inv_path)
@@ -2289,6 +2357,7 @@ class Orchestrator:
         state._rejected_feedback = None
         state._rejected_tool = None
         state._approved_playbooks.clear()
+        state._checked_playbooks.clear()
         state._tf_plan_ran.clear()
         state.plan = None
         self._approval_gate.cleanup(session_id)

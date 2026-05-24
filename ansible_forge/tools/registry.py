@@ -133,6 +133,7 @@ class ToolRegistry:
 def create_default_registry() -> ToolRegistry:
     """Instantiate a registry with all built-in tools."""
     from ansible_forge.tools.adhoc_runner import AdhocRunner
+    from ansible_forge.tools.config_requester import ConfigRequester
     from ansible_forge.tools.connectivity_tester import ConnectivityTester
     from ansible_forge.tools.doc_searcher import DocSearcher
     from ansible_forge.tools.drift_detector import DriftDetector
@@ -147,6 +148,7 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.lint_runner import LintRunner
     from ansible_forge.tools.local_exec import LocalExec
     from ansible_forge.tools.memory_tool import MemoryTool
+    from ansible_forge.tools.molecule_runner import MoleculeRunner
     from ansible_forge.tools.playbook_generator import PlaybookGenerator
     from ansible_forge.tools.project_importer import ProjectImporter
     from ansible_forge.tools.role_scaffolder import RoleScaffolder
@@ -191,7 +193,9 @@ def create_default_registry() -> ToolRegistry:
         TerraformGenerator,
         TerraformExecutor,
         TerraformInventoryBridge,
+        ConfigRequester,
         MemoryTool,
+        MoleculeRunner,
         SessionSearchTool,
     ):
         registry.register(tool_cls())

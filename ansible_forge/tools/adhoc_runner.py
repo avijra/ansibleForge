@@ -302,10 +302,19 @@ class AdhocRunner(BaseTool):
                 )
 
         if not check_mode and _is_destructive_adhoc(module, module_args):
-            logger.warning(
-                "adhoc_destructive_no_check",
-                module=module,
-                module_args=module_args[:200],
+            return ToolResult(
+                status=ToolStatus.NEEDS_APPROVAL,
+                output=(
+                    f"Destructive operation detected: `{module}` with args "
+                    f"matching a destructive state (absent/stopped/removed/purged). "
+                    f"Approve to proceed, or re-run with check_mode=true to preview."
+                ),
+                data={
+                    "module": module,
+                    "module_args": module_args[:500],
+                    "risk_level": "high",
+                    "destructive": True,
+                },
             )
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
@@ -488,15 +497,8 @@ class AdhocRunner(BaseTool):
                     },
                 )
 
-            destructive_note = ""
-            if not check_mode and _is_destructive_adhoc(module, module_args):
-                destructive_note = (
-                    " [WARN: This was a destructive operation (state=absent/stopped) "
-                    "run without check_mode. Consider using check_mode=true first next time.]"
-                )
-
             return ToolResult.ok(
-                output=f"Command completed on {total} host(s) — all successful.{destructive_note}",
+                output=f"Command completed on {total} host(s) — all successful.",
                 host_results=host_results,
                 module=module,
                 module_args=module_args,

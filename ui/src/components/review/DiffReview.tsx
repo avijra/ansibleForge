@@ -168,11 +168,24 @@ function TaskList({ diffs }: { diffs: DiffBlock[] }) {
   );
 }
 
+const RISK_STYLES: Record<string, { bg: string; text: string; border: string; label: string }> = {
+  low: { bg: "bg-emerald-950/30", text: "text-emerald-400", border: "border-emerald-800/30", label: "LOW" },
+  medium: { bg: "bg-amber-950/15", text: "text-amber-400", border: "border-amber-800/30", label: "MEDIUM" },
+  high: { bg: "bg-orange-950/20", text: "text-orange-400", border: "border-orange-800/30", label: "HIGH" },
+  critical: { bg: "bg-red-950/25", text: "text-red-400", border: "border-red-800/30", label: "CRITICAL" },
+};
+
 export function DiffReview({ event, isPending, onApprove, onReject }: DiffReviewProps) {
   const allDiffs = useMemo(() => extractDiffs(event), [event]);
   const output = (event.data.output as string) || "Execution requires your approval.";
   const [resolved, setResolved] = useState<"approved" | "rejected" | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  const nested = (event.data.data as Record<string, unknown>) ?? event.data;
+  const riskLevel = ((nested.risk_level as string) || "").toLowerCase();
+  const riskStyle = RISK_STYLES[riskLevel];
+  const isCritical = riskLevel === "critical";
 
   const handleApprove = useCallback(() => {
     setResolved("approved");
@@ -213,10 +226,15 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
   }
 
   return (
-    <div className="animate-slide-in rounded-lg border border-amber-800/30 bg-amber-950/15 shadow-[0_0_12px_-4px_rgba(245,158,11,0.12)] p-3 space-y-2">
+    <div className={cn("animate-slide-in rounded-lg border shadow-[0_0_12px_-4px_rgba(245,158,11,0.12)] p-3 space-y-2", riskStyle?.border ?? "border-amber-800/30", riskStyle?.bg ?? "bg-amber-950/15")}>
       <div className="flex items-center gap-2">
-        <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+        <ShieldAlert className={cn("h-3.5 w-3.5", riskStyle?.text ?? "text-amber-400")} />
         <span className="text-xs font-semibold text-amber-300">Approval Required</span>
+        {riskStyle && (
+          <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide", riskStyle.text, riskStyle.bg, "border", riskStyle.border)}>
+            {riskStyle.label}
+          </span>
+        )}
         {actionCount > 0 && (
           <span className="text-[10px] text-amber-500/70">
             · {actionCount} action{actionCount !== 1 ? "s" : ""}
@@ -255,10 +273,31 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
         </>
       )}
 
+      {isCritical && (
+        <div className="flex items-center gap-2 rounded-md border border-red-800/30 bg-red-950/30 px-3 py-2">
+          <span className="text-[11px] text-red-300">
+            Type <strong>YES</strong> to confirm this critical operation:
+          </span>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="YES"
+            className="w-16 rounded border border-red-700/50 bg-red-950/50 px-2 py-0.5 text-xs text-red-200 placeholder-red-700 focus:border-red-500 focus:outline-none"
+          />
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         <button
           onClick={handleApprove}
-          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 transition-colors"
+          disabled={isCritical && confirmText !== "YES"}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium text-white transition-colors",
+            isCritical && confirmText !== "YES"
+              ? "bg-zinc-700 cursor-not-allowed opacity-50"
+              : "bg-emerald-600 hover:bg-emerald-500"
+          )}
         >
           <Check className="h-3 w-3" />
           Approve

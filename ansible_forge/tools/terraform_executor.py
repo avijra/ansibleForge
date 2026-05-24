@@ -78,7 +78,7 @@ class TerraformExecutor(BaseTool):
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["init", "plan", "apply", "destroy", "import", "output", "state", "validate", "fmt", "workspace"],
+                    "enum": ["init", "plan", "apply", "destroy", "import", "output", "state", "state_mv", "state_rm", "validate", "fmt", "workspace"],
                     "description": "Terraform action to execute",
                 },
                 "var_file": {
@@ -504,6 +504,41 @@ class TerraformExecutor(BaseTool):
             output=f"Infrastructure state: {len(resources)} resource(s) currently managed.",
             resources=resources,
             resource_details=resource_details,
+        )
+
+    async def _do_state_mv(
+        self, tf: str, tf_dir: Path, env: dict,
+        variables: dict | None = None, timeout: int = 0,
+        _live_queue: asyncio.Queue | None = None, **_: Any,
+    ) -> ToolResult:
+        if not variables or "source" not in variables or "destination" not in variables:
+            return ToolResult.fail(
+                "state_mv requires 'source' and 'destination' in variables. "
+                "Example: variables={source: 'aws_instance.old', destination: 'aws_instance.new'}"
+            )
+        src = variables["source"]
+        dst = variables["destination"]
+        return ToolResult(
+            status=ToolStatus.NEEDS_APPROVAL,
+            output=f"Terraform state mv: rename '{src}' → '{dst}' in state. This modifies the state file.",
+            data={"action": "state_mv", "source": src, "destination": dst, "risk_level": "high"},
+        )
+
+    async def _do_state_rm(
+        self, tf: str, tf_dir: Path, env: dict,
+        variables: dict | None = None, timeout: int = 0,
+        _live_queue: asyncio.Queue | None = None, **_: Any,
+    ) -> ToolResult:
+        if not variables or "address" not in variables:
+            return ToolResult.fail(
+                "state_rm requires 'address' in variables. "
+                "Example: variables={address: 'aws_instance.example'}"
+            )
+        addr = variables["address"]
+        return ToolResult(
+            status=ToolStatus.NEEDS_APPROVAL,
+            output=f"Terraform state rm: remove '{addr}' from state. The real resource will NOT be destroyed but Terraform will no longer manage it.",
+            data={"action": "state_rm", "address": addr, "risk_level": "high"},
         )
 
     async def _do_workspace(

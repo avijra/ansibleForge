@@ -24,9 +24,49 @@ galaxy_info:
   description: "{description}"
   license: MIT
   min_ansible_version: "2.17"
-  platforms: []
+  platforms: {platforms}
   galaxy_tags: []
 dependencies: []
+"""
+
+DEFAULT_MOLECULE_YML = """\
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: "{role_name}-test"
+    image: "geerlingguy/docker-ubuntu2404-ansible:latest"
+    pre_build_image: true
+    command: ""
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+provisioner:
+  name: ansible
+verifier:
+  name: ansible
+"""
+
+DEFAULT_CONVERGE_YML = """\
+---
+- name: Converge
+  hosts: all
+  roles:
+    - role: {role_name}
+"""
+
+DEFAULT_VERIFY_YML = """\
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Placeholder verification
+      ansible.builtin.assert:
+        that: true
 """
 
 DEFAULT_TASKS_MAIN = """\
@@ -92,6 +132,15 @@ class RoleScaffolder(BaseTool):
                     "description": "Map of template filename -> content to write into templates/ (optional)",
                     "additionalProperties": {"type": "string"},
                 },
+                "platforms": {
+                    "type": "array",
+                    "description": "List of target OS families for meta/main.yml (e.g. ['Ubuntu', 'EL', 'Debian'])",
+                    "items": {"type": "string"},
+                },
+                "molecule": {
+                    "type": "boolean",
+                    "description": "Generate a default Molecule test scenario (default: true)",
+                },
             },
             "required": ["role_name", "workspace_path"],
         }
@@ -105,6 +154,8 @@ class RoleScaffolder(BaseTool):
         handlers_content: str = "",
         meta_description: str = "",
         templates: dict[str, str] | None = None,
+        platforms: list[str] | None = None,
+        molecule: bool = True,
         **kwargs: Any,
     ) -> ToolResult:
         if not role_name or not workspace_path:
@@ -121,6 +172,11 @@ class RoleScaffolder(BaseTool):
             subdir.mkdir(parents=True, exist_ok=True)
             created_dirs.append(str(subdir))
 
+        platforms_yaml = "[]"
+        if platforms:
+            entries = "\n".join(f"    - name: {p}" for p in platforms)
+            platforms_yaml = f"\n{entries}"
+
         (roles_dir / "tasks" / "main.yml").write_text(
             tasks_content or DEFAULT_TASKS_MAIN.format(role_name=role_name), encoding="utf-8"
         )
@@ -131,12 +187,34 @@ class RoleScaffolder(BaseTool):
             handlers_content or DEFAULT_HANDLERS_MAIN.format(role_name=role_name), encoding="utf-8"
         )
         (roles_dir / "meta" / "main.yml").write_text(
-            DEFAULT_META.format(description=meta_description or role_name), encoding="utf-8"
+            DEFAULT_META.format(
+                description=meta_description or role_name,
+                platforms=platforms_yaml,
+            ),
+            encoding="utf-8",
+        )
+        (roles_dir / "vars" / "main.yml").write_text(
+            f"---\n# Internal variables for {role_name} (not user-facing)\n",
+            encoding="utf-8",
         )
 
         if templates:
             for tpl_name, tpl_content in templates.items():
                 (roles_dir / "templates" / tpl_name).write_text(tpl_content, encoding="utf-8")
+
+        if molecule:
+            mol_dir = roles_dir / "molecule" / "default"
+            mol_dir.mkdir(parents=True, exist_ok=True)
+            created_dirs.append(str(mol_dir))
+            (mol_dir / "molecule.yml").write_text(
+                DEFAULT_MOLECULE_YML.format(role_name=role_name), encoding="utf-8"
+            )
+            (mol_dir / "converge.yml").write_text(
+                DEFAULT_CONVERGE_YML.format(role_name=role_name), encoding="utf-8"
+            )
+            (mol_dir / "verify.yml").write_text(
+                DEFAULT_VERIFY_YML.format(role_name=role_name), encoding="utf-8"
+            )
 
         return ToolResult.ok(
             output=f"Role '{role_name}' scaffolded at {roles_dir}",

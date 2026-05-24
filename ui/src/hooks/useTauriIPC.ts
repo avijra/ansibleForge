@@ -66,6 +66,35 @@ export function useTauriIPC(handlers: UseTauriIPCHandlers) {
   ]);
 }
 
+export function useBackendReady(): boolean {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let cleanup: CleanupFn | undefined;
+    let mounted = true;
+
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      if (!mounted) return;
+
+      cleanup = await listen<{ status: string }>("backend-status", (event) => {
+        if (event.payload.status === "ready") {
+          setReady(true);
+        }
+      });
+    })();
+
+    return () => {
+      mounted = false;
+      cleanup?.();
+    };
+  }, []);
+
+  return ready;
+}
+
 export function useUpdateStatus(): UpdateStatus {
   const [status, setStatus] = useState<UpdateStatus>({ status: "idle" });
 

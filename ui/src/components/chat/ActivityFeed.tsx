@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageSquare, WifiOff, XCircle as XC, Shield, KeyRound } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
+import { ConfigRequestEvent, isConfigRequest } from "@/components/review/ConfigRequestEvent";
 import { DiffReview } from "@/components/review/DiffReview";
 import { MessageEvent } from "./events/MessageEvent";
 import { ErrorEvent } from "./events/ErrorEvent";
@@ -707,15 +708,27 @@ export function ActivityFeed({
           sysGroup!.rejected += resolution === "rejected" ? 1 : 0;
         } else {
           if (lastMessageId) hasItemsAfterLastMessage = true;
-          renderItems.push(
-            <DiffReview
-              key={event.id}
-              event={event}
-              isPending={isPendingApproval}
-              onApprove={onApprove}
-              onReject={onReject}
-            />
-          );
+          if (isConfigRequest(event)) {
+            renderItems.push(
+              <ConfigRequestEvent
+                key={event.id}
+                event={event}
+                isPending={isPendingApproval}
+                onApprove={onApprove}
+                onReject={onReject}
+              />
+            );
+          } else {
+            renderItems.push(
+              <DiffReview
+                key={event.id}
+                event={event}
+                isPending={isPendingApproval}
+                onApprove={onApprove}
+                onReject={onReject}
+              />
+            );
+          }
         }
         break;
       }
