@@ -307,10 +307,10 @@ class Executor(BaseTool):
             "Execute an Ansible playbook using ansible-runner. Supports two modes: "
             "'check' (dry-run with --check --diff to preview changes without applying) "
             "and 'apply' (actually execute changes on target hosts). Supports limit, "
-            "tags, skip_tags, start_at_task, forks, timeout, and verbosity for full CLI "
-            "parity. Set timeout based on expected duration — default is 1 hour, max 2 "
-            "hours. Estimate timeout from task complexity and host count. "
-            "Always prefer 'check' mode first."
+            "tags, skip_tags, start_at_task, forks, timeout, become, and verbosity for "
+            "full CLI parity. Default timeout: 1 hour. Max: 24 hours (for long operations "
+            "like cluster installs). Estimate timeout from task complexity and host count. "
+            "Always prefer 'check' mode first to preview changes before applying."
         )
 
     @property
@@ -612,6 +612,9 @@ class Executor(BaseTool):
             "detected_logs": detected_logs,
         }
 
+        if mode == "apply" and result.status == "successful":
+            self._cache_gathered_facts(ws, result)
+
         if mode == "check":
             if result.status == "successful":
                 return ToolResult(
@@ -633,6 +636,47 @@ class Executor(BaseTool):
             "Deployment failed — check the execution log below for details.",
             **result_data,
         )
+
+    @staticmethod
+    def _cache_gathered_facts(ws: Path, runner: Any) -> None:
+        """Update .tuyere/artifacts/host_facts.json with facts from setup events."""
+        import json as _json
+
+        facts_path = ws / ".tuyere" / "artifacts" / "host_facts.json"
+        existing: dict[str, Any] = {}
+        if facts_path.exists():
+            with contextlib.suppress(Exception):
+                existing = _json.loads(facts_path.read_text(encoding="utf-8"))
+
+        updated = False
+        for event in runner.events:
+            if event.get("event") not in ("runner_on_ok", "runner_on_changed"):
+                continue
+            ev_data = event.get("event_data", {})
+            res = ev_data.get("res", {})
+            ansible_facts = res.get("ansible_facts", {})
+            if not ansible_facts:
+                continue
+            host = ev_data.get("host", "")
+            if not host:
+                continue
+            curated: dict[str, Any] = {}
+            for key in ("ansible_os_family", "ansible_distribution",
+                        "ansible_distribution_version", "ansible_architecture",
+                        "ansible_hostname", "ansible_fqdn", "ansible_default_ipv4",
+                        "ansible_memtotal_mb", "ansible_processor_vcpus",
+                        "ansible_mounts", "ansible_pkg_mgr", "ansible_service_mgr",
+                        "ansible_kernel"):
+                if key in ansible_facts:
+                    curated[key] = ansible_facts[key]
+            if curated:
+                existing[host] = curated
+                updated = True
+
+        if updated:
+            facts_path.parent.mkdir(parents=True, exist_ok=True)
+            facts_path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+            logger.info("host_facts_cached", path=str(facts_path), hosts=len(existing))
 
 
 _RESULT_KEYS = (

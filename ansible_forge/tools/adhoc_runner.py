@@ -13,7 +13,7 @@ import ansible_runner
 
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
-from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
 from ansible_forge.tools.executor import (
     _LIVE_EVENT_TYPES,
     _format_live_event,
@@ -120,6 +120,24 @@ async def _tail_runner_stdout(
             pass
 
 
+_DESTRUCTIVE_STATES = {"absent", "stopped", "removed", "purged", "killed", "dead"}
+
+_DESTRUCTIVE_MODULES = frozenset({
+    "ansible.builtin.file", "ansible.builtin.user", "ansible.builtin.group",
+    "ansible.builtin.apt", "ansible.builtin.yum", "ansible.builtin.dnf",
+    "ansible.builtin.pip", "ansible.builtin.service", "ansible.builtin.systemd",
+    "ansible.builtin.cron", "file", "user", "group", "apt", "yum", "dnf",
+    "pip", "service", "systemd", "cron",
+})
+
+
+def _is_destructive_adhoc(module: str, module_args: str) -> bool:
+    if module not in _DESTRUCTIVE_MODULES:
+        return False
+    args_lower = module_args.lower()
+    return any(f"state={s}" in args_lower for s in _DESTRUCTIVE_STATES)
+
+
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
 
@@ -133,10 +151,12 @@ class AdhocRunner(BaseTool):
     def description(self) -> str:
         return (
             "Run an ad-hoc Ansible module command against one or more hosts without "
-            "writing a playbook. Useful for quick one-off tasks like restarting a "
-            "service, checking disk space, managing packages, or running shell commands. "
-            "Set timeout based on expected duration — default 5 minutes, max 2 hours. "
-            "Requires workspace with inventory already configured."
+            "writing a playbook. ALWAYS prefer purpose-built modules over shell/command: "
+            "ansible.builtin.service for services, ansible.builtin.apt/yum for packages, "
+            "ansible.builtin.copy/file for files, ansible.builtin.user for users. "
+            "Use ansible.builtin.shell/command ONLY for app-specific CLIs or diagnostics "
+            "where no module exists. Set check_mode=true to preview changes before applying. "
+            "Default timeout: 5 minutes. Max: 2 hours."
         )
 
     @property
@@ -201,6 +221,15 @@ class AdhocRunner(BaseTool):
                     "minimum": 0,
                     "maximum": 4,
                 },
+                "check_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Dry-run mode: preview what the module WOULD change without "
+                        "making actual changes (--check --diff). Use before applying "
+                        "changes to packages, services, files, or users. Returns "
+                        "NEEDS_APPROVAL on success so you can review before applying."
+                    ),
+                },
             },
             "required": ["workspace_path", "module", "host_pattern", "inventory"],
         }
@@ -234,6 +263,7 @@ class AdhocRunner(BaseTool):
         timeout: int = 0,
         forks: int = 0,
         verbosity: int = 0,
+        check_mode: bool = False,
         **kwargs: Any,
     ) -> ToolResult:
         if not workspace_path or not module or not inventory:
@@ -270,6 +300,13 @@ class AdhocRunner(BaseTool):
                     f"Inventory references secrets not in the vault: {', '.join(missing)}. "
                     f"Use request_secret to collect them from the user before retrying."
                 )
+
+        if not check_mode and _is_destructive_adhoc(module, module_args):
+            logger.warning(
+                "adhoc_destructive_no_check",
+                module=module,
+                module_args=module_args[:200],
+            )
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
@@ -310,6 +347,8 @@ class AdhocRunner(BaseTool):
                 runner_kwargs["extravars"] = merged_vars
 
             cmdline_parts: list[str] = []
+            if check_mode:
+                cmdline_parts.extend(["--check", "--diff"])
             if become:
                 cmdline_parts.append("--become")
             if forks and forks > 0:
@@ -434,8 +473,30 @@ class AdhocRunner(BaseTool):
                     module_args=module_args,
                 )
 
+            if check_mode:
+                return ToolResult(
+                    status=ToolStatus.NEEDS_APPROVAL,
+                    output=(
+                        f"Dry-run preview completed on {total} host(s) — no changes made. "
+                        f"Review the results above, then re-run without check_mode to apply."
+                    ),
+                    data={
+                        "host_results": host_results,
+                        "module": module,
+                        "module_args": module_args,
+                        "mode": "check",
+                    },
+                )
+
+            destructive_note = ""
+            if not check_mode and _is_destructive_adhoc(module, module_args):
+                destructive_note = (
+                    " [WARN: This was a destructive operation (state=absent/stopped) "
+                    "run without check_mode. Consider using check_mode=true first next time.]"
+                )
+
             return ToolResult.ok(
-                output=f"Command completed on {total} host(s) — all successful.",
+                output=f"Command completed on {total} host(s) — all successful.{destructive_note}",
                 host_results=host_results,
                 module=module,
                 module_args=module_args,

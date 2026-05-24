@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from ansible_forge.inventory.templates import get_template
 from ansible_forge.logging import get_logger
 from ansible_forge.persistence.infrastructure_store import InfrastructureStore
@@ -39,8 +41,9 @@ class InventoryDiscoveryTool(BaseTool):
         return (
             "Discover hosts from a cloud or dynamic inventory source using Ansible's "
             "native inventory plugins (aws_ec2, azure_rm, gcp_compute, etc.). "
-            "Runs `ansible-inventory --list` with the given plugin config, parses the "
-            "result, and persists discovered hosts into the infrastructure store."
+            "Runs `ansible-inventory --list` with the given plugin config, persists "
+            "discovered hosts into the infrastructure store, AND writes a YAML inventory "
+            "file to workspace/inventory/ ready for execute_playbook and run_adhoc."
         )
 
     @property
@@ -67,6 +70,14 @@ class InventoryDiscoveryTool(BaseTool):
                     "description": (
                         "Name for this inventory source (saved for future refreshes). "
                         "Defaults to the plugin_type."
+                    ),
+                },
+                "write_inventory": {
+                    "type": "boolean",
+                    "description": (
+                        "Write a YAML inventory file to workspace/inventory/ from "
+                        "discovered hosts (default: true). The file is immediately "
+                        "usable by execute_playbook and run_adhoc."
                     ),
                 },
             },
@@ -144,17 +155,27 @@ class InventoryDiscoveryTool(BaseTool):
             if g not in ("_meta", "all", "ungrouped")
         ]
 
+        write_inventory = kwargs.get("write_inventory", True)
+        inv_file_msg = ""
+        if write_inventory and workspace_path and hostnames:
+            inv_path = self._write_inventory_file(
+                result["inventory"], source_id, Path(workspace_path),
+            )
+            if inv_path:
+                inv_file_msg = f" Inventory file written: {inv_path.name}"
+
         return ToolResult.ok(
             output=(
                 f"Discovered {len(hostnames)} host(s) from {source_name}. "
                 f"{new_count} new, {removed} removed. "
-                f"Groups: {', '.join(groups[:15]) or 'none'}"
+                f"Groups: {', '.join(groups[:15]) or 'none'}.{inv_file_msg}"
             ),
             discovered=len(hostnames),
             new=new_count,
             removed=removed,
             groups=groups,
             source_id=source_id,
+            inventory_file=str(inv_path) if write_inventory and inv_file_msg else None,
         )
 
     def _check_credentials(self, plugin_type: str, session_id: str) -> list[str]:
@@ -256,6 +277,70 @@ class InventoryDiscoveryTool(BaseTool):
             return f"Authentication failed for '{plugin_type}'.{hint}"
         first_lines = "\n".join(stderr.splitlines()[:5])
         return f"ansible-inventory failed:\n{first_lines}"
+
+    @staticmethod
+    def _write_inventory_file(
+        inventory: dict[str, Any],
+        source_id: str,
+        workspace: Path,
+    ) -> Path | None:
+        """Generate a YAML inventory file from discovered inventory data."""
+        hostvars = inventory.get("_meta", {}).get("hostvars", {})
+        if not hostvars:
+            return None
+
+        groups: dict[str, dict[str, Any]] = {}
+        for group_name, group_data in inventory.items():
+            if group_name in ("_meta", "all", "ungrouped"):
+                continue
+            if not isinstance(group_data, dict):
+                continue
+            hosts = group_data.get("hosts", [])
+            if not hosts:
+                continue
+            group_hosts: dict[str, dict[str, Any] | None] = {}
+            for host in hosts:
+                hvars = hostvars.get(host, {})
+                host_entry: dict[str, Any] = {}
+                for key in ("ansible_host", "ansible_user", "ansible_port",
+                            "ansible_connection", "ansible_ssh_private_key_file"):
+                    if key in hvars:
+                        host_entry[key] = hvars[key]
+                if not host_entry.get("ansible_host"):
+                    ip = (hvars.get("private_ip_address", "")
+                          or hvars.get("public_ip_address", ""))
+                    if ip:
+                        host_entry["ansible_host"] = ip
+                group_hosts[host] = host_entry or None
+            groups[group_name] = {"hosts": group_hosts}
+            group_vars = group_data.get("vars")
+            if group_vars:
+                groups[group_name]["vars"] = group_vars
+
+        if not groups:
+            all_hosts: dict[str, dict[str, Any] | None] = {}
+            for host, hvars in hostvars.items():
+                entry: dict[str, Any] = {}
+                for key in ("ansible_host", "ansible_user", "ansible_port",
+                            "ansible_connection"):
+                    if key in hvars:
+                        entry[key] = hvars[key]
+                if not entry.get("ansible_host"):
+                    ip = (hvars.get("private_ip_address", "")
+                          or hvars.get("public_ip_address", ""))
+                    if ip:
+                        entry["ansible_host"] = ip
+                all_hosts[host] = entry or None
+            groups = {"discovered": {"hosts": all_hosts}}
+
+        inv_content = {"all": {"children": groups}}
+
+        inv_dir = workspace / "inventory"
+        inv_dir.mkdir(parents=True, exist_ok=True)
+        inv_path = inv_dir / f"{source_id}_hosts.yml"
+        inv_path.write_text(yaml.dump(inv_content, default_flow_style=False, sort_keys=False))
+        logger.info("inventory_file_written", path=str(inv_path), hosts=len(hostvars))
+        return inv_path
 
     @staticmethod
     def _persist_hosts(

@@ -235,6 +235,7 @@ class SessionState:
         self._rejected_feedback: str | None = None
         self._rejected_tool: str | None = None
         self._approved_playbooks: set[str] = set()
+        self._tf_plan_ran: set[str] = set()
         self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
         self._active_tasks: set[asyncio.Task[Any]] = set()
@@ -1370,6 +1371,19 @@ class Orchestrator:
                         "tool_call_id": tc.id,
                     }))
 
+                    tf_nudge = self._tf_plan_nudge(tc, state)
+                    if tf_nudge:
+                        state.memory.add_tool_result(
+                            tc.id, f'{{"status":"error","output":"{tf_nudge}"}}',
+                        )
+                        yield AgentEvent("tool_result", {
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": "error",
+                            "output": tf_nudge,
+                        })
+                        continue
+
                     if self._requires_unapproved_apply_gate(tc, state):
                         playbook_name = tc.arguments.get("playbook", "unknown")
                         state.status = SessionStatus.AWAITING_APPROVAL
@@ -1726,6 +1740,13 @@ class Orchestrator:
                             tc.name, result, state.session_id, pending_run_id,
                         )
 
+                    if (tc.name == "terraform_exec"
+                            and tc.arguments.get("action") == "plan"
+                            and result.status == ToolStatus.SUCCESS):
+                        ws_key = tc.arguments.get("workspace_path", "")
+                        if ws_key:
+                            state._tf_plan_ran.add(ws_key)
+
                     if result.status == ToolStatus.NEEDS_APPROVAL:
                         auto_approved = False
                         gate_status: ApprovalStatus | None = None
@@ -1761,6 +1782,15 @@ class Orchestrator:
                                 pb = tc.arguments.get("playbook", "")
                                 if pb:
                                     state._approved_playbooks.add(pb)
+                            if tc.name == "terraform_exec":
+                                _tf_action = tc.arguments.get("action", "")
+                                if _tf_action in ("apply", "destroy"):
+                                    state.memory.add_tool_result(
+                                        tc.id,
+                                        f'{{"status":"approved","output":"User approved terraform {_tf_action}. '
+                                        f'Now call terraform_exec again with the SAME arguments plus auto_approve=true '
+                                        f'to execute the {_tf_action}."}}',
+                                    )
                             if not auto_approved:
                                 yield AgentEvent("approval_granted", {"session_id": state.session_id})
                             if state._rejected_output and state._rejected_tool == tc.name:
@@ -2207,6 +2237,24 @@ class Orchestrator:
 
         return False
 
+    @staticmethod
+    def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
+        """Return a nudge message if terraform apply is called without a prior plan."""
+        if tc.name != "terraform_exec":
+            return None
+        action = tc.arguments.get("action", "")
+        if action not in ("apply", "destroy"):
+            return None
+        ws = tc.arguments.get("workspace_path", "")
+        if ws and ws in state._tf_plan_ran:
+            return None
+        return (
+            f"WARNING: You are calling terraform {action} without running "
+            f"terraform plan first in this session. Best practice is to ALWAYS "
+            f"run plan before {action} so the user can review changes. "
+            f"Run terraform_exec with action=plan first."
+        )
+
     def approve_session(self, session_id: str) -> bool:
         return self._approval_gate.approve(session_id)
 
@@ -2241,6 +2289,7 @@ class Orchestrator:
         state._rejected_feedback = None
         state._rejected_tool = None
         state._approved_playbooks.clear()
+        state._tf_plan_ran.clear()
         state.plan = None
         self._approval_gate.cleanup(session_id)
         logger.info("session_reset", session_id=session_id)

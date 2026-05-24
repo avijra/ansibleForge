@@ -32,8 +32,8 @@ class GalaxyManager(BaseTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "install", "list", "install_role", "list_roles", "create_requirements", "install_requirements"],
-                    "description": "Galaxy operation to perform",
+                    "enum": ["search", "install", "list", "install_role", "list_roles", "create_requirements", "install_requirements", "discover_roles"],
+                    "description": "Galaxy operation to perform. Use 'discover_roles' to scan workspace/roles/ and list installed Galaxy roles with descriptions.",
                 },
                 "collection_name": {
                     "type": "string",
@@ -89,6 +89,8 @@ class GalaxyManager(BaseTool):
             return self._create_requirements(requirements or [], workspace_path)
         if action == "install_requirements":
             return await self._install_requirements(workspace_path)
+        if action == "discover_roles":
+            return await self._discover_roles(workspace_path)
         return ToolResult.fail(f"Unknown action: {action}")
 
     async def _search(self, query: str) -> ToolResult:
@@ -282,6 +284,63 @@ class GalaxyManager(BaseTool):
         dep_extra = (" " + "; ".join(dep_msgs)) if dep_msgs else ""
         return ToolResult.ok(
             output=f"All requirements installed from {req_path}.{role_msg}{dep_extra}",
+        )
+
+    async def _discover_roles(self, workspace_path: str) -> ToolResult:
+        from pathlib import Path
+
+        import yaml as _yaml
+
+        roles: list[dict[str, Any]] = []
+
+        if workspace_path:
+            roles_dir = Path(workspace_path) / "roles"
+            if roles_dir.is_dir():
+                for entry in sorted(roles_dir.iterdir()):
+                    if not entry.is_dir() or entry.name.startswith("."):
+                        continue
+                    role_info: dict[str, Any] = {"name": entry.name, "source": "workspace"}
+                    meta_file = entry / "meta" / "main.yml"
+                    if not meta_file.exists():
+                        meta_file = entry / "meta" / "main.yaml"
+                    if meta_file.exists():
+                        try:
+                            meta = _yaml.safe_load(meta_file.read_text(encoding="utf-8"))
+                            if isinstance(meta, dict):
+                                gi = meta.get("galaxy_info", {})
+                                if isinstance(gi, dict):
+                                    role_info["description"] = gi.get("description", "")
+                                    role_info["author"] = gi.get("author", "")
+                                    role_info["platforms"] = [
+                                        p.get("name", "") for p in gi.get("platforms", [])
+                                        if isinstance(p, dict)
+                                    ][:5]
+                                deps = meta.get("dependencies", [])
+                                if deps:
+                                    role_info["dependencies"] = [
+                                        str(d) for d in deps[:10]
+                                    ]
+                        except Exception:
+                            pass
+                    tasks_main = entry / "tasks" / "main.yml"
+                    if not tasks_main.exists():
+                        tasks_main = entry / "tasks" / "main.yaml"
+                    role_info["has_tasks"] = tasks_main.exists()
+                    roles.append(role_info)
+
+        galaxy_roles = await self._list_roles()
+        galaxy_list: list[dict[str, str]] = []
+        if galaxy_roles.data.get("roles"):
+            galaxy_list = galaxy_roles.data["roles"]
+
+        return ToolResult.ok(
+            output=(
+                f"Found {len(roles)} workspace role(s) and "
+                f"{len(galaxy_list)} installed Galaxy role(s). "
+                f"Check existing roles before creating new ones."
+            ),
+            workspace_roles=roles,
+            galaxy_roles=galaxy_list,
         )
 
     @staticmethod

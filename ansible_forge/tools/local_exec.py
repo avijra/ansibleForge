@@ -139,14 +139,14 @@ class LocalExec(BaseTool):
     def description(self) -> str:
         return (
             "LAST RESORT — run a shell command on the local machine. "
-            "ONLY for: Tart/Vagrant VM lifecycle, checking running processes "
-            "(ps, lsof, pgrep), checking versions (--version), DNS lookups "
-            "(dig, nslookup), and system info (uname, hostname, df). "
-            "For ALL cloud/infrastructure CLI commands (aws, kubectl, helm, "
-            "terraform, openshift-install, curl, wget), use the dedicated "
-            "Ansible/Terraform tools first — they are more reliable and auditable. "
-            "This tool will BLOCK commands that have Ansible/Terraform equivalents "
-            "and redirect you to the correct tool."
+            "Allowed: Tart/Vagrant VM lifecycle, process inspection (ps, lsof, pgrep, pkill), "
+            "version checks (--version), DNS lookups (dig, nslookup), system info "
+            "(uname, hostname, df, free, uptime, whoami, sw_vers), directory creation (mkdir), "
+            "file listing (ls), docker inspection (docker ps, docker inspect), and ping. "
+            "BLOCKED: All cloud/infrastructure CLI commands (aws, az, gcloud, kubectl, helm, "
+            "terraform, curl, wget, systemctl, apt/yum/dnf, ansible-*) are redirected to "
+            "dedicated Ansible/Terraform tools. The block lifts after 2+ Ansible/Terraform "
+            "execution failures in the session."
         )
 
     @property
