@@ -6,7 +6,7 @@ import type { AgentEvent } from "@/api/types";
 interface DiffReviewProps {
   event: AgentEvent;
   isPending: boolean;
-  onApprove: () => void;
+  onApprove: (data?: Record<string, unknown>) => void;
   onReject: () => void;
 }
 

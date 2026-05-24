@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from ansible_forge.agent.event_bus import EventBusRegistry
@@ -307,13 +308,22 @@ async def session_status(
     )
 
 
+class ApproveRequest(BaseModel):
+    response_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional config form values submitted with the approval",
+    )
+
+
 @router.post("/chat/{session_id}/approve", response_model=ApprovalResponse)
 async def approve_execution(
     session_id: str,
+    request: ApproveRequest | None = None,
     _: Any = Depends(verify_api_key),
 ) -> ApprovalResponse:
     orch = get_orchestrator()
-    if orch.approve_session(session_id):
+    data = request.response_data if request else None
+    if orch.approve_session(session_id, response_data=data):
         return ApprovalResponse(
             session_id=session_id,
             status="approved",

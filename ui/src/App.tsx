@@ -568,7 +568,7 @@ export function App() {
                 isStreaming={chat.isStreaming}
                 sessionStatus={session.active!.status}
                 isPendingApproval={isPendingApproval ?? false}
-                onApprove={() => chat.approve(session.active!.id)}
+                onApprove={(data) => chat.approve(session.active!.id, data)}
                 onReject={() => chat.reject(session.active!.id)}
                 onQuickAction={(prompt) => setDraftPrompt(prompt)}
                 onCancelSecret={async () => {

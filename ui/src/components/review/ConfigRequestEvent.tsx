@@ -16,7 +16,7 @@ interface ConfigField {
 interface ConfigRequestEventProps {
   event: AgentEvent;
   isPending: boolean;
-  onApprove: () => void;
+  onApprove: (data?: Record<string, unknown>) => void;
   onReject: () => void;
 }
 
@@ -62,8 +62,8 @@ export function ConfigRequestEvent({
 
   const handleSubmit = useCallback(() => {
     setResolved("approved");
-    onApprove();
-  }, [onApprove]);
+    onApprove(values as Record<string, unknown>);
+  }, [onApprove, values]);
 
   const handleReject = useCallback(() => {
     setResolved("rejected");

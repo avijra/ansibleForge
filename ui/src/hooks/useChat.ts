@@ -257,11 +257,11 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
   );
 
   const approve = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, responseData?: Record<string, unknown>) => {
       const ss = getSessionState(sessionId);
       const sid = ss.serverSid || sessionId;
       try {
-        await api.approve(sid);
+        await api.approve(sid, responseData);
         opts.updateStatus(sessionId, "active");
         markStreaming(sessionId, true);
       } catch (err) {

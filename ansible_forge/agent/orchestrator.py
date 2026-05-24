@@ -1848,6 +1848,23 @@ class Orchestrator:
 
                         if auto_approved or gate_status == ApprovalStatus.APPROVED:
                             state.status = SessionStatus.ACTIVE
+                            if tc.name == "request_config" and approval.response_data:
+                                config_json = json.dumps({
+                                    "status": "success",
+                                    "output": "User provided configuration values.",
+                                    "config": approval.response_data,
+                                })
+                                state.memory.add_tool_result(tc.id, config_json)
+                                yield AgentEvent("tool_result", session_vault.redact_dict({
+                                    "tool": tc.name,
+                                    "tool_call_id": tc.id,
+                                    "status": "success",
+                                    "output": "User provided configuration values.",
+                                    "config": approval.response_data,
+                                }))
+                                if not auto_approved:
+                                    yield AgentEvent("approval_granted", {"session_id": state.session_id})
+                                continue
                             if tc.name == "execute_playbook":
                                 pb = tc.arguments.get("playbook", "")
                                 if pb:
@@ -2323,8 +2340,8 @@ class Orchestrator:
             f"Run terraform_exec with action=plan first."
         )
 
-    def approve_session(self, session_id: str) -> bool:
-        return self._approval_gate.approve(session_id)
+    def approve_session(self, session_id: str, response_data: dict[str, Any] | None = None) -> bool:
+        return self._approval_gate.approve(session_id, response_data)
 
     def reject_session(self, session_id: str, feedback: str = "") -> bool:
         return self._approval_gate.reject(session_id, feedback)

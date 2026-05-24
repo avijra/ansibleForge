@@ -437,7 +437,7 @@ interface ActivityFeedProps {
   isStreaming: boolean;
   sessionStatus: Session["status"];
   isPendingApproval: boolean;
-  onApprove: () => void;
+  onApprove: (data?: Record<string, unknown>) => void;
   onReject: () => void;
   onQuickAction?: (prompt: string) => void;
   onCancelSecret?: () => void;

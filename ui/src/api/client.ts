@@ -73,8 +73,11 @@ export const api = {
       method: "POST",
     }),
 
-  approve: (id: string) =>
-    request<ApprovalResponse>(`/chat/${id}/approve`, { method: "POST" }),
+  approve: (id: string, responseData?: Record<string, unknown>) =>
+    request<ApprovalResponse>(`/chat/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify(responseData ? { response_data: responseData } : {}),
+    }),
 
   reject: (id: string, feedback = "") =>
     request<ApprovalResponse>(`/chat/${id}/reject`, {

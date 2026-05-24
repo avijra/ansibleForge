@@ -34,8 +34,9 @@ class ApprovalRequest:
         self.feedback: str = ""
         self._event = asyncio.Event()
 
-    def approve(self) -> None:
+    def approve(self, response_data: dict[str, Any] | None = None) -> None:
         self.status = ApprovalStatus.APPROVED
+        self.response_data = response_data or {}
         self._event.set()
 
     def reject(self, feedback: str = "") -> None:
@@ -78,10 +79,10 @@ class ApprovalGate:
     def get_request(self, session_id: str) -> ApprovalRequest | None:
         return self._pending.get(session_id)
 
-    def approve(self, session_id: str) -> bool:
+    def approve(self, session_id: str, response_data: dict[str, Any] | None = None) -> bool:
         req = self._pending.get(session_id)
         if req and req.status == ApprovalStatus.PENDING:
-            req.approve()
+            req.approve(response_data)
             logger.info("approval_granted", session_id=session_id)
             return True
         return False
