@@ -1,3 +1,3 @@
 """AnsibleForge — The definitive AI agent harness for Ansible."""
 
-__version__ = "5.3.0"
+__version__ = "5.3.1"
