@@ -1,6 +1,6 @@
 [package]
 name = "tuyere-desktop"
-version = "5.6.3"
+version = "5.6.4"
 description = "Tuyere — AI-powered Infrastructure as Code orchestrator"
 authors = ["Tuyere Contributors"]
 edition = "2021"

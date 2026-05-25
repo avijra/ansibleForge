@@ -94,6 +94,7 @@ export interface WorkspaceFile {
   name: string;
   size: number;
   content: string;
+  is_dir?: boolean;
 }
 
 export interface WorkspaceFilesResponse {

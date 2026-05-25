@@ -32,6 +32,20 @@ function buildTree(files: WorkspaceFile[]): TreeNode {
     const parts = file.path.split("/");
     let current = root;
 
+    if (file.is_dir) {
+      for (const part of parts) {
+        if (!current.children.has(part)) {
+          current.children.set(part, {
+            name: part,
+            path: parts.slice(0, parts.indexOf(part) + 1).join("/"),
+            children: new Map(),
+          });
+        }
+        current = current.children.get(part)!;
+      }
+      continue;
+    }
+
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       if (!current.children.has(part)) {
@@ -493,7 +507,9 @@ export function WorkspaceExplorer({ files, onOpenFile, onRefresh }: WorkspaceExp
     [onOpenFile]
   );
 
-  if (files.length === 0) {
+  const hasContent = files.length > 0 && (files.some(f => !f.is_dir) || tree.children.size > 0);
+
+  if (!hasContent) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-6 text-center">
         <div className="rounded-xl bg-zinc-900/50 p-4 ring-1 ring-zinc-800">
@@ -530,7 +546,7 @@ export function WorkspaceExplorer({ files, onOpenFile, onRefresh }: WorkspaceExp
       {onRefresh && (
         <div className="flex items-center justify-between px-2 py-1.5 border-b border-zinc-800 shrink-0">
           <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
-            {files.length} file{files.length !== 1 ? "s" : ""}
+            {files.filter(f => !f.is_dir).length} file{files.filter(f => !f.is_dir).length !== 1 ? "s" : ""}
           </span>
           <button
             onClick={onRefresh}

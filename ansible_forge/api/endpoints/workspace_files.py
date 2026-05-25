@@ -32,15 +32,30 @@ _MAX_FILE_SIZE = 512_000
 
 
 def _collect_files(base: Path, root: Path) -> list[dict[str, Any]]:
-    """Walk the workspace tree and collect all text-readable files."""
+    """Walk the workspace tree and collect all text-readable files and visible directories."""
     entries: list[dict[str, Any]] = []
     if not root.is_dir():
         return entries
 
+    seen_dirs: set[str] = set()
     for item in sorted(root.rglob("*")):
-        if not item.is_file():
+        if any(part in _SKIP_DIRS for part in item.relative_to(base).parts):
             continue
-        if any(part in _SKIP_DIRS for part in item.parts):
+
+        if item.is_dir():
+            rel = str(item.relative_to(base))
+            if rel not in seen_dirs:
+                seen_dirs.add(rel)
+                entries.append({
+                    "path": rel,
+                    "name": item.name,
+                    "size": 0,
+                    "content": "",
+                    "is_dir": True,
+                })
+            continue
+
+        if not item.is_file():
             continue
         if item.suffix.lower() in _BINARY_SUFFIXES:
             continue
