@@ -123,8 +123,10 @@ export function App() {
     let cancelled = false;
 
     api.workspaceFiles(sid)
-      .then((ws) => { if (!cancelled) session.setWorkspaceFiles(sid, ws.files); })
-      .catch(() => {});
+      .then((ws) => {
+        if (!cancelled) session.setWorkspaceFiles(sid, ws.files);
+      })
+      .catch((err) => { console.warn("[workspace-files] fetch failed for", sid, err); });
 
     const toolEvents = session.active?.events.filter(
       (e) => e.event === "tool_result" || e.event === "tool_call"
@@ -166,9 +168,16 @@ export function App() {
   const wsRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastWsRefreshCount = useRef(0);
 
+  const prevSessionIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     const sid = session.active?.id;
     if (!sid || sid.startsWith("local-")) return;
+
+    if (prevSessionIdRef.current !== sid) {
+      lastWsRefreshCount.current = 0;
+      prevSessionIdRef.current = sid;
+    }
 
     const events = session.active?.events ?? [];
     const fileToolResults = events.filter(
