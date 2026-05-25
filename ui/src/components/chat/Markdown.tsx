@@ -292,10 +292,8 @@ export function wrapRawMermaid(text: string): string {
     }
 
     if (/^MERMAID\s*$/i.test(trimmed)) {
-      if (i + 1 < lines.length && lines[i + 1].trim().startsWith("```mermaid")) {
-        i++;
-        continue;
-      }
+      i++;
+      continue;
     }
 
     if (MERMAID_START.test(trimmed)) {

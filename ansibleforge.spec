@@ -227,10 +227,15 @@ hidden_imports = [
     "xml",
     "xml.dom",
     "xml.dom.minidom",
+    "xml.dom.pulldom",
+    "xml.dom.expatbuilder",
     "xml.etree",
     "xml.etree.ElementTree",
     "xml.parsers",
     "xml.parsers.expat",
+    "xml.sax",
+    "xml.sax.expatreader",
+    "pyexpat",
     "cryptography",
     "cryptography.fernet",
     "multiprocessing",
@@ -245,9 +250,18 @@ datas = []
 if os.path.isdir(ui_dist):
     datas.append((ui_dist, os.path.join("ui", "dist")))
 
+_EXCLUDED_ANSIBLE_CALLBACKS = {"junit.py", "cgroup_perf_recap.py", "log_plays.py"}
+
 try:
     ansible_path = os.path.dirname(importlib.import_module("ansible").__file__)
-    datas.append((ansible_path, "ansible"))
+    cb_dir = os.path.join(ansible_path, "plugins", "callback")
+    for root, dirs, files in os.walk(ansible_path):
+        for f in files:
+            src = os.path.join(root, f)
+            rel = os.path.relpath(root, ansible_path)
+            if rel == os.path.join("plugins", "callback") and f in _EXCLUDED_ANSIBLE_CALLBACKS:
+                continue
+            datas.append((src, os.path.join("ansible", rel)))
 except Exception:
     pass
 

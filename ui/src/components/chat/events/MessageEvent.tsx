@@ -2,26 +2,41 @@ import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/api/types";
 import { Markdown, wrapRawMermaid } from "@/components/chat/Markdown";
 
-const MAX_LINES = 80;
+const MAX_CONTENT_LINES = 200;
 
 function truncateContent(text: string): { display: string; wasTruncated: boolean } {
   const lines = text.split("\n");
-  if (lines.length <= MAX_LINES) return { display: text, wasTruncated: false };
 
-  let cutAt = MAX_LINES;
+  let contentLines = 0;
   let inFence = false;
-  for (let i = 0; i < Math.min(lines.length, MAX_LINES + 40); i++) {
+  let inMermaid = false;
+  let cutAt = lines.length;
+
+  for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
+
     if (t.startsWith("```")) {
-      inFence = !inFence;
+      if (inFence) {
+        inFence = false;
+        inMermaid = false;
+      } else {
+        inFence = true;
+        inMermaid = t.startsWith("```mermaid");
+      }
     }
-    if (i >= MAX_LINES && !inFence) {
+
+    if (!inMermaid) {
+      contentLines++;
+    }
+
+    if (contentLines > MAX_CONTENT_LINES && !inFence) {
       cutAt = i;
       break;
     }
   }
 
-  return { display: lines.slice(0, cutAt).join("\n"), wasTruncated: cutAt < lines.length };
+  if (cutAt >= lines.length) return { display: text, wasTruncated: false };
+  return { display: lines.slice(0, cutAt).join("\n"), wasTruncated: true };
 }
 
 export function MessageEvent({ event }: { event: AgentEvent }) {
