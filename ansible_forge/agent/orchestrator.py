@@ -258,6 +258,14 @@ _LLM_THINKING_MESSAGES = [
 ]
 
 
+_FALLBACK_PRICING: dict[str, tuple[float, float]] = {
+    "deepseek-v4-pro": (0.90, 2.19),
+    "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-chat": (0.14, 0.28),
+    "deepseek-reasoner": (0.55, 2.19),
+}
+
+
 def _estimate_step_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Estimate cost for a single LLM call using litellm's pricing database."""
     try:
@@ -276,9 +284,17 @@ def _estimate_step_cost(model: str, prompt_tokens: int, completion_tokens: int) 
                 total_tokens=prompt_tokens + completion_tokens,
             ),
         )
-        return litellm.completion_cost(completion_response=mock_resp)
+        cost = litellm.completion_cost(completion_response=mock_resp)
+        if cost > 0:
+            return cost
     except Exception:
-        return 0.0
+        pass
+
+    model_short = model.rsplit("/", 1)[-1].lower()
+    for key, (inp_per_m, out_per_m) in _FALLBACK_PRICING.items():
+        if key in model_short:
+            return (prompt_tokens * inp_per_m + completion_tokens * out_per_m) / 1_000_000
+    return 0.0
 
 
 class SessionState:
