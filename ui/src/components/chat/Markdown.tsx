@@ -1,6 +1,69 @@
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import mermaid from "mermaid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "dark",
+  themeVariables: {
+    darkMode: true,
+    background: "#18181b",
+    primaryColor: "#3f3f46",
+    primaryTextColor: "#e4e4e7",
+    primaryBorderColor: "#52525b",
+    lineColor: "#71717a",
+    secondaryColor: "#27272a",
+    tertiaryColor: "#1e1e22",
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "12px",
+  },
+  flowchart: { curve: "basis", padding: 12 },
+  securityLevel: "strict",
+});
+
+function MermaidDiagram({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const uniqueId = useId().replace(/:/g, "_");
+
+  const render = useCallback(async () => {
+    if (!containerRef.current) return;
+    try {
+      const { svg } = await mermaid.render(`mermaid_${uniqueId}`, code);
+      if (containerRef.current) {
+        containerRef.current.innerHTML = svg;
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Diagram render failed");
+    }
+  }, [code, uniqueId]);
+
+  useEffect(() => {
+    render();
+  }, [render]);
+
+  if (error) {
+    return (
+      <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
+        <div className="border-b border-zinc-800 px-3 py-1 text-[10px] font-mono text-zinc-500 uppercase">
+          mermaid
+        </div>
+        <pre className="overflow-x-auto p-3">
+          <code className="text-xs font-mono text-zinc-300 leading-relaxed">{code}</code>
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950/80 overflow-x-auto p-4">
+      <div ref={containerRef} className="flex justify-center [&>svg]:max-w-full" />
+    </div>
+  );
+}
 
 const defaultComponents: Components = {
   h1: ({ children }) => (
@@ -37,6 +100,10 @@ const defaultComponents: Components = {
     const isBlock = className?.includes("language-");
     if (isBlock) {
       const lang = className?.replace("language-", "") || "";
+      if (lang === "mermaid") {
+        const text = String(children).replace(/\n$/, "");
+        return <MermaidDiagram code={text} />;
+      }
       return (
         <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
           {lang && (
@@ -126,6 +193,10 @@ const terminalComponents: Components = {
     const isBlock = className?.includes("language-");
     if (isBlock) {
       const lang = className?.replace("language-", "") || "";
+      if (lang === "mermaid") {
+        const text = String(children).replace(/\n$/, "");
+        return <MermaidDiagram code={text} />;
+      }
       return (
         <div className="my-1.5 rounded border border-emerald-900/40 bg-black/40 overflow-hidden">
           {lang && (

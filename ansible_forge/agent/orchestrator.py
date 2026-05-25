@@ -37,11 +37,25 @@ from ansible_forge.workspace.manager import Workspace, WorkspaceManager
 logger = get_logger(__name__)
 
 
-PROGRESS_CHECK_PROMPT = (
-    "Status check — you have been running for {step_count} steps.\n"
-    "If the task is complete, stop and give your final answer.\n"
-    "If you are stuck in a loop, stop and explain what is blocking you.\n"
-    "Otherwise, continue working — you have plenty of steps remaining."
+STEP_NUDGE_SOFT = (
+    "Status check — you have used {step_count} steps. "
+    "Be efficient: consolidate multiple writes into single calls, "
+    "avoid re-reading files you already read, and skip unnecessary verification. "
+    "If the task is complete, stop and give your final answer."
+)
+
+STEP_NUDGE_FIRM = (
+    "EFFICIENCY WARNING — {step_count} steps used. Each step costs time and money. "
+    "You MUST provide a brief progress summary now: what is done, what remains, "
+    "and your estimated remaining steps. If you cannot finish in {remaining} more steps, "
+    "stop and ask the user how to proceed."
+)
+
+STEP_NUDGE_URGENT = (
+    "STEP BUDGET CRITICAL — {step_count} steps used. This session is expensive. "
+    "STOP iterating on minor issues. Wrap up NOW with what you have. "
+    "Summarize accomplishments and any remaining work for the user. "
+    "Only continue if you are within 5 steps of completion."
 )
 
 LOOP_BREAK_PROMPT = (
@@ -240,6 +254,7 @@ class SessionState:
         self._approved_playbooks: set[str] = set()
         self._checked_playbooks: dict[str, dict[str, Any]] = {}
         self._tf_plan_ran: set[str] = set()
+        self._tf_last_plan_output: dict[str, str] = {}
         self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
         self._active_tasks: set[asyncio.Task[Any]] = set()
@@ -693,8 +708,10 @@ class Orchestrator:
         """Core ReAct loop: Reason → Act → Observe, repeat."""
         import time as _time
 
-        max_steps = self._settings.max_agent_steps
-        progress_check_interval = max(max_steps // 3, 15)
+        soft_limit = self._settings.max_agent_steps
+        firm_limit = int(soft_limit * 1.5)
+        urgent_limit = soft_limit * 2
+        nudge_interval = max(soft_limit // 4, 10)
         llm_timeout = 600
         consecutive_llm_timeouts = 0
         max_consecutive_llm_timeouts = 3
@@ -708,7 +725,7 @@ class Orchestrator:
         max_session_duration = getattr(self._settings, "session_timeout_seconds", 7200)
 
         try:
-          while state.step_count < max_steps:
+          while True:
             # Wall-clock timeout guard
             elapsed = _time.monotonic() - session_start_mono
             if elapsed > max_session_duration:
@@ -766,33 +783,24 @@ class Orchestrator:
                     })
                     _stall_warned = True
 
-                # ── Step budget warning (fires at 40 steps) ──────────────
-                if state.step_count == 40:
+                # ── Progressive step nudges ─────────────────────────────
+                sc = state.step_count
+                if sc >= urgent_limit and sc % nudge_interval == 0:
                     state.memory.add_user(
-                        "BUDGET WARNING: You have used 40 steps. This is excessive for "
-                        "most tasks. You MUST wrap up within 10 more steps. If you cannot "
-                        "complete the task, summarize what you accomplished, what remains, "
-                        "and ask the user how to proceed. Do NOT keep iterating."
+                        STEP_NUDGE_URGENT.format(step_count=sc)
                     )
-                    logger.warning(
-                        "step_budget_warning",
-                        session_id=state.session_id,
-                        step=state.step_count,
-                    )
-
-                # ── Progress checkpoint (fires every N steps) ────────────
-                if (
-                    state.step_count > 1
-                    and state.step_count % progress_check_interval == 0
-                ):
+                    logger.warning("step_nudge_urgent", session_id=state.session_id, step=sc)
+                elif sc >= firm_limit and sc % nudge_interval == 0:
+                    remaining = urgent_limit - sc
                     state.memory.add_user(
-                        PROGRESS_CHECK_PROMPT.format(step_count=state.step_count)
+                        STEP_NUDGE_FIRM.format(step_count=sc, remaining=remaining)
                     )
-                    logger.info(
-                        "progress_check",
-                        session_id=state.session_id,
-                        step=state.step_count,
+                    logger.warning("step_nudge_firm", session_id=state.session_id, step=sc)
+                elif sc >= soft_limit and sc % nudge_interval == 0:
+                    state.memory.add_user(
+                        STEP_NUDGE_SOFT.format(step_count=sc)
                     )
+                    logger.info("step_nudge_soft", session_id=state.session_id, step=sc)
 
                 # ── LLM compaction: summarize old turns when context is large ──
                 if state.step_count > 0 and state.step_count % 10 == 0:
@@ -1817,6 +1825,7 @@ class Orchestrator:
                         ws_key = tc.arguments.get("workspace_path", "")
                         if ws_key:
                             state._tf_plan_ran.add(ws_key)
+                            state._tf_last_plan_output[ws_key] = result.output[:4000]
 
                     if result.status == ToolStatus.NEEDS_APPROVAL:
                         auto_approved = False
@@ -1830,16 +1839,26 @@ class Orchestrator:
 
                         if not auto_approved:
                             state.status = SessionStatus.AWAITING_APPROVAL
-                            yield AgentEvent("approval_required", {
+
+                            approval_desc = self._build_approval_description(tc, result, state)
+                            plan_diff = self._get_plan_diff_for_approval(tc, state)
+
+                            approval_event_data: dict[str, Any] = {
                                 "session_id": state.session_id,
                                 "output": result.output,
                                 "data": result.data,
-                            })
+                                "description": approval_desc,
+                                "expanded": True,
+                            }
+                            if plan_diff:
+                                approval_event_data["plan_diff"] = plan_diff
+
+                            yield AgentEvent("approval_required", approval_event_data)
 
                             approval = self._approval_gate.create_request(
                                 session_id=state.session_id,
-                                description=f"Execute {tc.name}",
-                                diff_summary=result.output,
+                                description=approval_desc,
+                                diff_summary=plan_diff or result.output,
                                 metadata=result.data,
                             )
 
@@ -1851,9 +1870,17 @@ class Orchestrator:
                             state.status = SessionStatus.ACTIVE
                             memory_handled = False
                             if tc.name == "request_config" and not auto_approved and approval.response_data:
+                                config_lines = [
+                                    f"  {k} = {v!r}" for k, v in approval.response_data.items()
+                                ]
+                                explicit_output = (
+                                    "User submitted the following configuration values "
+                                    "(use these EXACTLY as provided — do NOT assume any are blank):\n"
+                                    + "\n".join(config_lines)
+                                )
                                 config_json = json.dumps({
                                     "status": "success",
-                                    "output": "User provided configuration values.",
+                                    "output": explicit_output,
                                     "config": approval.response_data,
                                 })
                                 state.memory.add_tool_result(tc.id, config_json)
@@ -1862,7 +1889,7 @@ class Orchestrator:
                                     "tool": tc.name,
                                     "tool_call_id": tc.id,
                                     "status": "success",
-                                    "output": "User provided configuration values.",
+                                    "output": explicit_output,
                                     "config": approval.response_data,
                                 }))
                                 yield AgentEvent("approval_granted", {"session_id": state.session_id})
@@ -2061,12 +2088,8 @@ class Orchestrator:
                 })
                 continue
 
-          state.status = SessionStatus.MAX_STEPS_REACHED
+          state.status = SessionStatus.COMPLETED
           yielded_terminal = True
-          yield AgentEvent("max_steps", {
-              "step_count": state.step_count,
-              "message": f"The agent has completed {max_steps} steps — the maximum allowed. You can continue the conversation to pick up where it left off.",
-          })
         finally:
             if not yielded_terminal and state._generation == my_generation:
                 state.status = SessionStatus.COMPLETED
@@ -2355,6 +2378,40 @@ class Orchestrator:
             f"Run terraform_exec with action=plan first."
         )
 
+    @staticmethod
+    def _build_approval_description(tc: Any, result: Any, state: SessionState) -> str:
+        if tc.name == "execute_playbook":
+            pb = tc.arguments.get("playbook", "")
+            mode = tc.arguments.get("mode", "apply")
+            risk = (result.data or {}).get("risk_level", "")
+            name = Path(pb).name if pb else "playbook"
+            desc = f"Run '{name}' in {mode} mode"
+            if risk:
+                desc += f" — risk: {risk}"
+            return desc
+        if tc.name == "terraform_exec":
+            action = tc.arguments.get("action", "")
+            ws = tc.arguments.get("workspace_path", "")
+            ws_label = Path(ws).name if ws else "workspace"
+            return f"Terraform {action} in '{ws_label}'"
+        if tc.name == "run_adhoc":
+            module = tc.arguments.get("module", "shell")
+            args = tc.arguments.get("module_args", "")[:60]
+            return f"Ad-hoc: {module} — {args}" if args else f"Ad-hoc: {module}"
+        if tc.name == "request_config":
+            return "Configuration required"
+        return f"Execute {tc.name}"
+
+    @staticmethod
+    def _get_plan_diff_for_approval(tc: Any, state: SessionState) -> str | None:
+        if tc.name == "terraform_exec":
+            action = tc.arguments.get("action", "")
+            if action in ("apply", "destroy"):
+                ws = tc.arguments.get("workspace_path", "")
+                if ws and ws in state._tf_last_plan_output:
+                    return state._tf_last_plan_output[ws]
+        return None
+
     def approve_session(self, session_id: str, response_data: dict[str, Any] | None = None) -> bool:
         return self._approval_gate.approve(session_id, response_data)
 
@@ -2391,6 +2448,7 @@ class Orchestrator:
         state._approved_playbooks.clear()
         state._checked_playbooks.clear()
         state._tf_plan_ran.clear()
+        state._tf_last_plan_output.clear()
         state.plan = None
         self._approval_gate.cleanup(session_id)
         logger.info("session_reset", session_id=session_id)

@@ -178,8 +178,11 @@ const RISK_STYLES: Record<string, { bg: string; text: string; border: string; la
 export function DiffReview({ event, isPending, onApprove, onReject }: DiffReviewProps) {
   const allDiffs = useMemo(() => extractDiffs(event), [event]);
   const output = (event.data.output as string) || "Execution requires your approval.";
+  const description = (event.data.description as string) || "";
+  const planDiff = (event.data.plan_diff as string) || "";
+  const startExpanded = Boolean(event.data.expanded);
   const [resolved, setResolved] = useState<"approved" | "rejected" | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(startExpanded);
   const [confirmText, setConfirmText] = useState("");
 
   const nested = (event.data.data as Record<string, unknown>) ?? event.data;
@@ -229,7 +232,9 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
     <div className={cn("animate-slide-in rounded-lg border shadow-[0_0_12px_-4px_rgba(245,158,11,0.12)] p-3 space-y-2", riskStyle?.border ?? "border-amber-800/30", riskStyle?.bg ?? "bg-amber-950/15")}>
       <div className="flex items-center gap-2">
         <ShieldAlert className={cn("h-3.5 w-3.5", riskStyle?.text ?? "text-amber-400")} />
-        <span className="text-xs font-semibold text-amber-300">Approval Required</span>
+        <span className="text-xs font-semibold text-amber-300">
+          {description || "Approval Required"}
+        </span>
         {riskStyle && (
           <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide", riskStyle.text, riskStyle.bg, "border", riskStyle.border)}>
             {riskStyle.label}
@@ -240,7 +245,7 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
             · {actionCount} action{actionCount !== 1 ? "s" : ""}
           </span>
         )}
-        {(hasRealDiffs || hasTaskList || output) && (
+        {(planDiff || hasRealDiffs || hasTaskList || output) && (
           <button
             onClick={() => setDetailsOpen(!detailsOpen)}
             className="ml-auto flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
@@ -253,6 +258,12 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
 
       {detailsOpen && (
         <>
+          {planDiff && (
+            <pre className="rounded-md bg-zinc-950/60 border border-zinc-800 p-2 text-[11px] font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-60 overflow-y-auto">
+              {planDiff}
+            </pre>
+          )}
+
           {hasRealDiffs && (
             <div className="space-y-2 max-h-60 overflow-y-auto">
               {realDiffs.map((block, i) => (
@@ -265,7 +276,7 @@ export function DiffReview({ event, isPending, onApprove, onReject }: DiffReview
             <TaskList diffs={taskOnlyDiffs} />
           )}
 
-          {!hasRealDiffs && !hasTaskList && (
+          {!planDiff && !hasRealDiffs && !hasTaskList && (
             <pre className="rounded-md bg-zinc-950/60 border border-zinc-800 p-2 text-[11px] font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
               {output}
             </pre>

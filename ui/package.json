@@ -1,7 +1,7 @@
 {
   "name": "tuyere-ui",
   "private": true,
-  "version": "5.5.2",
+  "version": "5.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -33,6 +33,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "lucide-react": "^0.511.0",
+    "mermaid": "^11.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
