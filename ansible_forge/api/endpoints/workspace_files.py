@@ -16,8 +16,17 @@ router = APIRouter()
 _TEXT_SUFFIXES = frozenset({
     ".yml", ".yaml", ".j2", ".cfg", ".ini", ".conf", ".txt",
     ".json", ".sh", ".bash", ".py", ".md", ".toml",
+    ".tf", ".tfvars", ".hcl", ".tfstate",
+    ".xml", ".csv", ".env", ".properties",
+    ".sql", ".dockerfile", ".gitignore",
 })
-_SKIP_DIRS = frozenset({"__pycache__", ".git", ".tuyere", "artifacts"})
+_TEXT_NAMES = frozenset({
+    "hosts", "extravars", "ansible.cfg",
+    "Makefile", "Dockerfile", "Vagrantfile", "Jenkinsfile",
+    "Gemfile", "Rakefile", "Procfile",
+    ".gitignore", ".dockerignore", ".editorconfig",
+})
+_SKIP_DIRS = frozenset({"__pycache__", ".git", ".tuyere", ".terraform", "node_modules"})
 _MAX_FILE_SIZE = 512_000
 
 
@@ -32,9 +41,7 @@ def _collect_files(base: Path, root: Path) -> list[dict[str, Any]]:
             continue
         if any(part in _SKIP_DIRS for part in item.parts):
             continue
-        if item.suffix not in _TEXT_SUFFIXES and item.name not in (
-            "hosts", "extravars", "ansible.cfg",
-        ):
+        if item.suffix not in _TEXT_SUFFIXES and item.name not in _TEXT_NAMES:
             continue
         if item.stat().st_size > _MAX_FILE_SIZE:
             continue

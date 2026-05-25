@@ -1787,13 +1787,14 @@ class Orchestrator:
 
                     last_activity_mono = _time.monotonic()
                     _stall_warned = False
-                    try:
-                        state.memory.add_tool_result(tc.id, result.model_dump_json())
-                    except Exception:
-                        state.memory.add_tool_result(
-                            tc.id,
-                            f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
-                        )
+                    if result.status != ToolStatus.NEEDS_APPROVAL:
+                        try:
+                            state.memory.add_tool_result(tc.id, result.model_dump_json())
+                        except Exception:
+                            state.memory.add_tool_result(
+                                tc.id,
+                                f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
+                            )
                     tool_result_payload: dict[str, Any] = {
                         "tool": tc.name,
                         "tool_call_id": tc.id,
@@ -1848,13 +1849,15 @@ class Orchestrator:
 
                         if auto_approved or gate_status == ApprovalStatus.APPROVED:
                             state.status = SessionStatus.ACTIVE
-                            if tc.name == "request_config" and approval.response_data:
+                            memory_handled = False
+                            if tc.name == "request_config" and not auto_approved and approval.response_data:
                                 config_json = json.dumps({
                                     "status": "success",
                                     "output": "User provided configuration values.",
                                     "config": approval.response_data,
                                 })
                                 state.memory.add_tool_result(tc.id, config_json)
+                                memory_handled = True
                                 yield AgentEvent("tool_result", session_vault.redact_dict({
                                     "tool": tc.name,
                                     "tool_call_id": tc.id,
@@ -1862,8 +1865,7 @@ class Orchestrator:
                                     "output": "User provided configuration values.",
                                     "config": approval.response_data,
                                 }))
-                                if not auto_approved:
-                                    yield AgentEvent("approval_granted", {"session_id": state.session_id})
+                                yield AgentEvent("approval_granted", {"session_id": state.session_id})
                                 continue
                             if tc.name == "execute_playbook":
                                 pb = tc.arguments.get("playbook", "")
@@ -1878,6 +1880,15 @@ class Orchestrator:
                                         f'Now call terraform_exec again with the SAME arguments plus auto_approve=true '
                                         f'to execute the {_tf_action}."}}',
                                     )
+                                    memory_handled = True
+                            if not memory_handled:
+                                try:
+                                    state.memory.add_tool_result(tc.id, result.model_dump_json())
+                                except Exception:
+                                    state.memory.add_tool_result(
+                                        tc.id,
+                                        f'{{"status":"{result.status.value}","output":"{result.output[:500]}"}}'
+                                    )
                             if not auto_approved:
                                 yield AgentEvent("approval_granted", {"session_id": state.session_id})
                             if state._rejected_output and state._rejected_tool == tc.name:
@@ -1890,6 +1901,10 @@ class Orchestrator:
                             state._rejected_output = result.output[:2000]
                             state._rejected_feedback = feedback
                             state._rejected_tool = tc.name
+                            state.memory.add_tool_result(
+                                tc.id,
+                                f'{{"status":"rejected","output":"User rejected: {feedback[:400]}"}}',
+                            )
                             remaining_idx = response.tool_calls.index(tc) + 1
                             for remaining_tc in response.tool_calls[remaining_idx:]:
                                 state.memory.add_tool_result(

@@ -58,17 +58,25 @@ function buildTree(files: WorkspaceFile[]): TreeNode {
 
 function fileIcon(name: string) {
   if (name.endsWith(".yml") || name.endsWith(".yaml")) return FileCode2;
+  if (name.endsWith(".tf") || name.endsWith(".tfvars") || name.endsWith(".hcl")) return FileCode2;
   if (name.endsWith(".j2")) return ScrollText;
+  if (name.endsWith(".sh") || name.endsWith(".bash")) return FileText;
   if (name.endsWith(".cfg") || name.endsWith(".ini") || name.endsWith(".conf")) return Settings2;
+  if (name.endsWith(".json") || name.endsWith(".toml")) return Settings2;
   if (name === "hosts" || name === "extravars") return FileText;
+  if (name === "Makefile" || name === "Dockerfile" || name === "Jenkinsfile") return FileCode2;
   return File;
 }
 
 function fileColor(name: string): string {
   if (name.endsWith(".yml") || name.endsWith(".yaml")) return "text-blue-400/80";
+  if (name.endsWith(".tf") || name.endsWith(".tfvars") || name.endsWith(".hcl")) return "text-purple-400/80";
   if (name.endsWith(".j2")) return "text-amber-400/80";
+  if (name.endsWith(".sh") || name.endsWith(".bash")) return "text-green-400/80";
+  if (name.endsWith(".json") || name.endsWith(".toml")) return "text-orange-400/80";
   if (name.endsWith(".cfg") || name.endsWith(".ini")) return "text-zinc-400/80";
   if (name === "hosts") return "text-teal-400/80";
+  if (name === "Dockerfile") return "text-sky-400/80";
   return "text-zinc-500";
 }
 
@@ -78,6 +86,9 @@ function folderColor(name: string): string {
   if (name === "env") return "text-amber-400/60";
   if (name === "roles") return "text-purple-400/60";
   if (name === "templates") return "text-orange-400/60";
+  if (name === "terraform") return "text-purple-400/60";
+  if (name === "group_vars" || name === "host_vars") return "text-teal-400/60";
+  if (name === "tasks" || name === "handlers" || name === "defaults" || name === "vars") return "text-blue-400/60";
   return "text-zinc-500";
 }
 
@@ -251,11 +262,13 @@ function highlightContent(filename: string, content: string): React.ReactNode {
   const isYaml = filename.endsWith(".yml") || filename.endsWith(".yaml");
   const isJ2 = filename.endsWith(".j2");
   const isIni = filename.endsWith(".cfg") || filename.endsWith(".ini") || filename === "hosts";
+  const isTf = filename.endsWith(".tf") || filename.endsWith(".tfvars") || filename.endsWith(".hcl");
 
   return content.split("\n").map((line, i) => {
     if (isYaml) return <YamlLine key={i} line={line} />;
     if (isJ2) return <Jinja2Line key={i} line={line} />;
     if (isIni) return <IniLine key={i} line={line} />;
+    if (isTf) return <HclLine key={i} line={line} />;
     return <div key={i} className="text-zinc-300">{line || "\u00A0"}</div>;
   });
 }
@@ -319,6 +332,35 @@ function IniLine({ line }: { line: string }) {
   }
   if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(line.trim())) {
     return <div className="text-emerald-400/80">{line || "\u00A0"}</div>;
+  }
+  return <div className="text-zinc-300">{line || "\u00A0"}</div>;
+}
+
+function HclLine({ line }: { line: string }) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("#") || trimmed.startsWith("//")) {
+    return <div className="text-zinc-600 italic">{line || "\u00A0"}</div>;
+  }
+  if (/^(resource|data|variable|output|locals|module|provider|terraform)\s/.test(trimmed)) {
+    const spaceIdx = trimmed.indexOf(" ");
+    const lead = line.length - trimmed.length;
+    return (
+      <div>
+        <span className="text-zinc-300">{line.slice(0, lead)}</span>
+        <span className="text-purple-400 font-medium">{trimmed.slice(0, spaceIdx)}</span>
+        <span className="text-zinc-300">{trimmed.slice(spaceIdx)}</span>
+      </div>
+    );
+  }
+  if (trimmed.includes("=") && !trimmed.startsWith("}")) {
+    const eqIdx = line.indexOf("=");
+    return (
+      <div>
+        <span className="text-blue-400/80">{line.slice(0, eqIdx)}</span>
+        <span className="text-zinc-500">=</span>
+        <span className="text-zinc-300">{line.slice(eqIdx + 1)}</span>
+      </div>
+    );
   }
   return <div className="text-zinc-300">{line || "\u00A0"}</div>;
 }
