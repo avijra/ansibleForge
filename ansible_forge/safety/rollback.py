@@ -60,8 +60,9 @@ class RollbackPlanner:
                 rollback_needed=False,
             )
 
-        rollback_name = f"rollback_{playbook_name}"
-        rollback_path = Path(workspace_path) / rollback_name
+        pb_path = Path(playbook_name)
+        rollback_name = f"rollback_{pb_path.name}"
+        rollback_path = Path(workspace_path) / pb_path.parent / rollback_name
         rollback_path.write_text(
             yaml.dump(rollback_plays, default_flow_style=False, sort_keys=False),
             encoding="utf-8",

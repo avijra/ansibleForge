@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import mermaid from "mermaid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -251,14 +251,55 @@ const terminalComponents: Components = {
   ),
 };
 
+const MERMAID_START =
+  /^(graph\s+(TD|TB|BT|LR|RL)|flowchart\s+(TD|TB|BT|LR|RL)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitgraph)\s*$/;
+
+const MERMAID_LINE =
+  /^\s*([\w[\]()"|{}]+\s*(-->|---|-\.->|==>|-.->|--\s|~~~|-->|<-->)\s*[\w[\]()"|{}]+|subgraph\s|end\s*$|%%|style\s|class\s|linkStyle\s|\w+\s*-->|participant\s|\w+\s*->>|Note\s|loop\s|alt\s|else\s|opt\s)/;
+
+function wrapRawMermaid(text: string): string {
+  const lines = text.split("\n");
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (MERMAID_START.test(trimmed)) {
+      const block: string[] = [lines[i]];
+      let j = i + 1;
+      while (j < lines.length) {
+        const lt = lines[j].trim();
+        if (lt === "" && j + 1 < lines.length && !MERMAID_LINE.test(lines[j + 1].trim())) break;
+        if (lt === "" || MERMAID_LINE.test(lt) || /^\s/.test(lines[j])) {
+          block.push(lines[j]);
+          j++;
+        } else {
+          break;
+        }
+      }
+      if (block.length > 1) {
+        result.push("```mermaid");
+        result.push(...block);
+        result.push("```");
+        i = j;
+        continue;
+      }
+    }
+    result.push(lines[i]);
+    i++;
+  }
+  return result.join("\n");
+}
+
 export function Markdown({ content, terminal }: { content: string; terminal?: boolean }) {
+  const processed = useMemo(() => wrapRawMermaid(content), [content]);
   return (
     <div className={terminal ? "markdown-body font-mono" : "markdown-body"}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={terminal ? terminalComponents : defaultComponents}
       >
-        {content}
+        {processed}
       </ReactMarkdown>
     </div>
   );

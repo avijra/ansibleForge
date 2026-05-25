@@ -125,6 +125,56 @@ _ALL_TOOL_NAMES = (
     | _EXECUTION_VERIFY_TOOLS | _TERRAFORM_TOOLS
 )
 
+_ANSIBLE_TOOLS = frozenset({
+    "generate_playbook", "execute_playbook", "scaffold_role", "run_adhoc",
+    "manage_inventory", "manage_vault", "manage_galaxy", "render_template",
+    "collect_facts", "run_molecule", "detect_drift", "generate_rollback",
+    "run_lint", "inspect_variables",
+})
+
+_GITOPS_HINTS = frozenset({
+    "helm", "kustomize", "argocd", "flux", "kubectl", "manifest",
+    "k8s", "kubernetes", "gitops",
+})
+
+_DEVOPS_HINTS = frozenset({
+    "docker", "dockerfile", "container", "pipeline", "ci/cd", "cicd",
+    "jenkins", "github-actions", "gitlab-ci",
+})
+
+
+def _detect_profiles(tool_name: str, arguments: dict[str, Any]) -> set[str]:
+    profiles: set[str] = set()
+    if tool_name in _ANSIBLE_TOOLS:
+        profiles.add("ansible")
+    if tool_name in _TERRAFORM_TOOLS:
+        profiles.add("terraform")
+
+    path_arg = arguments.get("file_path", "") or arguments.get("path", "") or ""
+    content_signals = " ".join(
+        str(v) for v in (
+            arguments.get("content", ""),
+            path_arg,
+            arguments.get("playbook_name", ""),
+        )
+    ).lower()
+    if any(h in content_signals for h in _GITOPS_HINTS):
+        profiles.add("gitops")
+    if any(h in content_signals for h in _DEVOPS_HINTS):
+        profiles.add("devops")
+
+    if isinstance(path_arg, str):
+        parts = path_arg.lower().split("/")
+        if "k8s" in parts or "helm" in parts or "manifests" in parts:
+            profiles.add("gitops")
+        if "docker" in parts or "pipelines" in parts:
+            profiles.add("devops")
+        if "terraform" in parts:
+            profiles.add("terraform")
+
+    return profiles
+
+
 _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
     "execute_playbook": [
         "Playbook is running — watching for task output...",
@@ -255,6 +305,7 @@ class SessionState:
         self._checked_playbooks: dict[str, dict[str, Any]] = {}
         self._tf_plan_ran: set[str] = set()
         self._tf_last_plan_output: dict[str, str] = {}
+        self._layout_profiles: set[str] = set()
         self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
         self._active_tasks: set[asyncio.Task[Any]] = set()
@@ -614,11 +665,20 @@ class Orchestrator:
         inventory = workspace.inventory_dir
 
         if project.exists():
-            playbooks = list(project.glob("*.yml")) + list(project.glob("*.yaml"))
-            if playbooks:
-                parts.append(
-                    "Playbooks: " + ", ".join(p.name for p in playbooks)
+            pb_dirs = [project]
+            if (project / "playbooks").is_dir():
+                pb_dirs.append(project / "playbooks")
+            playbooks: list[Path] = []
+            for pb_dir in pb_dirs:
+                playbooks.extend(
+                    f for f in pb_dir.glob("*.yml") if not f.name.startswith(".")
                 )
+                playbooks.extend(
+                    f for f in pb_dir.glob("*.yaml") if not f.name.startswith(".")
+                )
+            if playbooks:
+                labels = [str(p.relative_to(project)) for p in playbooks]
+                parts.append("Playbooks: " + ", ".join(labels))
             roles = [d.name for d in (project / "roles").iterdir()] if (project / "roles").is_dir() else []
             if roles:
                 parts.append("Roles: " + ", ".join(roles))
@@ -1397,25 +1457,36 @@ class Orchestrator:
                         continue
 
                     if self._requires_unapproved_apply_gate(tc, state):
-                        playbook_name = tc.arguments.get("playbook", "unknown")
                         ws_path = tc.arguments.get("workspace_path", str(state.workspace.path))
                         skip_dry = tc.arguments.get("skip_dry_run", False)
+                        is_terraform = tc.name == "terraform_exec"
+                        tf_action = tc.arguments.get("action", "") if is_terraform else ""
+
+                        if is_terraform:
+                            label = f"terraform {tf_action}"
+                            ws_label = Path(ws_path).name if ws_path else "workspace"
+                            display_name = f"Terraform {tf_action} in '{ws_label}'"
+                        else:
+                            pb = tc.arguments.get("playbook", "")
+                            label = Path(pb).name if pb else "playbook"
+                            display_name = f"Run '{label}' in apply mode"
 
                         risk = RiskLevel.MEDIUM
                         diff_summary = ""
                         auto_checked = False
 
-                        if not skip_dry and playbook_name not in state._checked_playbooks:
+                        if not is_terraform and not skip_dry and label not in state._checked_playbooks:
                             try:
                                 yield AgentEvent("progress", {
                                     "tool": "execute_playbook",
                                     "elapsed_seconds": 0,
-                                    "message": f"Auto-running dry-run for '{playbook_name}'...",
+                                    "message": f"Auto-running dry-run for '{label}'...",
                                 })
                                 dr = DryRunner()
+                                playbook_arg = tc.arguments.get("playbook", "")
                                 check_result = await dr.run(
                                     workspace_path=ws_path,
-                                    playbook=playbook_name,
+                                    playbook=playbook_arg,
                                     inventory=tc.arguments.get("inventory", ""),
                                     extra_vars=tc.arguments.get("extra_vars"),
                                     limit=tc.arguments.get("limit", ""),
@@ -1429,63 +1500,71 @@ class Orchestrator:
                                     diff_summary = diff_report.get("summary", "")
                                 elif check_result.output:
                                     diff_summary = check_result.output[:2000]
-                                playbook_path = Path(ws_path) / playbook_name
+                                playbook_path = Path(ws_path) / playbook_arg
                                 risk = score_playbook_risk(playbook_path, diff_report if isinstance(diff_report, dict) else None)
-                                state._checked_playbooks[playbook_name] = {
+                                state._checked_playbooks[label] = {
                                     "risk": risk, "diff": diff_summary,
                                 }
                                 auto_checked = True
                             except Exception:
-                                logger.warning("enforced_dryrun_failed", playbook=playbook_name, exc_info=True)
-                        elif playbook_name in state._checked_playbooks:
-                            cached = state._checked_playbooks[playbook_name]
+                                logger.warning("enforced_dryrun_failed", playbook=label, exc_info=True)
+                        elif not is_terraform and label in state._checked_playbooks:
+                            cached = state._checked_playbooks[label]
                             risk = RiskLevel(cached.get("risk", "medium"))
                             diff_summary = cached.get("diff", "")
                             auto_checked = True
 
+                        if is_terraform:
+                            plan_output = state._tf_last_plan_output.get(ws_path, "")
+                            if plan_output:
+                                diff_summary = plan_output
+                                auto_checked = True
+                            if tf_action == "destroy":
+                                risk = RiskLevel.HIGH
+
                         if risk == RiskLevel.LOW and auto_checked:
-                            state._approved_playbooks.add(playbook_name)
+                            if not is_terraform:
+                                state._approved_playbooks.add(tc.arguments.get("playbook", ""))
                             yield AgentEvent("progress", {
-                                "tool": "execute_playbook",
+                                "tool": tc.name,
                                 "elapsed_seconds": 0,
-                                "message": f"Dry-run passed (LOW risk) — auto-approved '{playbook_name}'.",
+                                "message": f"Dry-run passed (LOW risk) — auto-approved '{label}'.",
                             })
                         else:
                             state.status = SessionStatus.AWAITING_APPROVAL
-                            gate_msg = (
-                                f"Apply '{playbook_name}' — risk: {risk.upper()}"
-                            )
+                            gate_msg = f"{display_name} — risk: {risk.upper()}"
                             if diff_summary:
                                 gate_msg += f"\n\n{diff_summary}"
                             elif skip_dry:
                                 gate_msg += "\n\nDry-run was skipped (skip_dry_run=true)."
-                            yield AgentEvent("approval_required", {
+
+                            event_data: dict[str, Any] = {
                                 "session_id": state.session_id,
                                 "output": gate_msg,
+                                "description": display_name,
+                                "expanded": True,
                                 "data": {
-                                    "playbook": playbook_name,
-                                    "mode": "apply",
                                     "risk_level": str(risk),
                                     "diff_summary": diff_summary,
-                                    "skip_dry_run": skip_dry,
                                 },
-                            })
+                            }
+                            if is_terraform and diff_summary:
+                                event_data["plan_diff"] = diff_summary
+                            yield AgentEvent("approval_required", event_data)
+
                             approval = self._approval_gate.create_request(
                                 session_id=state.session_id,
-                                description=f"Apply {playbook_name} ({risk} risk)",
-                                diff_summary=gate_msg,
-                                metadata={
-                                    "playbook": playbook_name,
-                                    "mode": "apply",
-                                    "risk_level": str(risk),
-                                },
+                                description=display_name,
+                                diff_summary=diff_summary or gate_msg,
+                                metadata={"risk_level": str(risk)},
                             )
                             gate_status = await approval.wait(timeout=600)
                             if state._generation != my_generation:
                                 return
                             if gate_status == ApprovalStatus.APPROVED:
                                 state.status = SessionStatus.ACTIVE
-                                state._approved_playbooks.add(playbook_name)
+                                if not is_terraform:
+                                    state._approved_playbooks.add(tc.arguments.get("playbook", ""))
                                 yield AgentEvent("approval_granted", {
                                     "session_id": state.session_id,
                                 })
@@ -2244,6 +2323,17 @@ class Orchestrator:
         arguments["_session_id"] = state.session_id
         arguments["_workspace_path"] = str(state.workspace.path)
         arguments["_exec_fail_count"] = state._exec_fail_count
+
+        if is_file_writing_tool(tool_name):
+            profiles = _detect_profiles(tool_name, arguments)
+            new_profiles = profiles - state._layout_profiles
+            if new_profiles:
+                from ansible_forge.workspace.project_layout import ensure_ansible_cfg
+
+                state.workspace.scaffold_layout(new_profiles)
+                if "ansible" in new_profiles:
+                    ensure_ansible_cfg(state.workspace.path)
+                state._layout_profiles |= new_profiles
 
         if tool_name == "execute_playbook":
             result = self._pre_validate_playbook(arguments)

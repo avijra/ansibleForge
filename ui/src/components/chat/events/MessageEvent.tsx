@@ -1,10 +1,25 @@
+import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/api/types";
 import { Markdown } from "@/components/chat/Markdown";
+
+const MAX_LINES = 60;
+
+function truncateContent(text: string): { display: string; wasTruncated: boolean } {
+  const lines = text.split("\n");
+  if (lines.length <= MAX_LINES) return { display: text, wasTruncated: false };
+  return { display: lines.slice(0, MAX_LINES).join("\n"), wasTruncated: true };
+}
 
 export function MessageEvent({ event }: { event: AgentEvent }) {
   const content = (event.data.content as string) || "";
   const usage = event.data.usage as Record<string, number> | undefined;
   const isStreaming = event.data._streaming === true;
+  const [expanded, setExpanded] = useState(false);
+
+  const { display, wasTruncated } = useMemo(
+    () => (expanded ? { display: content, wasTruncated: false } : truncateContent(content)),
+    [content, expanded],
+  );
 
   if (!content && !isStreaming) return null;
 
@@ -15,7 +30,15 @@ export function MessageEvent({ event }: { event: AgentEvent }) {
         <span>tuyere</span>
         {isStreaming && <span className="animate-pulse">...</span>}
       </div>
-      <Markdown content={content} terminal />
+      <Markdown content={display} terminal />
+      {wasTruncated && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-1 text-[10px] text-emerald-600 hover:text-emerald-400 transition-colors font-mono"
+        >
+          ▾ Show full output ({content.split("\n").length} lines)
+        </button>
+      )}
       {isStreaming && (
         <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-emerald-500 animate-pulse rounded-sm align-text-bottom" />
       )}

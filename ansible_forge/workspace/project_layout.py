@@ -17,6 +17,7 @@ def ensure_ansible_cfg(workspace_path: Path) -> Path:
             "host_key_checking = False\n"
             "retry_files_enabled = False\n"
             "stdout_callback = yaml\n"
+            "roles_path = roles\n"
             "\n"
             "[privilege_escalation]\n"
             "become = False\n",
@@ -37,11 +38,16 @@ def write_extravars(workspace_path: Path, extra_vars: dict[str, Any]) -> Path:
 
 
 def list_playbooks(workspace_path: Path) -> list[str]:
-    """List all playbook YAML files in the project directory."""
+    """List all playbook YAML files in the project root and playbooks/ subdir."""
     if not workspace_path.exists():
         return []
-    return [
-        f.name
-        for f in workspace_path.iterdir()
-        if f.is_file() and f.suffix in (".yml", ".yaml") and not f.name.startswith(".")
-    ]
+    results: list[str] = []
+    for search_dir in (workspace_path, workspace_path / "playbooks"):
+        if not search_dir.is_dir():
+            continue
+        for f in search_dir.iterdir():
+            if f.is_file() and f.suffix in (".yml", ".yaml") and not f.name.startswith("."):
+                rel = str(f.relative_to(workspace_path))
+                if rel not in results:
+                    results.append(rel)
+    return results

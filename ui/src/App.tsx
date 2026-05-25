@@ -122,11 +122,9 @@ export function App() {
     if (!sid || sid.startsWith("local-")) return;
     let cancelled = false;
 
-    if (session.active && session.active.workspaceFiles.length === 0) {
-      api.workspaceFiles(sid)
-        .then((ws) => { if (!cancelled) session.setWorkspaceFiles(sid, ws.files); })
-        .catch(() => {});
-    }
+    api.workspaceFiles(sid)
+      .then((ws) => { if (!cancelled) session.setWorkspaceFiles(sid, ws.files); })
+      .catch(() => {});
 
     const toolEvents = session.active?.events.filter(
       (e) => e.event === "tool_result" || e.event === "tool_call"
@@ -161,6 +159,8 @@ export function App() {
     "write_file", "generate_playbook", "scaffold_role", "manage_inventory",
     "render_template", "generate_terraform", "generate_rollback",
     "manage_vault", "import_project", "manage_git",
+    "terraform_exec", "execute_playbook", "run_adhoc", "local_exec",
+    "discover_inventory", "terraform_to_inventory", "run_molecule",
   ]), []);
 
   const wsRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

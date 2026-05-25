@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageSquare, WifiOff, XCircle as XC, Shield, KeyRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { ConfigRequestEvent, isConfigRequest } from "@/components/review/ConfigRequestEvent";
@@ -332,9 +332,19 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
 function SessionCompletedBanner({ events }: { events: AgentEvent[] }) {
   const stepCount = events.filter((e) => e.event === "step_start").length;
   const toolCalls = events.filter((e) => e.event === "tool_call").length;
+  const approvals = events.filter((e) => e.event === "approval_granted").length;
+  const secrets = events.filter(
+    (e) => e.event === "tool_result" && (e.data.tool as string) === "request_secret" && e.data.status === "success",
+  ).length;
   const hasError = events.some(
     (e) => e.event === "error_recovery" || (e.event === "tool_result" && e.data.status === "error"),
   );
+
+  const parts: string[] = [];
+  if (stepCount > 0) parts.push(`${stepCount} steps`);
+  if (toolCalls > 0) parts.push(`${toolCalls} tool calls`);
+  if (approvals > 0) parts.push(`${approvals} approved`);
+  if (secrets > 0) parts.push(`${secrets} secrets`);
 
   return (
     <div className="rounded-lg border border-emerald-900/30 bg-emerald-950/20 px-3 py-2 font-mono">
@@ -342,7 +352,7 @@ function SessionCompletedBanner({ events }: { events: AgentEvent[] }) {
         <CheckCircle2 className={`h-3 w-3 shrink-0 ${hasError ? "text-amber-500" : "text-emerald-500"}`} />
         <span className="text-[10px] text-emerald-600">
           {hasError ? "Task completed with issues" : "Task completed"}
-          {stepCount > 0 && <span className="text-emerald-700 ml-1.5">· {stepCount} steps · {toolCalls} tool calls</span>}
+          {parts.length > 0 && <span className="text-emerald-700 ml-1.5">· {parts.join(" · ")}</span>}
         </span>
       </div>
     </div>
@@ -365,72 +375,6 @@ function SessionErrorBanner({ events }: { events: AgentEvent[] }) {
   );
 }
 
-function CollapsedSystemBadge({
-  approved,
-  rejected,
-  storedSecrets,
-  skippedSecrets,
-  allRejected,
-}: {
-  approved: number;
-  rejected: number;
-  storedSecrets: string[];
-  skippedSecrets: string[];
-  allRejected: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const hasApprovals = approved > 0 || rejected > 0;
-  const hasSecrets = storedSecrets.length > 0 || skippedSecrets.length > 0;
-  if (!hasApprovals && !hasSecrets) return null;
-
-  const borderColor = allRejected ? "border-red-800/20" : "border-emerald-800/20";
-  const Icon = allRejected ? XC : CheckCircle2;
-  const iconColor = allRejected ? "text-red-400" : "text-emerald-400";
-
-  const parts: string[] = [];
-  if (approved > 0) parts.push(`${approved} approved`);
-  if (rejected > 0) parts.push(`${rejected} rejected`);
-  if (storedSecrets.length > 0) parts.push(`${storedSecrets.length} secret${storedSecrets.length > 1 ? "s" : ""} stored`);
-  if (skippedSecrets.length > 0) parts.push(`${skippedSecrets.length} skipped`);
-  const summary = parts.join(" · ");
-
-  const hasDetails = storedSecrets.length > 0 || skippedSecrets.length > 0;
-
-  return (
-    <div className={`rounded-md border bg-zinc-900/40 ${borderColor}`}>
-      <button
-        onClick={() => hasDetails && setExpanded(!expanded)}
-        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
-      >
-        <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
-        {hasApprovals && <Shield className="h-3 w-3 shrink-0 text-zinc-600" />}
-        {hasSecrets && <KeyRound className="h-3 w-3 shrink-0 text-zinc-600" />}
-        <span className="text-xs text-zinc-400 flex-1">{summary}</span>
-        {hasDetails && (
-          expanded
-            ? <ChevronDown className="h-3 w-3 text-zinc-600 shrink-0" />
-            : <ChevronRight className="h-3 w-3 text-zinc-600 shrink-0" />
-        )}
-      </button>
-      {expanded && (
-        <div className="border-t border-zinc-800/30 px-3 py-1.5 space-y-0.5">
-          {storedSecrets.map((name) => (
-            <div key={name} className="flex items-center gap-1.5 text-[10px]">
-              <CheckCircle2 className="h-2.5 w-2.5 text-emerald-500/70 shrink-0" />
-              <code className="text-emerald-500/60 font-mono">{name}</code>
-            </div>
-          ))}
-          {skippedSecrets.map((name) => (
-            <div key={name} className="flex items-center gap-1.5 text-[10px]">
-              <XC className="h-2.5 w-2.5 text-zinc-600 shrink-0" />
-              <code className="text-zinc-600 font-mono">{name}</code>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 interface ActivityFeedProps {
   events: AgentEvent[];
@@ -593,60 +537,12 @@ export function ActivityFeed({
   let approvalCounter = 0;
   let secretCounter = 0;
 
-  type SystemGroup = {
-    renderIdx: number;
-    approved: number;
-    rejected: number;
-    secrets: { name: string; provided: boolean }[];
-    key: string;
-  };
-  let sysGroup: SystemGroup | null = null;
-
-  const flushSystemGroup = () => {
-    if (!sysGroup) return;
-    const { approved, rejected, secrets, key } = sysGroup;
-    const storedSecrets = secrets.filter((s) => s.provided);
-    const skippedSecrets = secrets.filter((s) => !s.provided);
-    const allRejected = approved === 0 && rejected > 0 && storedSecrets.length === 0;
-    renderItems[sysGroup.renderIdx] = (
-      <CollapsedSystemBadge
-        key={key}
-        approved={approved}
-        rejected={rejected}
-        storedSecrets={storedSecrets.map((s) => s.name)}
-        skippedSecrets={skippedSecrets.map((s) => s.name)}
-        allRejected={allRejected}
-      />
-    );
-    sysGroup = null;
-  };
-
-  const ensureSystemGroup = () => {
-    if (!sysGroup) {
-      sysGroup = {
-        renderIdx: renderItems.length,
-        approved: 0,
-        rejected: 0,
-        secrets: [],
-        key: `sys-${renderItems.length}`,
-      };
-      renderItems.push(null);
-    }
-  };
-
   for (let idx = 0; idx < grouped.length; idx++) {
     const item = grouped[idx];
 
     if (isStepGroup(item)) continue;
 
     const event = item;
-
-    const isResolvedApproval = event.event === "approval_required" && approvalResolutions.has(approvalCounter);
-    const isResolvedSecret = event.event === "secret_request" && secretResolutions.has(secretCounter);
-
-    if (!isResolvedApproval && !isResolvedSecret) {
-      flushSystemGroup();
-    }
 
     switch (event.event) {
       case "user_message":
@@ -686,14 +582,7 @@ export function ActivityFeed({
       case "secret_request": {
         const thisSecretIdx = secretCounter++;
         const resolution = secretResolutions.get(thisSecretIdx);
-        if (resolution) {
-          ensureSystemGroup();
-          sysGroup!.secrets.push({
-            name: (event.data.secret_name as string) || "secret",
-            provided: resolution === "provided",
-          });
-          flushSystemGroup();
-        } else {
+        if (!resolution) {
           if (lastMessageId) hasItemsAfterLastMessage = true;
           renderItems.push(<SecretRequestEvent key={event.id} event={event} onSkip={onCancelSecret} />);
         }
@@ -702,11 +591,7 @@ export function ActivityFeed({
       case "approval_required": {
         const thisApprovalIdx = approvalCounter++;
         const resolution = approvalResolutions.get(thisApprovalIdx);
-        if (resolution) {
-          ensureSystemGroup();
-          sysGroup!.approved += resolution === "approved" ? 1 : 0;
-          sysGroup!.rejected += resolution === "rejected" ? 1 : 0;
-        } else {
+        if (!resolution) {
           if (lastMessageId) hasItemsAfterLastMessage = true;
           if (isConfigRequest(event)) {
             renderItems.push(
@@ -753,7 +638,6 @@ export function ActivityFeed({
         break;
     }
   }
-  flushSystemGroup();
 
   const showPinned =
     msgOffScreen && hasItemsAfterLastMessage && lastMessageEvent != null;

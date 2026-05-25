@@ -57,38 +57,79 @@ function buildTree(files: WorkspaceFile[]): TreeNode {
 }
 
 function fileIcon(name: string) {
-  if (name.endsWith(".yml") || name.endsWith(".yaml")) return FileCode2;
-  if (name.endsWith(".tf") || name.endsWith(".tfvars") || name.endsWith(".hcl")) return FileCode2;
-  if (name.endsWith(".j2")) return ScrollText;
-  if (name.endsWith(".sh") || name.endsWith(".bash")) return FileText;
-  if (name.endsWith(".cfg") || name.endsWith(".ini") || name.endsWith(".conf")) return Settings2;
-  if (name.endsWith(".json") || name.endsWith(".toml")) return Settings2;
-  if (name === "hosts" || name === "extravars") return FileText;
-  if (name === "Makefile" || name === "Dockerfile" || name === "Jenkinsfile") return FileCode2;
+  const n = name.toLowerCase();
+  if (n.endsWith(".yml") || n.endsWith(".yaml")) return FileCode2;
+  if (n.endsWith(".tf") || n.endsWith(".tfvars") || n.endsWith(".hcl") || n.endsWith(".tfstate")) return FileCode2;
+  if (n.endsWith(".j2") || n.endsWith(".jinja2")) return ScrollText;
+  if (n.endsWith(".sh") || n.endsWith(".bash") || n.endsWith(".zsh")) return FileText;
+  if (n.endsWith(".py") || n.endsWith(".rb") || n.endsWith(".go") || n.endsWith(".rs")) return FileCode2;
+  if (n.endsWith(".js") || n.endsWith(".ts") || n.endsWith(".jsx") || n.endsWith(".tsx")) return FileCode2;
+  if (n.endsWith(".cfg") || n.endsWith(".ini") || n.endsWith(".conf") || n.endsWith(".properties")) return Settings2;
+  if (n.endsWith(".json") || n.endsWith(".toml") || n.endsWith(".env")) return Settings2;
+  if (n.endsWith(".xml") || n.endsWith(".html") || n.endsWith(".htm")) return FileCode2;
+  if (n.endsWith(".css") || n.endsWith(".scss") || n.endsWith(".less")) return FileCode2;
+  if (n.endsWith(".md") || n.endsWith(".rst") || n.endsWith(".txt")) return FileText;
+  if (n.endsWith(".sql")) return FileCode2;
+  if (n.endsWith(".csv")) return FileText;
+  if (n === "hosts" || n === "extravars" || n === "ansible.cfg") return FileText;
+  if (n === "makefile" || n === "dockerfile" || n === "jenkinsfile" || n === "vagrantfile") return FileCode2;
+  if (n === ".gitignore" || n === ".dockerignore" || n === ".editorconfig") return Settings2;
+  if (n === "license" || n === "readme" || n === "changelog") return FileText;
   return File;
 }
 
 function fileColor(name: string): string {
-  if (name.endsWith(".yml") || name.endsWith(".yaml")) return "text-blue-400/80";
-  if (name.endsWith(".tf") || name.endsWith(".tfvars") || name.endsWith(".hcl")) return "text-purple-400/80";
-  if (name.endsWith(".j2")) return "text-amber-400/80";
-  if (name.endsWith(".sh") || name.endsWith(".bash")) return "text-green-400/80";
-  if (name.endsWith(".json") || name.endsWith(".toml")) return "text-orange-400/80";
-  if (name.endsWith(".cfg") || name.endsWith(".ini")) return "text-zinc-400/80";
-  if (name === "hosts") return "text-teal-400/80";
-  if (name === "Dockerfile") return "text-sky-400/80";
+  const n = name.toLowerCase();
+  if (n.endsWith(".yml") || n.endsWith(".yaml")) return "text-blue-400/80";
+  if (n.endsWith(".tf") || n.endsWith(".tfvars") || n.endsWith(".hcl")) return "text-purple-400/80";
+  if (n.endsWith(".tfstate")) return "text-purple-300/60";
+  if (n.endsWith(".j2") || n.endsWith(".jinja2")) return "text-amber-400/80";
+  if (n.endsWith(".sh") || n.endsWith(".bash") || n.endsWith(".zsh")) return "text-green-400/80";
+  if (n.endsWith(".py")) return "text-yellow-400/80";
+  if (n.endsWith(".go")) return "text-cyan-400/80";
+  if (n.endsWith(".rs")) return "text-orange-400/80";
+  if (n.endsWith(".rb")) return "text-red-400/80";
+  if (n.endsWith(".js") || n.endsWith(".jsx")) return "text-yellow-300/80";
+  if (n.endsWith(".ts") || n.endsWith(".tsx")) return "text-blue-400/80";
+  if (n.endsWith(".json")) return "text-orange-400/80";
+  if (n.endsWith(".toml")) return "text-orange-300/80";
+  if (n.endsWith(".xml") || n.endsWith(".html") || n.endsWith(".htm")) return "text-orange-400/80";
+  if (n.endsWith(".css") || n.endsWith(".scss")) return "text-pink-400/80";
+  if (n.endsWith(".md") || n.endsWith(".rst")) return "text-zinc-300/80";
+  if (n.endsWith(".sql")) return "text-cyan-400/80";
+  if (n.endsWith(".csv")) return "text-green-300/80";
+  if (n.endsWith(".env") || n.endsWith(".properties")) return "text-yellow-500/80";
+  if (n.endsWith(".cfg") || n.endsWith(".ini") || n.endsWith(".conf")) return "text-zinc-400/80";
+  if (n === "hosts") return "text-teal-400/80";
+  if (n === "dockerfile") return "text-sky-400/80";
+  if (n === "makefile") return "text-rose-400/80";
+  if (n === "jenkinsfile") return "text-red-400/80";
+  if (n === "vagrantfile") return "text-blue-300/80";
+  if (n.startsWith(".git") || n.startsWith(".docker") || n.startsWith(".editor")) return "text-zinc-500/80";
+  if (n === "license" || n === "readme" || n === "changelog") return "text-zinc-300/80";
   return "text-zinc-500";
 }
 
 function folderColor(name: string): string {
-  if (name === "project") return "text-blue-400/60";
-  if (name === "inventory") return "text-teal-400/60";
-  if (name === "env") return "text-amber-400/60";
-  if (name === "roles") return "text-purple-400/60";
-  if (name === "templates") return "text-orange-400/60";
-  if (name === "terraform") return "text-purple-400/60";
-  if (name === "group_vars" || name === "host_vars") return "text-teal-400/60";
-  if (name === "tasks" || name === "handlers" || name === "defaults" || name === "vars") return "text-blue-400/60";
+  const n = name.toLowerCase();
+  if (n === "project") return "text-blue-400/60";
+  if (n === "inventory" || n === "inventories") return "text-teal-400/60";
+  if (n === "env" || n === "environments") return "text-amber-400/60";
+  if (n === "roles") return "text-purple-400/60";
+  if (n === "templates" || n === "files") return "text-orange-400/60";
+  if (n === "terraform" || n.startsWith("tf-") || n.startsWith("tf_")) return "text-purple-400/60";
+  if (n === "group_vars" || n === "host_vars") return "text-teal-400/60";
+  if (n === "tasks" || n === "handlers" || n === "defaults" || n === "vars" || n === "meta") return "text-blue-400/60";
+  if (n === "molecule" || n === "tests" || n === "test") return "text-green-400/60";
+  if (n === "playbooks") return "text-blue-400/60";
+  if (n === "scripts" || n === "bin") return "text-green-400/60";
+  if (n === "modules" || n === "plugins" || n === "library") return "text-amber-400/60";
+  if (n === "networking" || n === "network") return "text-cyan-400/60";
+  if (n === "platform" || n === "compute" || n === "app") return "text-indigo-400/60";
+  if (n === "data" || n === "database" || n === "storage") return "text-rose-400/60";
+  if (n === ".github" || n === ".gitlab") return "text-zinc-400/60";
+  if (n === "helm" || n === "charts" || n === "manifests" || n === "k8s" || n === "kubernetes") return "text-sky-400/60";
+  if (n === "ansible" || n === "ansible_collections") return "text-red-400/60";
   return "text-zinc-500";
 }
 
@@ -259,16 +300,24 @@ function FileContent({ file }: { file: WorkspaceFile }) {
 }
 
 function highlightContent(filename: string, content: string): React.ReactNode {
-  const isYaml = filename.endsWith(".yml") || filename.endsWith(".yaml");
-  const isJ2 = filename.endsWith(".j2");
-  const isIni = filename.endsWith(".cfg") || filename.endsWith(".ini") || filename === "hosts";
-  const isTf = filename.endsWith(".tf") || filename.endsWith(".tfvars") || filename.endsWith(".hcl");
+  const n = filename.toLowerCase();
+  const isYaml = n.endsWith(".yml") || n.endsWith(".yaml");
+  const isJ2 = n.endsWith(".j2") || n.endsWith(".jinja2");
+  const isIni = n.endsWith(".cfg") || n.endsWith(".ini") || n.endsWith(".conf") || n === "hosts" || n === "ansible.cfg";
+  const isTf = n.endsWith(".tf") || n.endsWith(".tfvars") || n.endsWith(".hcl");
+  const isSh = n.endsWith(".sh") || n.endsWith(".bash") || n.endsWith(".zsh") || n === "makefile";
+  const isJson = n.endsWith(".json");
+  const isPy = n.endsWith(".py");
+  const isEnv = n.endsWith(".env") || n.endsWith(".properties");
 
   return content.split("\n").map((line, i) => {
     if (isYaml) return <YamlLine key={i} line={line} />;
     if (isJ2) return <Jinja2Line key={i} line={line} />;
-    if (isIni) return <IniLine key={i} line={line} />;
+    if (isIni || isEnv) return <IniLine key={i} line={line} />;
     if (isTf) return <HclLine key={i} line={line} />;
+    if (isSh) return <ShellLine key={i} line={line} />;
+    if (isJson) return <JsonLine key={i} line={line} />;
+    if (isPy) return <PythonLine key={i} line={line} />;
     return <div key={i} className="text-zinc-300">{line || "\u00A0"}</div>;
   });
 }
@@ -359,6 +408,59 @@ function HclLine({ line }: { line: string }) {
         <span className="text-blue-400/80">{line.slice(0, eqIdx)}</span>
         <span className="text-zinc-500">=</span>
         <span className="text-zinc-300">{line.slice(eqIdx + 1)}</span>
+      </div>
+    );
+  }
+  return <div className="text-zinc-300">{line || "\u00A0"}</div>;
+}
+
+function ShellLine({ line }: { line: string }) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("#")) {
+    return <div className="text-zinc-600 italic">{line || "\u00A0"}</div>;
+  }
+  const parts = line.split(/(\$\{[^}]*\}|\$\w+|"[^"]*"|'[^']*')/g);
+  return (
+    <div>
+      {parts.map((part, j) => {
+        if (part.startsWith("$")) return <span key={j} className="text-cyan-400">{part}</span>;
+        if (part.startsWith('"') || part.startsWith("'")) return <span key={j} className="text-green-400/80">{part}</span>;
+        return <span key={j} className="text-zinc-300">{part}</span>;
+      })}
+    </div>
+  );
+}
+
+function JsonLine({ line }: { line: string }) {
+  const parts = line.split(/("(?:[^"\\]|\\.)*")/g);
+  return (
+    <div>
+      {parts.map((part, j) => {
+        if (part.startsWith('"') && (line.indexOf(part) < line.indexOf(":"))) {
+          return <span key={j} className="text-blue-400/80">{part}</span>;
+        }
+        if (part.startsWith('"')) return <span key={j} className="text-green-400/80">{part}</span>;
+        if (/true|false|null/.test(part)) return <span key={j} className="text-purple-400/80">{part}</span>;
+        return <span key={j} className="text-zinc-300">{part}</span>;
+      })}
+    </div>
+  );
+}
+
+function PythonLine({ line }: { line: string }) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("#")) {
+    return <div className="text-zinc-600 italic">{line || "\u00A0"}</div>;
+  }
+  const kw = /^(def|class|import|from|if|elif|else|for|while|return|yield|with|as|try|except|finally|raise|pass|break|continue|and|or|not|in|is|lambda|async|await)\b/;
+  if (kw.test(trimmed)) {
+    const match = trimmed.match(kw)!;
+    const lead = line.length - trimmed.length;
+    return (
+      <div>
+        <span className="text-zinc-300">{line.slice(0, lead)}</span>
+        <span className="text-purple-400 font-medium">{match[0]}</span>
+        <span className="text-zinc-300">{trimmed.slice(match[0].length)}</span>
       </div>
     );
   }

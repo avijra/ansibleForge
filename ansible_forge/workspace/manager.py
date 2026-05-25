@@ -95,6 +95,27 @@ class Workspace:
     def inventory_dir(self) -> Path:
         return self.path / "inventory"
 
+    _CORE_DIRS = ("scripts",)
+
+    _PROFILE_DIRS: dict[str, tuple[str, ...]] = {
+        "ansible": ("inventory", "playbooks", "roles", "group_vars", "templates"),
+        "terraform": ("terraform",),
+        "gitops": ("k8s", "helm"),
+        "devops": ("docker", "pipelines"),
+    }
+
+    def scaffold_layout(self, profiles: set[str] | None = None) -> list[str]:
+        dirs: list[str] = list(self._CORE_DIRS)
+        for profile in (profiles or set()):
+            dirs.extend(self._PROFILE_DIRS.get(profile, ()))
+        created: list[str] = []
+        for d in dirs:
+            target = self.path / d
+            if not target.exists():
+                target.mkdir(parents=True, exist_ok=True)
+                created.append(d)
+        return created
+
     @property
     def runner_dir(self) -> Path:
         return self.path / RUNNER_SUBDIR

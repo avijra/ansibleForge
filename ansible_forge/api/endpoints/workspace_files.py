@@ -13,25 +13,26 @@ from ansible_forge.workspace.resolver import resolve_workspace
 
 router = APIRouter()
 
-_TEXT_SUFFIXES = frozenset({
-    ".yml", ".yaml", ".j2", ".cfg", ".ini", ".conf", ".txt",
-    ".json", ".sh", ".bash", ".py", ".md", ".toml",
-    ".tf", ".tfvars", ".hcl", ".tfstate",
-    ".xml", ".csv", ".env", ".properties",
-    ".sql", ".dockerfile", ".gitignore",
+_SKIP_DIRS = frozenset({
+    "__pycache__", ".git", ".tuyere", ".terraform", "node_modules",
+    ".venv", "venv", ".mypy_cache", ".ruff_cache", ".pytest_cache",
 })
-_TEXT_NAMES = frozenset({
-    "hosts", "extravars", "ansible.cfg",
-    "Makefile", "Dockerfile", "Vagrantfile", "Jenkinsfile",
-    "Gemfile", "Rakefile", "Procfile",
-    ".gitignore", ".dockerignore", ".editorconfig",
+_BINARY_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv",
+    ".db", ".sqlite", ".sqlite3",
+    ".o", ".a", ".class", ".jar",
+    ".tfstate.backup",
 })
-_SKIP_DIRS = frozenset({"__pycache__", ".git", ".tuyere", ".terraform", "node_modules"})
 _MAX_FILE_SIZE = 512_000
 
 
 def _collect_files(base: Path, root: Path) -> list[dict[str, Any]]:
-    """Walk the workspace tree and collect text files with relative paths."""
+    """Walk the workspace tree and collect all text-readable files."""
     entries: list[dict[str, Any]] = []
     if not root.is_dir():
         return entries
@@ -41,7 +42,7 @@ def _collect_files(base: Path, root: Path) -> list[dict[str, Any]]:
             continue
         if any(part in _SKIP_DIRS for part in item.parts):
             continue
-        if item.suffix not in _TEXT_SUFFIXES and item.name not in _TEXT_NAMES:
+        if item.suffix.lower() in _BINARY_SUFFIXES:
             continue
         if item.stat().st_size > _MAX_FILE_SIZE:
             continue
