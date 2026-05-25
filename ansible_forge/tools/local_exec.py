@@ -93,7 +93,7 @@ _ALLOWED_PATTERNS = [
     re.compile(r"\bnslookup\b"),
 ]
 
-_ESCAPE_HATCH_THRESHOLD = 2
+_ESCAPE_HATCH_THRESHOLD = 3
 
 
 def _is_self_harm(command: str) -> bool:
@@ -221,10 +221,11 @@ class LocalExec(BaseTool):
             )
 
         exec_fail_count: int = kwargs.get("_exec_fail_count", 0)
+        searched: bool = kwargs.get("_searched_since_exec_fail", False)
 
         rejection = self._check_command(command)
         if rejection:
-            if exec_fail_count >= _ESCAPE_HATCH_THRESHOLD:
+            if exec_fail_count >= _ESCAPE_HATCH_THRESHOLD and searched:
                 logger.warning(
                     "local_exec_escape_hatch",
                     command=command[:200],

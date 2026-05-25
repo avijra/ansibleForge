@@ -41,6 +41,8 @@ def _adhoc_envvars() -> dict[str, str]:
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
+        "LC_ALL": "en_US.UTF-8",
+        "LANG": "en_US.UTF-8",
     }
 
 

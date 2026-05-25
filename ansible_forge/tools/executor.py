@@ -67,6 +67,8 @@ def _runner_envvars() -> dict[str, str]:
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
+        "LC_ALL": "en_US.UTF-8",
+        "LANG": "en_US.UTF-8",
     }
 
 _LIVE_EVENT_TYPES = frozenset({

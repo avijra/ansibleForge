@@ -93,6 +93,8 @@ class GalaxyManager(BaseTool):
             return await self._discover_roles(workspace_path)
         return ToolResult.fail(f"Unknown action: {action}")
 
+    _GALAXY_API = "https://galaxy.ansible.com/api/v3/plugin/ansible/search/collection-versions/"
+
     async def _search(self, query: str) -> ToolResult:
         if not query:
             return ToolResult.fail("collection_name is required for search")
@@ -101,24 +103,71 @@ class GalaxyManager(BaseTool):
             "collection", "list", "--format=json"
         )
 
-        results: list[dict[str, str]] = []
+        local_results: list[dict[str, str]] = []
         if rc == 0:
             try:
                 data = json.loads(stdout)
                 for path_collections in data.values():
                     for name, info in path_collections.items():
                         if query.lower() in name.lower():
-                            results.append({
+                            local_results.append({
                                 "name": name,
                                 "version": info.get("version", "unknown"),
+                                "source": "installed",
                             })
             except (json.JSONDecodeError, AttributeError):
                 logger.debug("galaxy_list_parse_failed", exc_info=True)
 
+        online_results = await self._search_galaxy_api(query)
+
+        seen = {r["name"] for r in local_results}
+        merged = list(local_results)
+        for r in online_results:
+            if r["name"] not in seen:
+                merged.append(r)
+                seen.add(r["name"])
+
+        hint = ""
+        installable = [r for r in merged if r.get("source") == "galaxy"]
+        if installable:
+            names = ", ".join(r["name"] for r in installable[:3])
+            hint = (
+                f" To install: `manage_galaxy action=install collection_name={installable[0]['name']}`."
+                f" Available online: {names}."
+            )
+
         return ToolResult.ok(
-            output=f"Found {len(results)} installed package(s) matching '{query}'.",
-            collections=results,
+            output=f"Found {len(local_results)} installed, {len(online_results)} on Galaxy matching '{query}'.{hint}",
+            collections=merged,
         )
+
+    async def _search_galaxy_api(self, query: str) -> list[dict[str, str]]:
+        import httpx
+
+        results: list[dict[str, str]] = []
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                resp = await client.get(
+                    self._GALAXY_API,
+                    params={"keywords": query, "limit": 10, "is_highest": True},
+                )
+                if resp.status_code != 200:
+                    logger.debug("galaxy_api_non_200", status=resp.status_code)
+                    return results
+                data = resp.json().get("data", [])
+                for item in data:
+                    fqcn = f"{item.get('namespace', '')}.{item.get('name', '')}"
+                    if "." not in fqcn or not fqcn.strip("."):
+                        continue
+                    results.append({
+                        "name": fqcn,
+                        "version": item.get("highest_version", {}).get("version", "latest"),
+                        "description": (item.get("description") or "")[:120],
+                        "source": "galaxy",
+                    })
+        except Exception:
+            logger.debug("galaxy_api_search_failed", exc_info=True)
+        return results
 
     async def _install(self, collection_name: str, version: str) -> ToolResult:
         if not collection_name:

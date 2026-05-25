@@ -125,6 +125,12 @@ _ALL_TOOL_NAMES = (
     | _EXECUTION_VERIFY_TOOLS | _TERRAFORM_TOOLS
 )
 
+_RESEARCH_GATED_TOOLS = frozenset({
+    "generate_playbook", "scaffold_role", "render_template",
+    "generate_rollback", "execute_playbook", "run_adhoc",
+    "terraform_exec", "local_exec",
+})
+
 _ANSIBLE_TOOLS = frozenset({
     "generate_playbook", "execute_playbook", "scaffold_role", "run_adhoc",
     "manage_inventory", "manage_vault", "manage_galaxy", "render_template",
@@ -295,6 +301,8 @@ class SessionState:
         self._consec_fails_by_tool: dict[str, int] = {}
         self._exec_fail_count = 0
         self._searched_since_exec_fail = False
+        self._has_researched = False
+        self._research_gate_fired = False
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._total_cost = 0.0
@@ -463,11 +471,23 @@ class Orchestrator:
         if state._exec_fail_count < Orchestrator._SEARCH_GATE_THRESHOLD:
             return None
         return ToolResult.fail(
-            f"BLOCKED: {tool_name} has failed {state._exec_fail_count} time(s) "
-            f"and you have not searched for the error. "
-            f"You MUST call `web_search` with the error message before "
-            f"retrying any execution tool. This is a hard requirement, "
-            f"not a suggestion.",
+            "You must call `web_search` or `search_docs` with the error before "
+            "retrying. Do not surface this to the user.",
+        )
+
+    @staticmethod
+    def _check_research_gate(state: SessionState, tool_name: str) -> ToolResult | None:
+        if tool_name not in _RESEARCH_GATED_TOOLS:
+            return None
+        if state._has_researched or state._research_gate_fired:
+            return None
+        state._research_gate_fired = True
+        return ToolResult.fail(
+            "You must research before generating. Call `manage_galaxy action=search` "
+            "to find relevant Ansible collections, `search_docs` for module docs, or "
+            "`web_search` for Terraform providers/cloud prerequisites. "
+            "After at least one search, you may proceed. "
+            "Do not surface this to the user.",
         )
 
     @staticmethod
@@ -1222,12 +1242,15 @@ class Orchestrator:
                             "tool_call_id": tc.id,
                         }))
 
-                        gate_block = self._check_search_gate(state, tc.name)
+                        gate_block = (
+                            self._check_research_gate(state, tc.name)
+                            or self._check_search_gate(state, tc.name)
+                        )
                         if gate_block:
                             logger.warning(
-                                "search_gate_blocked",
+                                "gate_blocked",
                                 tool=tc.name,
-                                exec_fail_count=state._exec_fail_count,
+                                gate="research" if not state._has_researched else "search",
                             )
                             state.memory.add_tool_result(tc.id, gate_block.model_dump_json())
                             yield AgentEvent("tool_result", session_vault.redact_dict({
@@ -1292,8 +1315,15 @@ class Orchestrator:
                             await infra_tracker.update_infrastructure(
                                 tc.name, result, state.session_id,
                             )
-                        if tc.name == "web_search" and result.status != ToolStatus.ERROR:
+                        if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
                             state._searched_since_exec_fail = True
+                            state._has_researched = True
+                        if (
+                            tc.name == "manage_galaxy"
+                            and tc.arguments.get("action") == "search"
+                            and result.status != ToolStatus.ERROR
+                        ):
+                            state._has_researched = True
 
                         if result.status == ToolStatus.ERROR:
                             # Auto-remediation: detect missing Python SDK and install it
@@ -1593,12 +1623,15 @@ class Orchestrator:
                         except Exception:
                             logger.debug("checkpoint_before_failed", tool=tc.name, exc_info=True)
 
-                    gate_block = self._check_search_gate(state, tc.name)
+                    gate_block = (
+                        self._check_research_gate(state, tc.name)
+                        or self._check_search_gate(state, tc.name)
+                    )
                     if gate_block:
                         logger.warning(
-                            "search_gate_blocked",
+                            "gate_blocked",
                             tool=tc.name,
-                            exec_fail_count=state._exec_fail_count,
+                            gate="research" if not state._has_researched else "search",
                         )
                         state.memory.add_tool_result(tc.id, gate_block.model_dump_json())
                         result = gate_block
@@ -2025,8 +2058,15 @@ class Orchestrator:
                             early_return = True
                             break
 
-                    if tc.name == "web_search" and result.status != ToolStatus.ERROR:
+                    if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
                         state._searched_since_exec_fail = True
+                        state._has_researched = True
+                    if (
+                        tc.name == "manage_galaxy"
+                        and tc.arguments.get("action") == "search"
+                        and result.status != ToolStatus.ERROR
+                    ):
+                        state._has_researched = True
 
                     if result.status == ToolStatus.ERROR:
                         # Auto-remediation: detect missing Python SDK and install it
@@ -2323,6 +2363,7 @@ class Orchestrator:
         arguments["_session_id"] = state.session_id
         arguments["_workspace_path"] = str(state.workspace.path)
         arguments["_exec_fail_count"] = state._exec_fail_count
+        arguments["_searched_since_exec_fail"] = state._searched_since_exec_fail
 
         if is_file_writing_tool(tool_name):
             profiles = _detect_profiles(tool_name, arguments)
