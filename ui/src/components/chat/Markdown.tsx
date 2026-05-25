@@ -261,14 +261,49 @@ function wrapRawMermaid(text: string): string {
   const lines = text.split("\n");
   const result: string[] = [];
   let i = 0;
+  let insideFence = false;
 
   while (i < lines.length) {
     const trimmed = lines[i].trim();
+
+    if (trimmed.startsWith("```")) {
+      if (insideFence) {
+        insideFence = false;
+        result.push(lines[i]);
+        i++;
+        continue;
+      }
+      if (trimmed.startsWith("```mermaid")) {
+        insideFence = true;
+        result.push(lines[i]);
+        i++;
+        continue;
+      }
+      insideFence = true;
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    if (insideFence) {
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    if (/^MERMAID\s*$/i.test(trimmed)) {
+      if (i + 1 < lines.length && lines[i + 1].trim().startsWith("```mermaid")) {
+        i++;
+        continue;
+      }
+    }
+
     if (MERMAID_START.test(trimmed)) {
       const block: string[] = [lines[i]];
       let j = i + 1;
       while (j < lines.length) {
         const lt = lines[j].trim();
+        if (lt.startsWith("```")) break;
         if (lt === "" && j + 1 < lines.length && !MERMAID_LINE.test(lines[j + 1].trim())) break;
         if (lt === "" || MERMAID_LINE.test(lt) || /^\s/.test(lines[j])) {
           block.push(lines[j]);
