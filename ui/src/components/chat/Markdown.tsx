@@ -257,7 +257,7 @@ const MERMAID_START =
 const MERMAID_LINE =
   /^\s*([\w[\]()"|{}]+\s*(-->|---|-\.->|==>|-.->|--\s|~~~|-->|<-->)\s*[\w[\]()"|{}]+|subgraph\s|end\s*$|%%|style\s|class\s|linkStyle\s|\w+\s*-->|participant\s|\w+\s*->>|Note\s|loop\s|alt\s|else\s|opt\s)/;
 
-function wrapRawMermaid(text: string): string {
+export function wrapRawMermaid(text: string): string {
   const lines = text.split("\n");
   const result: string[] = [];
   let i = 0;

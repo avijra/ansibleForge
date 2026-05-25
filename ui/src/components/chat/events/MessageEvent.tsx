@@ -1,13 +1,27 @@
 import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/api/types";
-import { Markdown } from "@/components/chat/Markdown";
+import { Markdown, wrapRawMermaid } from "@/components/chat/Markdown";
 
-const MAX_LINES = 60;
+const MAX_LINES = 80;
 
 function truncateContent(text: string): { display: string; wasTruncated: boolean } {
   const lines = text.split("\n");
   if (lines.length <= MAX_LINES) return { display: text, wasTruncated: false };
-  return { display: lines.slice(0, MAX_LINES).join("\n"), wasTruncated: true };
+
+  let cutAt = MAX_LINES;
+  let inFence = false;
+  for (let i = 0; i < Math.min(lines.length, MAX_LINES + 40); i++) {
+    const t = lines[i].trim();
+    if (t.startsWith("```")) {
+      inFence = !inFence;
+    }
+    if (i >= MAX_LINES && !inFence) {
+      cutAt = i;
+      break;
+    }
+  }
+
+  return { display: lines.slice(0, cutAt).join("\n"), wasTruncated: cutAt < lines.length };
 }
 
 export function MessageEvent({ event }: { event: AgentEvent }) {
@@ -16,9 +30,11 @@ export function MessageEvent({ event }: { event: AgentEvent }) {
   const isStreaming = event.data._streaming === true;
   const [expanded, setExpanded] = useState(false);
 
+  const preprocessed = useMemo(() => wrapRawMermaid(content), [content]);
+
   const { display, wasTruncated } = useMemo(
-    () => (expanded ? { display: content, wasTruncated: false } : truncateContent(content)),
-    [content, expanded],
+    () => (expanded ? { display: preprocessed, wasTruncated: false } : truncateContent(preprocessed)),
+    [preprocessed, expanded],
   );
 
   if (!content && !isStreaming) return null;
