@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -233,29 +232,42 @@ class InventoryDiscoveryTool(BaseTool):
         if secret_env:
             env.update(secret_env)
 
+        proc = None
         try:
-            proc = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        ["ansible-inventory", "--list", "-i", str(config_path)],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        env=env,
-                    ),
-                ),
-                timeout=130,
+            proc = await asyncio.create_subprocess_exec(
+                "ansible-inventory", "--list", "-i", str(config_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.CancelledError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            config_path.unlink(missing_ok=True)
+            raise
+        except TimeoutError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            config_path.unlink(missing_ok=True)
+            return {"inventory": {}, "error": "ansible-inventory timed out after 120s"}
         finally:
             config_path.unlink(missing_ok=True)
 
         if proc.returncode != 0:
-            stderr = proc.stderr.strip()
+            stderr = stderr_b.decode(errors="replace").strip()
             return {"inventory": {}, "error": self._diagnose_error(stderr, plugin_type)}
 
         try:
-            inventory = json.loads(proc.stdout)
+            inventory = json.loads(stdout_b.decode(errors="replace"))
         except json.JSONDecodeError:
             return {"inventory": {}, "error": "ansible-inventory returned non-JSON output"}
 

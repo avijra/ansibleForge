@@ -15,6 +15,7 @@ interface PerSessionState {
   serverSid: string | null;
   controller: AbortController | null;
   streaming: boolean;
+  cancelled: boolean;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -44,6 +45,7 @@ function getSessionState(id: string): PerSessionState {
       serverSid: isServerSid ? id : null,
       controller: null,
       streaming: false,
+      cancelled: false,
       reconnectAttempts: 0,
       reconnectTimer: null,
     };
@@ -71,6 +73,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
   const handleEvent = useCallback(
     (sessionId: string, ss: PerSessionState, event: AgentEvent) => {
+      if (ss.cancelled) return;
+
       if (event.event === "session_started" && event.data?.session_id) {
         ss.serverSid = event.data.session_id as string;
         return;
@@ -151,6 +155,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
   const tryReconnect = useCallback(
     (sessionId: string) => {
       const ss = getSessionState(sessionId);
+      if (ss.cancelled) return;
+
       const sid = ss.serverSid || sessionId;
 
       if (ss.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -170,6 +176,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
       ss.reconnectTimer = setTimeout(async () => {
         if (!sessionStates.has(sessionId)) return;
+        if (ss.cancelled) return;
+
         let sessionDone = false;
         let lastKnownStatus = "completed";
         try {
@@ -181,6 +189,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
           opts.updateStatus(sessionId, "error");
           return;
         }
+
+        if (ss.cancelled) return;
 
         markStreaming(sessionId, true);
         opts.updateStatus(sessionId, "active");
@@ -216,10 +226,12 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       if (ss.streaming) return;
 
       ss.controller?.abort();
+      ss.controller = null;
       if (ss.reconnectTimer) {
         clearTimeout(ss.reconnectTimer);
         ss.reconnectTimer = null;
       }
+      ss.cancelled = false;
 
       markStreaming(sessionId, true);
       opts.updateStatus(sessionId, "active");
@@ -305,7 +317,9 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
     const ss = getSessionState(activeId);
     const sid = ss.serverSid || activeId;
 
+    ss.cancelled = true;
     ss.controller?.abort();
+    ss.controller = null;
     if (ss.reconnectTimer) {
       clearTimeout(ss.reconnectTimer);
       ss.reconnectTimer = null;
@@ -315,8 +329,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
     opts.addEvent(activeId, {
       id: `cancel-${Date.now()}`,
-      event: "message",
-      data: { content: "Session cancelled by user." },
+      event: "error_recovery",
+      data: { error: "Session cancelled by user." },
       timestamp: Date.now(),
     });
 
@@ -343,13 +357,13 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
     if (!activeId || activeId.startsWith("local-")) return;
 
     const ss = getSessionState(activeId);
-    if (ss.streaming || ss.controller) return;
+    if (ss.streaming || ss.controller || ss.cancelled) return;
 
-    let cancelled = false;
+    let effectCancelled = false;
     (async () => {
       try {
         const status = await api.sessionStatus(activeId);
-        if (cancelled) return;
+        if (effectCancelled || ss.cancelled) return;
         const isRunning = status.status === "active" || status.status === "awaiting_approval" || status.status === "awaiting_secret";
         if (!isRunning) return;
 
@@ -371,7 +385,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => { effectCancelled = true; };
   }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

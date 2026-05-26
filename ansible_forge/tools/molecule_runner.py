@@ -101,6 +101,7 @@ class MoleculeRunner(BaseTool):
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -133,6 +134,14 @@ class MoleculeRunner(BaseTool):
             return ToolResult.fail(
                 f"Molecule {action} failed for role '{role_name}' (exit code {proc.returncode}).\n\n{output}"
             )
+        except asyncio.CancelledError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            raise
         except TimeoutError:
             return ToolResult.fail(f"Molecule {action} timed out for role '{role_name}'.")
         except Exception as exc:

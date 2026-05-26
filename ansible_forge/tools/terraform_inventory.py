@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -101,29 +99,35 @@ class TerraformInventoryBridge(BaseTool):
                     env[name] = str(value)
         env["TF_IN_AUTOMATION"] = "1"
 
-        loop = asyncio.get_running_loop()
+        show_proc = await asyncio.create_subprocess_exec(
+            tf_binary, "show", "-no-color", "-json",
+            cwd=str(tf_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        subprocess.run,
-                        [tf_binary, "show", "-no-color", "-json"],
-                        cwd=str(tf_dir),
-                        capture_output=True, text=True, timeout=60,
-                        env=env,
-                    ),
-                ),
-                timeout=70,
-            )
-        except (TimeoutError, subprocess.TimeoutExpired):
+            show_stdout, show_stderr = await asyncio.wait_for(show_proc.communicate(), timeout=60)
+        except asyncio.CancelledError:
+            try:
+                show_proc.kill()
+                await show_proc.wait()
+            except Exception:
+                pass
+            raise
+        except TimeoutError:
+            try:
+                show_proc.kill()
+                await show_proc.wait()
+            except Exception:
+                pass
             return ToolResult.fail("Terraform state read timed out")
 
-        if result.returncode != 0:
-            return ToolResult.fail(f"Failed to read Terraform state: {result.stderr.strip()}")
+        if show_proc.returncode != 0:
+            return ToolResult.fail(f"Failed to read Terraform state: {show_stderr.decode(errors='replace').strip()}")
 
         try:
-            state = json.loads(result.stdout)
+            state = json.loads(show_stdout.decode(errors="replace"))
         except json.JSONDecodeError:
             return ToolResult.fail("Failed to parse Terraform state JSON")
 
@@ -131,22 +135,32 @@ class TerraformInventoryBridge(BaseTool):
         hosts = self._extract_hosts(resources, use_private_ip)
 
         if not hosts:
-            outputs_result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        subprocess.run,
-                        [tf_binary, "output", "-no-color", "-json"],
-                        cwd=str(tf_dir),
-                        capture_output=True, text=True, timeout=30,
-                        env=env,
-                    ),
-                ),
-                timeout=40,
+            out_proc = await asyncio.create_subprocess_exec(
+                tf_binary, "output", "-no-color", "-json",
+                cwd=str(tf_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
-            if outputs_result.returncode == 0:
+            try:
+                out_stdout, _ = await asyncio.wait_for(out_proc.communicate(), timeout=30)
+            except asyncio.CancelledError:
                 try:
-                    outputs = json.loads(outputs_result.stdout)
+                    out_proc.kill()
+                    await out_proc.wait()
+                except Exception:
+                    pass
+                raise
+            except TimeoutError:
+                try:
+                    out_proc.kill()
+                    await out_proc.wait()
+                except Exception:
+                    pass
+                out_stdout = b""
+            if out_proc.returncode == 0 and out_stdout:
+                try:
+                    outputs = json.loads(out_stdout.decode(errors="replace"))
                     hosts = self._extract_hosts_from_outputs(outputs)
                 except json.JSONDecodeError:
                     logger.debug("tf_outputs_parse_failed", exc_info=True)

@@ -7,6 +7,7 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   onCancel: () => void;
   isStreaming: boolean;
+  canCancel?: boolean;
   disabled?: boolean;
   draft?: string;
   onDraftConsumed?: () => void;
@@ -42,11 +43,13 @@ export function ChatInput({
   onSend,
   onCancel,
   isStreaming,
+  canCancel,
   disabled,
   draft,
   onDraftConsumed,
   getFiltered,
 }: ChatInputProps) {
+  const showStop = isStreaming || (canCancel ?? false);
   const [value, setValue] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredSuggestions, setFilteredSuggestions] = useState<Suggestion[]>([]);
@@ -215,7 +218,7 @@ export function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder="Describe what you want to automate... (@ for hosts/modules, / for commands)"
-          disabled={disabled || isStreaming}
+          disabled={disabled || showStop}
           rows={1}
           aria-label="Chat message input"
           className={cn(
@@ -232,7 +235,7 @@ export function ChatInput({
             target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
           }}
         />
-        {isStreaming ? (
+        {showStop ? (
           <button
             onClick={onCancel}
             className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"

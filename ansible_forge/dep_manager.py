@@ -358,6 +358,7 @@ async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, 
 
     logger.info("dep_installing", packages=needed, reason=reason, cmd=" ".join(cmd))
 
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -366,10 +367,18 @@ async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, 
             env=_installer_env(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.CancelledError:
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+        raise
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
         msg = f"Package install timed out after 300s: {needed}"
         logger.error("dep_install_timeout", packages=needed)
         return False, msg

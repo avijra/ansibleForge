@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -104,24 +102,33 @@ class GitManager(BaseTool):
 
     async def _run_git(self, cwd: Path, *args: str, timeout: int = 30) -> tuple[int, str, str]:
         cmd = ["git"] + list(args)
-        loop = asyncio.get_running_loop()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        subprocess.run, cmd,
-                        cwd=str(cwd),
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    ),
-                ),
-                timeout=timeout + 5,
-            )
-            return result.returncode, result.stdout, result.stderr
-        except (TimeoutError, subprocess.TimeoutExpired):
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        except TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             return 1, "", "Git command timed out"
+        return (
+            proc.returncode or 0,
+            stdout_b.decode(errors="replace"),
+            stderr_b.decode(errors="replace"),
+        )
 
     async def _do_init(self, cwd: Path, **_: Any) -> ToolResult:
         if (cwd / ".git").exists():

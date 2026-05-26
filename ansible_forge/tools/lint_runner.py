@@ -82,6 +82,13 @@ class LintRunner(BaseTool):
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
         except TimeoutError:
             proc.kill()
             await proc.wait()

@@ -753,12 +753,15 @@ class Orchestrator:
         state.status = SessionStatus.ACTIVE
         await asyncio.sleep(0)
 
+        my_gen = state._generation
         loop = asyncio.get_running_loop()
         try:
             context = await loop.run_in_executor(None, build_context, state.workspace)
         except Exception:
             logger.warning("build_context_failed", session_id=session_id, exc_info=True)
             context = ""
+        if state._generation != my_gen:
+            return
 
         mention_context = ""
         try:
@@ -767,6 +770,8 @@ class Orchestrator:
             )
         except Exception:
             logger.debug("mention_context_failed", exc_info=True)
+        if state._generation != my_gen:
+            return
 
         ws_memory_context = ""
         try:
@@ -778,6 +783,8 @@ class Orchestrator:
             )
         except Exception:
             logger.debug("workspace_memory_inject_failed", exc_info=True)
+        if state._generation != my_gen:
+            return
 
         full_context = f"{user_message}\n\n---\nWorkspace context:\n{context}"
         if mention_context:
@@ -795,6 +802,8 @@ class Orchestrator:
         state.memory.add_user(full_context)
 
         plan = await self._generate_plan(state, user_message)
+        if state._generation != my_gen:
+            return
         if plan:
             yield AgentEvent("plan", plan)
 
@@ -916,6 +925,8 @@ class Orchestrator:
                             step=state.step_count,
                             exc_info=True,
                         )
+                    if state._generation != my_generation:
+                        return
 
                 # ── Compress old tool results to reduce context size ────────
                 compressed = state.memory.compress_old_tool_results(keep_recent=20)
@@ -1303,6 +1314,9 @@ class Orchestrator:
                             if state._generation != my_generation:
                                 for p in pending:
                                     p.cancel()
+                                for p in pending:
+                                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                                        await asyncio.wait_for(p, timeout=10)
                                 return
                             progress_tick += 1
                             elapsed = progress_tick * _PROGRESS_INTERVAL
@@ -1370,6 +1384,8 @@ class Orchestrator:
                                     _ok, _msg = await ensure_packages(
                                         [_pkg], reason=f"auto-fix for {tc.name}"
                                     )
+                                    if state._generation != my_generation:
+                                        return
                                     if _ok:
                                         deferred_user_msgs_p.append(
                                             f"Missing Python package '{_pkg}' was auto-installed. "
@@ -1648,6 +1664,8 @@ class Orchestrator:
                             )
                         except Exception:
                             logger.debug("checkpoint_before_failed", tool=tc.name, exc_info=True)
+                        if state._generation != my_generation:
+                            return
 
                     gate_block = (
                         self._check_research_gate(state, tc.name)
@@ -1741,6 +1759,8 @@ class Orchestrator:
                             )
                         except Exception:
                             logger.debug("pending_run_record_failed", tool=tc.name, exc_info=True)
+                        if state._generation != my_generation:
+                            return
 
                     task = asyncio.create_task(
                         self._execute_tool(state, tc.name, tc.arguments)
@@ -1956,6 +1976,8 @@ class Orchestrator:
                         await infra_tracker.update_infrastructure(
                             tc.name, result, state.session_id, pending_run_id,
                         )
+                    if state._generation != my_generation:
+                        return
 
                     if (tc.name == "terraform_exec"
                             and tc.arguments.get("action") == "plan"
@@ -2114,6 +2136,8 @@ class Orchestrator:
                                 _ok, _msg = await ensure_packages(
                                     [_pkg], reason=f"auto-fix for {tc.name}"
                                 )
+                                if state._generation != my_generation:
+                                    return
                                 if _ok:
                                     deferred_user_msgs.append(
                                         f"Missing Python package '{_pkg}' was auto-installed. "

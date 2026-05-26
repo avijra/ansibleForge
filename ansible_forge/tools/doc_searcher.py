@@ -120,6 +120,13 @@ class DocSearcher(BaseTool):
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
         except TimeoutError:
             proc.kill()
             await proc.wait()

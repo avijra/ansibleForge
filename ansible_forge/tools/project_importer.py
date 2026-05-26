@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -134,22 +132,30 @@ class ProjectImporter(BaseTool):
             cmd.extend(["--branch", branch])
         cmd.extend([url, str(clone_dir)])
 
-        loop = asyncio.get_running_loop()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        subprocess.run, cmd,
-                        capture_output=True, text=True, timeout=120,
-                    ),
-                ),
-                timeout=130,
-            )
-            if result.returncode != 0:
-                return ToolResult.fail(f"Git clone failed: {result.stderr.strip()}")
-        except (TimeoutError, subprocess.TimeoutExpired):
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        except TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             return ToolResult.fail("Git clone timed out after 2 minutes")
+
+        if proc.returncode != 0:
+            return ToolResult.fail(f"Git clone failed: {stderr_b.decode(errors='replace').strip()}")
 
         return ToolResult.ok(output="Repository cloned")
 
