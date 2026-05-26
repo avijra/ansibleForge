@@ -359,7 +359,29 @@ const terminalComponents: Components = {
   ),
 };
 
-export function Markdown({ content, terminal }: { content: string; terminal?: boolean }) {
+function MermaidPreview({ code }: { code: string }) {
+  return (
+    <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
+      <div className="border-b border-zinc-800 px-3 py-1 flex items-center gap-2">
+        <span className="text-[10px] font-mono text-zinc-500 uppercase">mermaid</span>
+        <span className="text-[9px] text-zinc-600 animate-pulse">rendering when complete…</span>
+      </div>
+      <pre className="overflow-x-auto p-3">
+        <code className="text-xs font-mono text-zinc-400 leading-relaxed">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+export function Markdown({
+  content,
+  terminal,
+  streaming,
+}: {
+  content: string;
+  terminal?: boolean;
+  streaming?: boolean;
+}) {
   const segments = useMemo(() => extractSegments(content), [content]);
   const components = terminal ? terminalComponents : defaultComponents;
 
@@ -367,7 +389,11 @@ export function Markdown({ content, terminal }: { content: string; terminal?: bo
     <div className={terminal ? "markdown-body font-mono" : "markdown-body"}>
       {segments.map((seg, idx) =>
         seg.type === "mermaid" ? (
-          <MermaidDiagram key={idx} code={seg.content} />
+          streaming ? (
+            <MermaidPreview key={idx} code={seg.content} />
+          ) : (
+            <MermaidDiagram key={idx} code={seg.content} />
+          )
         ) : (
           <ReactMarkdown
             key={idx}

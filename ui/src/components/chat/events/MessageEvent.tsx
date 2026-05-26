@@ -45,7 +45,7 @@ export function MessageEvent({ event }: { event: AgentEvent }) {
         <span>tuyere</span>
         {isStreaming && <span className="animate-pulse">...</span>}
       </div>
-      <Markdown content={display} terminal />
+      <Markdown content={display} terminal streaming={isStreaming} />
       {wasTruncated && (
         <button
           onClick={() => setExpanded(true)}
