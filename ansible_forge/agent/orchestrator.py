@@ -2713,6 +2713,11 @@ class Orchestrator:
         re.compile(r"^\s*export\s+"),
         re.compile(r"^\s*echo\s+"),
         re.compile(r"^\s*cat\s+"),
+        re.compile(r"^\s*head\b"),
+        re.compile(r"^\s*tail\b"),
+        re.compile(r"^\s*wc\b"),
+        re.compile(r"^\s*grep\b"),
+        re.compile(r"^\s*find\b"),
         re.compile(r"^\s*ls\b"),
         re.compile(r"^\s*pwd\b"),
         re.compile(r"^\s*whoami\b"),
@@ -2724,31 +2729,32 @@ class Orchestrator:
         re.compile(r"^\s*date\b"),
         re.compile(r"^\s*which\b"),
         re.compile(r"^\s*type\b"),
-        re.compile(r"\bget\b"),
-        re.compile(r"\bdescribe\b"),
-        re.compile(r"\blogs\b"),
-        re.compile(r"\bstatus\b"),
-        re.compile(r"\bversion\b"),
-        re.compile(r"\bwhoami\b"),
-        re.compile(r"\bwait\b"),
+        re.compile(r"^\s*test\s+"),
+        re.compile(r"^\s*\[\s+"),
         re.compile(r"--version\b"),
         re.compile(r"--help\b"),
-        re.compile(r"\b(?:oc|kubectl)\s+(?:get|describe|logs|whoami|version|status|api-resources|explain|wait)\b"),
-        re.compile(r"\brosa\s+(?:describe|list|logs|version|whoami)\b"),
-        re.compile(r"\baws\s+\S+\s+(?:describe|get|list)\b"),
+        re.compile(r"\s+--dry-run\b"),
+        re.compile(r"\b(?:get|list|show|describe|inspect|info|status|version"
+                   r"|whoami|logs|explain|check|verify|validate|diff|compare"
+                   r"|search|find|query|fetch|read|view|cat|print|dump|top"
+                   r"|wait|watch|tail|head|count|stat|test|ping|traceroute"
+                   r"|nslookup|dig|curl\s+.*-[sIvk]|wget\s+.*-q)\b"),
     ]
 
     _DESTRUCTIVE_SHELL_PATTERNS = [
         re.compile(r"\brm\s+-[a-zA-Z]*[rf]"),
-        re.compile(r"\b(?:oc|kubectl)\s+(?:delete|drain|cordon|taint|scale)\b"),
-        re.compile(r"\brosa\s+(?:delete|uninstall)\b"),
-        re.compile(r"\bterraform\s+(?:destroy|apply)\b"),
+        re.compile(r"\b(?:delete|destroy|remove|purge|drop|truncate|wipe"
+                   r"|uninstall|erase|terminate|kill|drain|cordon|taint"
+                   r"|scale|resize|stop|halt|poweroff|shutdown|reboot"
+                   r"|reset|force-delete|rollback|revoke)\b"),
         re.compile(r"\bdd\s+"),
         re.compile(r"\bmkfs\b"),
         re.compile(r"\bfdisk\b"),
-        re.compile(r"\breboot\b"),
-        re.compile(r"\bshutdown\b"),
-        re.compile(r"\bkill\b"),
+        re.compile(r"\bformat\b"),
+        re.compile(r"\b(?:iptables|nft)\s+-[ADIFX]"),
+        re.compile(r"\bchmod\s+0?0?0\b"),
+        re.compile(r"\bchown\s+-R\b"),
+        re.compile(r">\s*/dev/"),
     ]
 
     @staticmethod
