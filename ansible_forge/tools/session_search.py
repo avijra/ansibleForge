@@ -13,10 +13,11 @@ class SessionSearchTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Search past session conversations. Use this when the user asks "
-            "'remember when we...', 'what did we do about...', or when you need "
-            "to recall configuration decisions, playbook patterns, or debugging "
-            "context from previous sessions."
+            "Search past session conversations. Use ONLY when the user explicitly "
+            "asks to recall past work ('remember when we...', 'like last time', "
+            "'use the same config as before'). NEVER use proactively to find "
+            "environment details, hostnames, or credentials — each new session "
+            "starts clean. Results are historical reference only, not current state."
         )
 
     @property

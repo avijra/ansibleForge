@@ -104,6 +104,7 @@ export function App() {
       setInventory: session.setInventory,
       setWorkspaceFiles: session.setWorkspaceFiles,
       activeSessionId: session.activeId ?? undefined,
+      activeSessionStatus: session.active?.status,
     }),
     [
       session.addEvent,
@@ -113,6 +114,7 @@ export function App() {
       session.setInventory,
       session.setWorkspaceFiles,
       session.activeId,
+      session.active?.status,
     ]
   );
   const chat = useChat(chatOpts);

@@ -2314,9 +2314,10 @@ class Orchestrator:
     ) -> AsyncIterator[AgentEvent | LLMResponse]:
         """Stream an LLM call, yielding delta events for each token.
 
-        All content tokens (reasoning and text) are emitted as
-        ``thinking_delta``.  The caller promotes the final response to a
-        ``message`` event when the loop completes without tool calls.
+        Reasoning tokens are emitted as ``thinking_delta``; regular content
+        tokens are emitted as ``message_delta``.  The caller promotes the
+        final response to a ``message`` event when the loop completes
+        without tool calls.
         The **last** item yielded is the accumulated ``LLMResponse``.
         """
         content_parts: list[str] = []
@@ -2352,7 +2353,7 @@ class Orchestrator:
 
             if chunk.get("content"):
                 content_parts.append(chunk["content"])
-                yield AgentEvent("thinking_delta", {"content": chunk["content"]})
+                yield AgentEvent("message_delta", {"content": chunk["content"]})
 
             if chunk.get("finish_reason"):
                 finish_reason = chunk["finish_reason"]

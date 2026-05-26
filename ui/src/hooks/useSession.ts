@@ -123,6 +123,32 @@ export function useSession() {
         prev.map((s) => {
           if (s.id !== sessionId) return s;
 
+          if (event.event === "message_delta") {
+            const events = [...s.events];
+            const lastMsgIdx = findLastIndex(events, (e) => e.event === "message");
+            const lastStepIdx = findLastIndex(events, (e) => e.event === "step_start");
+            if (lastMsgIdx >= 0 && lastMsgIdx > lastStepIdx) {
+              const existing = events[lastMsgIdx];
+              events[lastMsgIdx] = {
+                ...existing,
+                data: {
+                  ...existing.data,
+                  content:
+                    ((existing.data.content as string) || "") +
+                    ((event.data.content as string) || ""),
+                },
+              };
+              return { ...s, events };
+            }
+            return {
+              ...s,
+              events: [
+                ...s.events,
+                { ...event, event: "message" as const },
+              ],
+            };
+          }
+
           if (event.event === "thinking_delta") {
             const events = [...s.events];
             const lastThinkingIdx = findLastIndex(events, (e) => e.event === "thinking");

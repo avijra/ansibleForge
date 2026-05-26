@@ -430,13 +430,14 @@ function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
 }
 
 function SessionCompletedBanner({ events }: { events: AgentEvent[] }) {
+  const wasCancelled = events.some((e) => e.event === "cancelled");
   const stepCount = events.filter((e) => e.event === "step_start").length;
   const toolCalls = events.filter((e) => e.event === "tool_call").length;
   const approvals = events.filter((e) => e.event === "approval_granted").length;
   const secrets = events.filter(
     (e) => e.event === "tool_result" && (e.data.tool as string) === "request_secret" && e.data.status === "success",
   ).length;
-  const hasError = events.some(
+  const hasError = !wasCancelled && events.some(
     (e) => e.event === "error_recovery" || (e.event === "tool_result" && e.data.status === "error"),
   );
 
@@ -446,12 +447,19 @@ function SessionCompletedBanner({ events }: { events: AgentEvent[] }) {
   if (approvals > 0) parts.push(`${approvals} approved`);
   if (secrets > 0) parts.push(`${secrets} secrets`);
 
+  const label = wasCancelled
+    ? "Session cancelled"
+    : hasError ? "Task completed with issues" : "Task completed";
+  const iconColor = wasCancelled
+    ? "text-zinc-500"
+    : hasError ? "text-amber-500" : "text-emerald-500";
+
   return (
     <div className="rounded-lg border border-emerald-900/30 bg-emerald-950/20 px-3 py-2 font-mono">
       <div className="flex items-center gap-2">
-        <CheckCircle2 className={`h-3 w-3 shrink-0 ${hasError ? "text-amber-500" : "text-emerald-500"}`} />
+        <CheckCircle2 className={`h-3 w-3 shrink-0 ${iconColor}`} />
         <span className="text-[10px] text-emerald-600">
-          {hasError ? "Task completed with issues" : "Task completed"}
+          {label}
           {parts.length > 0 && <span className="text-emerald-700 ml-1.5">· {parts.join(" · ")}</span>}
         </span>
       </div>
@@ -651,11 +659,6 @@ export function ActivityFeed({
     const event = item;
 
     if (event.event === "thinking") {
-      const content = (event.data.content as string) || "";
-      if (content.trim()) {
-        if (lastMessageId) hasItemsAfterLastMessage = true;
-        renderItems.push(<ThinkingBlock key={event.id} content={content} />);
-      }
       continue;
     }
 

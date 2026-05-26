@@ -122,6 +122,7 @@ export type AgentEventType =
   | "progress"
   | "live_log"
   | "error_recovery"
+  | "cancelled"
   | "usage"
   | "max_steps"
   | "done";

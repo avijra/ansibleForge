@@ -54,7 +54,7 @@ function getSessionState(id: string): PerSessionState {
   return s;
 }
 
-export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
+export function useChat(opts: UseChatOptions & { activeSessionId?: string; activeSessionStatus?: string }) {
   const [streamingSet, setStreamingSet] = useState<Set<string>>(new Set());
   const forceUpdate = useRef(0);
 
@@ -329,8 +329,8 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
     opts.addEvent(activeId, {
       id: `cancel-${Date.now()}`,
-      event: "error_recovery",
-      data: { error: "Session cancelled by user." },
+      event: "cancelled",
+      data: { message: "Session cancelled by user." },
       timestamp: Date.now(),
     });
 
@@ -355,6 +355,9 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
 
   useEffect(() => {
     if (!activeId || activeId.startsWith("local-")) return;
+
+    const localStatus = opts.activeSessionStatus;
+    if (localStatus === "completed" || localStatus === "error") return;
 
     const ss = getSessionState(activeId);
     if (ss.streaming || ss.controller || ss.cancelled) return;

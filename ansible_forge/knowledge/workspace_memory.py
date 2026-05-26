@@ -106,4 +106,11 @@ class WorkspaceMemory:
         content = self.read().strip()
         if not content:
             return ""
-        return f"---\nWorkspace memory (MEMORY.md — curated facts about this environment):\n{content}\n"
+        return (
+            "---\n"
+            "Workspace memory (MEMORY.md — curated facts, may be stale):\n"
+            "WARNING: This is a NEW session. Hostnames, cluster names, credentials, "
+            "and environment details below may be outdated. Do NOT assume they are "
+            "current — verify with the user before using any specific values.\n"
+            f"{content}\n"
+        )

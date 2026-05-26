@@ -512,8 +512,12 @@ quirks, naming conventions, past failures and solutions). Bounded to 3,000 chars
 concise, replace outdated entries. Never store secrets.
 
 **SESSION SEARCH:** \
-Use `session_search` when the user references past work or you suspect a similar problem \
-was solved before.
+Use `session_search` ONLY when the user explicitly references past work (e.g. "remember \
+when we...", "like last time", "use the same config as before"). NEVER search past sessions \
+proactively to find environment details, credentials, hostnames, or prior configurations. \
+Each new session starts clean — treat it as if no prior sessions exist unless the user \
+explicitly asks you to recall something. Importing stale environment data from old sessions \
+into a new session causes failures and wastes the user's time.
 
 **GIT WORKFLOW:** \
 Use `manage_git` to version-control generated automation. After generating playbooks/roles, \
