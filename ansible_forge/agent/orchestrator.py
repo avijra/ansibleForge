@@ -1578,7 +1578,11 @@ class Orchestrator:
                             label = Path(pb).name if pb else "playbook"
                             display_name = f"Run '{label}' in apply mode"
 
-                        risk = RiskLevel.HIGH if (is_adhoc or is_local) else RiskLevel.MEDIUM
+                        risk = RiskLevel.MEDIUM
+                        if is_adhoc:
+                            risk = self._score_adhoc_risk(tc)
+                        elif is_local:
+                            risk = self._score_local_risk(tc)
                         diff_summary = ""
                         auto_checked = False
 
@@ -1629,7 +1633,7 @@ class Orchestrator:
                             if tf_action == "destroy":
                                 risk = RiskLevel.HIGH
 
-                        if risk == RiskLevel.LOW and auto_checked:
+                        if risk == RiskLevel.LOW and (auto_checked or is_adhoc or is_local):
                             if tc.name == "execute_playbook":
                                 state._approved_playbooks.add(tc.arguments.get("playbook", ""))
                             yield AgentEvent("progress", {
@@ -2697,6 +2701,83 @@ class Orchestrator:
             return False
 
         return False
+
+    _HIGH_RISK_MODULES = frozenset({
+        "ansible.builtin.shell", "ansible.builtin.command",
+        "ansible.builtin.raw", "shell", "command", "raw",
+        "ansible.builtin.service", "ansible.builtin.systemd",
+        "service", "systemd",
+    })
+
+    _SAFE_SHELL_PATTERNS = [
+        re.compile(r"^\s*export\s+"),
+        re.compile(r"^\s*echo\s+"),
+        re.compile(r"^\s*cat\s+"),
+        re.compile(r"^\s*ls\b"),
+        re.compile(r"^\s*pwd\b"),
+        re.compile(r"^\s*whoami\b"),
+        re.compile(r"^\s*id\b"),
+        re.compile(r"^\s*env\b"),
+        re.compile(r"^\s*printenv\b"),
+        re.compile(r"^\s*uname\b"),
+        re.compile(r"^\s*hostname\b"),
+        re.compile(r"^\s*date\b"),
+        re.compile(r"^\s*which\b"),
+        re.compile(r"^\s*type\b"),
+        re.compile(r"\bget\b"),
+        re.compile(r"\bdescribe\b"),
+        re.compile(r"\blogs\b"),
+        re.compile(r"\bstatus\b"),
+        re.compile(r"\bversion\b"),
+        re.compile(r"\bwhoami\b"),
+        re.compile(r"\bwait\b"),
+        re.compile(r"--version\b"),
+        re.compile(r"--help\b"),
+        re.compile(r"\b(?:oc|kubectl)\s+(?:get|describe|logs|whoami|version|status|api-resources|explain|wait)\b"),
+        re.compile(r"\brosa\s+(?:describe|list|logs|version|whoami)\b"),
+        re.compile(r"\baws\s+\S+\s+(?:describe|get|list)\b"),
+    ]
+
+    _DESTRUCTIVE_SHELL_PATTERNS = [
+        re.compile(r"\brm\s+-[a-zA-Z]*[rf]"),
+        re.compile(r"\b(?:oc|kubectl)\s+(?:delete|drain|cordon|taint|scale)\b"),
+        re.compile(r"\brosa\s+(?:delete|uninstall)\b"),
+        re.compile(r"\bterraform\s+(?:destroy|apply)\b"),
+        re.compile(r"\bdd\s+"),
+        re.compile(r"\bmkfs\b"),
+        re.compile(r"\bfdisk\b"),
+        re.compile(r"\breboot\b"),
+        re.compile(r"\bshutdown\b"),
+        re.compile(r"\bkill\b"),
+    ]
+
+    @staticmethod
+    def _score_adhoc_risk(tc: Any) -> RiskLevel:
+        module = tc.arguments.get("module", "shell").lower()
+        args_str = (tc.arguments.get("module_args", "") or "").lower()
+
+        if module not in Orchestrator._HIGH_RISK_MODULES:
+            return RiskLevel.MEDIUM
+
+        if any(p.search(args_str) for p in Orchestrator._DESTRUCTIVE_SHELL_PATTERNS):
+            return RiskLevel.HIGH
+
+        if any(p.search(args_str) for p in Orchestrator._SAFE_SHELL_PATTERNS):
+            return RiskLevel.LOW
+
+        return RiskLevel.MEDIUM
+
+    @staticmethod
+    def _score_local_risk(tc: Any) -> RiskLevel:
+        command = (tc.arguments.get("command", "") or "").lower()
+
+        if any(p.search(command) for p in Orchestrator._DESTRUCTIVE_SHELL_PATTERNS):
+            return RiskLevel.HIGH
+
+        if any(p.search(command) for p in Orchestrator._SAFE_SHELL_PATTERNS):
+            return RiskLevel.LOW
+
+        return RiskLevel.MEDIUM
 
     @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
