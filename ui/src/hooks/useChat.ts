@@ -311,6 +311,14 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
       ss.reconnectTimer = null;
     }
     markStreaming(activeId, false);
+    opts.updateStatus(activeId, "completed");
+
+    opts.addEvent(activeId, {
+      id: `cancel-${Date.now()}`,
+      event: "message",
+      data: { content: "Session cancelled by user." },
+      timestamp: Date.now(),
+    });
 
     if (sid && !sid.startsWith("local-")) {
       try {
@@ -319,7 +327,7 @@ export function useChat(opts: UseChatOptions & { activeSessionId?: string }) {
         /* best-effort — session may already be done */
       }
     }
-  }, [activeId, markStreaming]);
+  }, [activeId, markStreaming, opts]);
 
   const cleanupSession = useCallback((sessionId: string) => {
     const ss = sessionStates.get(sessionId);

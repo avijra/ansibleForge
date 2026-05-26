@@ -1003,12 +1003,21 @@ class Orchestrator:
 
                     async with asyncio.timeout(llm_timeout):
                         while True:
+                            if state._generation != my_generation:
+                                if get_next is not None:
+                                    get_next.cancel()
+                                logger.info("llm_stream_cancelled", session_id=state.session_id)
+                                return
                             if get_next is None:
                                 get_next = asyncio.ensure_future(stream_iter.__anext__())
                             done, _ = await asyncio.wait(
                                 {get_next}, timeout=_PROGRESS_INTERVAL
                             )
                             if not done:
+                                if state._generation != my_generation:
+                                    get_next.cancel()
+                                    logger.info("llm_stream_cancelled", session_id=state.session_id)
+                                    return
                                 llm_progress_tick += 1
                                 empty_ticks += 1
                                 if empty_ticks >= _CHUNK_DEAD_TICKS:
