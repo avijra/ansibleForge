@@ -41,7 +41,8 @@ STEP_NUDGE_SOFT = (
     "Status check — you have used {step_count} steps. "
     "Be efficient: consolidate multiple writes into single calls, "
     "avoid re-reading files you already read, and skip unnecessary verification. "
-    "If the task is complete, stop and give your final answer."
+    "Before stopping, verify you have delivered the FULL scope the user requested — "
+    "not just the first item that worked. If the task is complete, stop and give your final answer."
 )
 
 STEP_NUDGE_FIRM = (
