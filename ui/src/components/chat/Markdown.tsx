@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import mermaid from "mermaid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,29 +23,77 @@ mermaid.initialize({
   securityLevel: "strict",
 });
 
+const svgCache = new Map<string, string>();
+
+type QueueEntry = { code: string; id: string; resolve: (svg: string) => void; reject: (err: Error) => void };
+const renderQueue: QueueEntry[] = [];
+let rendering = false;
+
+async function drainQueue() {
+  if (rendering) return;
+  rendering = true;
+  while (renderQueue.length > 0) {
+    const entry = renderQueue.shift()!;
+    const cached = svgCache.get(entry.code);
+    if (cached) {
+      entry.resolve(cached);
+      continue;
+    }
+    try {
+      const { svg } = await mermaid.render(entry.id, entry.code);
+      svgCache.set(entry.code, svg);
+      entry.resolve(svg);
+    } catch (err) {
+      entry.reject(err instanceof Error ? err : new Error("Diagram render failed"));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  rendering = false;
+}
+
+function enqueueRender(code: string, id: string): Promise<string> {
+  const cached = svgCache.get(code);
+  if (cached) return Promise.resolve(cached);
+  return new Promise((resolve, reject) => {
+    renderQueue.push({ code, id, resolve, reject });
+    drainQueue();
+  });
+}
+
 function MermaidDiagram({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<"loading" | "done" | "error">(
+    svgCache.has(code) ? "done" : "loading"
+  );
   const [error, setError] = useState<string | null>(null);
   const uniqueId = useId().replace(/:/g, "_");
 
-  const render = useCallback(async () => {
-    if (!containerRef.current) return;
-    try {
-      const { svg } = await mermaid.render(`mermaid_${uniqueId}`, code);
-      if (containerRef.current) {
-        containerRef.current.innerHTML = svg;
-        setError(null);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Diagram render failed");
+  useEffect(() => {
+    let cancelled = false;
+    const cached = svgCache.get(code);
+    if (cached && containerRef.current) {
+      containerRef.current.innerHTML = cached;
+      setState("done");
+      return;
     }
+    setState("loading");
+    enqueueRender(code, `mermaid_${uniqueId}`).then(
+      (svg) => {
+        if (cancelled || !containerRef.current) return;
+        containerRef.current.innerHTML = svg;
+        setState("done");
+        setError(null);
+      },
+      (err) => {
+        if (cancelled) return;
+        setState("error");
+        setError(err instanceof Error ? err.message : "Diagram render failed");
+      }
+    );
+    return () => { cancelled = true; };
   }, [code, uniqueId]);
 
-  useEffect(() => {
-    render();
-  }, [render]);
-
-  if (error) {
+  if (state === "error") {
     return (
       <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
         <div className="border-b border-zinc-800 px-3 py-1 text-[10px] font-mono text-zinc-500 uppercase">
@@ -54,12 +102,22 @@ function MermaidDiagram({ code }: { code: string }) {
         <pre className="overflow-x-auto p-3">
           <code className="text-xs font-mono text-zinc-300 leading-relaxed">{code}</code>
         </pre>
+        {error && <div className="px-3 pb-2 text-[10px] text-red-400">{error}</div>}
       </div>
     );
   }
 
   return (
     <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950/80 overflow-x-auto p-4">
+      {state === "loading" && (
+        <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-zinc-500">
+          <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          Rendering diagram…
+        </div>
+      )}
       <div ref={containerRef} className="flex justify-center [&>svg]:max-w-full" />
     </div>
   );
@@ -373,6 +431,14 @@ function MermaidPreview({ code }: { code: string }) {
   );
 }
 
+function stableKey(content: string): string {
+  let h = 0;
+  for (let i = 0; i < content.length; i++) {
+    h = ((h << 5) - h + content.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
 export function Markdown({
   content,
   terminal,
@@ -390,9 +456,9 @@ export function Markdown({
       {segments.map((seg, idx) =>
         seg.type === "mermaid" ? (
           streaming ? (
-            <MermaidPreview key={idx} code={seg.content} />
+            <MermaidPreview key={`m-${stableKey(seg.content)}`} code={seg.content} />
           ) : (
-            <MermaidDiagram key={idx} code={seg.content} />
+            <MermaidDiagram key={`m-${stableKey(seg.content)}`} code={seg.content} />
           )
         ) : (
           <ReactMarkdown

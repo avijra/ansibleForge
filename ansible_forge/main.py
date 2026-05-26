@@ -26,7 +26,13 @@ logger = get_logger(__name__)
 
 def _setup_frozen_env() -> None:
     """Prepend tool directories to PATH so subprocess calls find companion
-    binaries (ansible-playbook, ansible-galaxy, tofu, etc.)."""
+    binaries (ansible-playbook, ansible-galaxy, tofu, etc.).
+    Also ensures UTF-8 locale is set for all subprocesses (Tauri/macOS
+    may launch the backend with a stripped environment)."""
+    os.environ.setdefault("LC_ALL", "en_US.UTF-8")
+    os.environ.setdefault("LANG", "en_US.UTF-8")
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
     extra_dirs: list[str] = []
 
     managed_bin = str(Path.home() / ".ansibleforge" / "bin")

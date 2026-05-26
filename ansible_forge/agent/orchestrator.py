@@ -132,6 +132,19 @@ _RESEARCH_GATED_TOOLS = frozenset({
     "terraform_exec", "local_exec",
 })
 
+_PREREQ_EXTRACTION_DIRECTIVE = (
+    "RESEARCH CHECKPOINT — you have completed initial research. "
+    "Before generating ANY code or calling ANY execution tool, you MUST "
+    "list all deployment prerequisites and dependencies you discovered. "
+    "Format as a numbered dependency chain: what must be installed or "
+    "configured BEFORE the main target, and in what order. "
+    "Example: '1. Install NFD (required by GPU Operator for node labeling) "
+    "→ 2. Install GPU Operator (requires NFD) → 3. Create ClusterPolicy'. "
+    "Include this list in your next response to the user. "
+    "If you found no prerequisites, state 'No prerequisites identified.' "
+    "This list is CRITICAL — skipping a prerequisite causes deployment failure."
+)
+
 _ANSIBLE_TOOLS = frozenset({
     "generate_playbook", "execute_playbook", "scaffold_role", "run_adhoc",
     "manage_inventory", "manage_vault", "manage_galaxy", "render_template",
@@ -334,6 +347,8 @@ class SessionState:
         self._empty_response_retries = 0
         self.plan: dict[str, Any] | None = None
         self._active_tasks: set[asyncio.Task[Any]] = set()
+        self._prereq_directive_injected = False
+        self._plan_reviewed = False
 
     def track_task(self, task: asyncio.Task[Any]) -> None:
         self._active_tasks.add(task)
@@ -805,6 +820,9 @@ class Orchestrator:
         if state._generation != my_gen:
             return
         if plan:
+            plan = await self._review_plan(state, user_message, plan)
+            if state._generation != my_gen:
+                return
             yield AgentEvent("plan", plan)
 
         async for event in self._react_loop(state):
@@ -1364,6 +1382,9 @@ class Orchestrator:
                             and result.status != ToolStatus.ERROR
                         ):
                             state._has_researched = True
+                        if state._has_researched and not state._prereq_directive_injected:
+                            state._prereq_directive_injected = True
+                            state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
 
                         if result.status == ToolStatus.ERROR:
                             # Auto-remediation: detect missing Python SDK and install it
@@ -1532,22 +1553,36 @@ class Orchestrator:
                         ws_path = tc.arguments.get("workspace_path", str(state.workspace.path))
                         skip_dry = tc.arguments.get("skip_dry_run", False)
                         is_terraform = tc.name == "terraform_exec"
+                        is_adhoc = tc.name == "run_adhoc"
+                        is_local = tc.name == "local_exec"
                         tf_action = tc.arguments.get("action", "") if is_terraform else ""
 
                         if is_terraform:
                             label = f"terraform {tf_action}"
                             ws_label = Path(ws_path).name if ws_path else "workspace"
                             display_name = f"Terraform {tf_action} in '{ws_label}'"
+                        elif is_adhoc:
+                            module = tc.arguments.get("module", "shell")
+                            args_preview = (tc.arguments.get("module_args", "") or "")[:80]
+                            hosts = tc.arguments.get("hosts", "all")
+                            label = f"adhoc:{module}"
+                            display_name = f"Ad-hoc '{module}' on {hosts}"
+                            if args_preview:
+                                display_name += f" — {args_preview}"
+                        elif is_local:
+                            cmd = (tc.arguments.get("command", "") or "")[:120]
+                            label = f"local:{cmd[:40]}"
+                            display_name = f"Shell command: {cmd}"
                         else:
                             pb = tc.arguments.get("playbook", "")
                             label = Path(pb).name if pb else "playbook"
                             display_name = f"Run '{label}' in apply mode"
 
-                        risk = RiskLevel.MEDIUM
+                        risk = RiskLevel.HIGH if (is_adhoc or is_local) else RiskLevel.MEDIUM
                         diff_summary = ""
                         auto_checked = False
 
-                        if not is_terraform and not skip_dry and label not in state._checked_playbooks:
+                        if not is_terraform and not is_adhoc and not is_local and not skip_dry and label not in state._checked_playbooks:
                             try:
                                 yield AgentEvent("progress", {
                                     "tool": "execute_playbook",
@@ -1580,7 +1615,7 @@ class Orchestrator:
                                 auto_checked = True
                             except Exception:
                                 logger.warning("enforced_dryrun_failed", playbook=label, exc_info=True)
-                        elif not is_terraform and label in state._checked_playbooks:
+                        elif not is_terraform and not is_adhoc and not is_local and label in state._checked_playbooks:
                             cached = state._checked_playbooks[label]
                             risk = RiskLevel(cached.get("risk", "medium"))
                             diff_summary = cached.get("diff", "")
@@ -1595,7 +1630,7 @@ class Orchestrator:
                                 risk = RiskLevel.HIGH
 
                         if risk == RiskLevel.LOW and auto_checked:
-                            if not is_terraform:
+                            if tc.name == "execute_playbook":
                                 state._approved_playbooks.add(tc.arguments.get("playbook", ""))
                             yield AgentEvent("progress", {
                                 "tool": tc.name,
@@ -1635,7 +1670,7 @@ class Orchestrator:
                                 return
                             if gate_status == ApprovalStatus.APPROVED:
                                 state.status = SessionStatus.ACTIVE
-                                if not is_terraform:
+                                if tc.name == "execute_playbook":
                                     state._approved_playbooks.add(tc.arguments.get("playbook", ""))
                                 yield AgentEvent("approval_granted", {
                                     "session_id": state.session_id,
@@ -2115,6 +2150,9 @@ class Orchestrator:
                         and result.status != ToolStatus.ERROR
                     ):
                         state._has_researched = True
+                    if state._has_researched and not state._prereq_directive_injected:
+                        state._prereq_directive_injected = True
+                        state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
 
                     if result.status == ToolStatus.ERROR:
                         # Auto-remediation: detect missing Python SDK and install it
@@ -2276,16 +2314,16 @@ class Orchestrator:
     ) -> AsyncIterator[AgentEvent | LLMResponse]:
         """Stream an LLM call, yielding delta events for each token.
 
-        Emits ``thinking_delta`` for reasoning tokens and tool-call preamble,
-        ``message_delta`` for final-answer content (when no tool calls are
-        being built).  The **last** item yielded is the accumulated ``LLMResponse``.
+        All content tokens (reasoning and text) are emitted as
+        ``thinking_delta``.  The caller promotes the final response to a
+        ``message`` event when the loop completes without tool calls.
+        The **last** item yielded is the accumulated ``LLMResponse``.
         """
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tc_accum: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage: dict[str, int] | None = None
-        saw_tool_call = False
 
         async for chunk in self._llm.complete_stream(
             messages=state.memory.messages,
@@ -2296,7 +2334,6 @@ class Orchestrator:
                 continue
 
             if chunk.get("tool_calls"):
-                saw_tool_call = True
                 for tc_delta in chunk["tool_calls"]:
                     idx = tc_delta.get("index", 0)
                     if idx not in tc_accum:
@@ -2315,8 +2352,7 @@ class Orchestrator:
 
             if chunk.get("content"):
                 content_parts.append(chunk["content"])
-                event_type = "thinking_delta" if saw_tool_call else "message_delta"
-                yield AgentEvent(event_type, {"content": chunk["content"]})
+                yield AgentEvent("thinking_delta", {"content": chunk["content"]})
 
             if chunk.get("finish_reason"):
                 finish_reason = chunk["finish_reason"]
@@ -2397,6 +2433,91 @@ class Orchestrator:
         except (TimeoutError, json.JSONDecodeError, Exception):
             logger.debug("plan_generation_skipped", exc_info=True)
         return None
+
+    _PLAN_REVIEW_PROMPT = (
+        "You are a deployment prerequisites reviewer. Given the user's request "
+        "and a proposed execution plan, identify any MISSING prerequisites, "
+        "dependencies, or ordering issues.\n\n"
+        "Rules:\n"
+        "- Every operator/service that depends on another must have its "
+        "dependency deployed FIRST in the plan.\n"
+        "- Infrastructure prerequisites (networking, storage, node pools, "
+        "feature discovery, CRDs) must precede the services that need them.\n"
+        "- If the plan is complete, respond: {\"missing\": [], \"ok\": true}\n"
+        "- If something is missing, respond with JSON:\n"
+        '  {"missing": [{"step": N, "action": "description", "tool": "tool_name"}], "ok": false}\n'
+        "Respond ONLY with the JSON object. No extra text."
+    )
+
+    async def _review_plan(
+        self, state: SessionState, user_message: str,
+        plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            prereq_context = ""
+            msgs = state.memory._messages if hasattr(state.memory, "_messages") else []
+            for m in reversed(msgs):
+                if m.get("role") == "assistant" and m.get("content"):
+                    c = m["content"]
+                    if "prerequisite" in c.lower() or "dependency" in c.lower():
+                        prereq_context = c[:800]
+                        break
+
+            review_input_parts = [
+                f"User request: {user_message[:500]}",
+                f"Proposed plan: {json.dumps(plan['steps'])}",
+            ]
+            if prereq_context:
+                review_input_parts.append(
+                    f"Agent's prerequisite analysis:\n{prereq_context}"
+                )
+
+            response = await asyncio.wait_for(
+                self._llm.complete(
+                    messages=[
+                        {"role": "system", "content": self._PLAN_REVIEW_PROMPT},
+                        {"role": "user", "content": "\n\n".join(review_input_parts)},
+                    ],
+                    tools=None,
+                    max_tokens=500,
+                ),
+                timeout=15,
+            )
+            if not response.content:
+                return plan
+
+            text = response.content.strip()
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                review = json.loads(text[start:end])
+                missing = review.get("missing", [])
+                if missing and not review.get("ok", True):
+                    existing_steps = plan.get("steps", [])
+                    for i, step in enumerate(missing):
+                        step.setdefault("step", i + 1)
+                    for s in existing_steps:
+                        s["step"] = s.get("step", 0) + len(missing)
+                    plan["steps"] = missing + existing_steps
+                    state.plan = plan
+
+                    prereq_summary = "; ".join(
+                        s.get("action", "unknown") for s in missing
+                    )
+                    state.memory.add_system(
+                        f"PLAN REVIEW: The following prerequisite steps were "
+                        f"missing and have been prepended to your plan: "
+                        f"{prereq_summary}. Execute them IN ORDER before the "
+                        f"original steps."
+                    )
+                    logger.info(
+                        "plan_reviewed_missing_steps",
+                        session_id=state.session_id,
+                        missing_count=len(missing),
+                    )
+        except (TimeoutError, json.JSONDecodeError, Exception):
+            logger.debug("plan_review_skipped", exc_info=True)
+        return plan
 
     async def _execute_tool(
         self, state: SessionState, tool_name: str, arguments: dict[str, Any]
@@ -2519,6 +2640,13 @@ class Orchestrator:
             logger.debug("localhost_check_failed", exc_info=True)
         return False
 
+    _READONLY_MODULE_SUFFIXES = ("_info", "_facts")
+    _READONLY_MODULES = frozenset({
+        "setup", "ping", "debug", "assert", "ansible.builtin.setup",
+        "ansible.builtin.ping", "ansible.builtin.debug", "ansible.builtin.assert",
+        "ansible.builtin.gather_facts",
+    })
+
     @staticmethod
     def _requires_unapproved_apply_gate(tc: Any, state: SessionState) -> bool:
         """Return True if this tool call is a mutating execution that hasn't
@@ -2538,6 +2666,34 @@ class Orchestrator:
             action = tc.arguments.get("action", "")
             if action in ("apply", "destroy", "import"):
                 return True
+
+        if tc.name == "run_adhoc":
+            check_mode = tc.arguments.get("check_mode")
+            if check_mode is True or (isinstance(check_mode, str) and check_mode.lower() == "true"):
+                return False
+            module = tc.arguments.get("module", "")
+            mod_lower = module.lower()
+            if mod_lower in Orchestrator._READONLY_MODULES:
+                return False
+            return not any(mod_lower.endswith(s) for s in Orchestrator._READONLY_MODULE_SUFFIXES)
+
+        if tc.name == "local_exec":
+            from ansible_forge.tools.local_exec import (
+                _ALLOWED_PATTERNS,
+                _SPLIT_RE,
+                _VERSION_RE,
+            )
+            command = tc.arguments.get("command", "")
+            for seg in _SPLIT_RE.split(command):
+                stripped = seg.strip()
+                if not stripped:
+                    continue
+                if _VERSION_RE.match(stripped):
+                    continue
+                if any(p.search(stripped) for p in _ALLOWED_PATTERNS):
+                    continue
+                return True
+            return False
 
         return False
 
@@ -2579,6 +2735,9 @@ class Orchestrator:
             module = tc.arguments.get("module", "shell")
             args = tc.arguments.get("module_args", "")[:60]
             return f"Ad-hoc: {module} — {args}" if args else f"Ad-hoc: {module}"
+        if tc.name == "local_exec":
+            cmd = (tc.arguments.get("command", "") or "")[:120]
+            return f"Shell command: {cmd}"
         if tc.name == "request_config":
             return "Configuration required"
         return f"Execute {tc.name}"

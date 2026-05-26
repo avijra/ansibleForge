@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Loader2, MessageSquare, WifiOff } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageSquare, WifiOff, Wrench } from "lucide-react";
 import type { AgentEvent, Session } from "@/api/types";
 import { friendlyToolName } from "@/lib/tool-labels";
 import { ConfigRequestEvent, isConfigRequest } from "@/components/review/ConfigRequestEvent";
@@ -173,6 +173,106 @@ function formatElapsed(secs: number): string {
   const m = Math.floor(secs / 60);
   const s = secs % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function ThinkingBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = content.length > 120 ? content.slice(0, 117) + "..." : content;
+
+  return (
+    <button
+      onClick={() => setExpanded(!expanded)}
+      className="w-full text-left rounded border border-zinc-800/50 bg-zinc-900/30 px-3 py-1.5 group hover:bg-zinc-900/50 transition-colors"
+    >
+      <div className="flex items-center gap-2">
+        {expanded
+          ? <ChevronDown className="h-3 w-3 text-zinc-600 shrink-0" />
+          : <ChevronRight className="h-3 w-3 text-zinc-600 shrink-0" />}
+        <span className="text-[11px] text-zinc-500 truncate">
+          {expanded ? "Thinking" : preview}
+        </span>
+      </div>
+      {expanded && (
+        <div className="mt-1.5 pl-5 text-[11px] text-zinc-400 whitespace-pre-wrap leading-relaxed">
+          {content}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function CollapsedStepGroup({ group }: { group: StepGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const thinking = group.events.find((e) => e.event === "thinking");
+  const thinkingText = thinking ? (thinking.data.content as string) || "" : "";
+  const toolNames = group.events
+    .filter((e) => e.event === "tool_call")
+    .map((e) => friendlyToolName((e.data.tool as string) || ""));
+  const hasError = group.status === "error";
+  const isRunning = !group.isComplete;
+
+  const statusIcon = isRunning
+    ? <Loader2 className="h-3 w-3 text-blue-400 shrink-0 animate-spin" />
+    : hasError
+      ? <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
+      : <Wrench className="h-3 w-3 text-zinc-500 shrink-0" />;
+
+  const summary = isRunning && toolNames.length === 0
+    ? "Thinking..."
+    : toolNames.length > 0
+      ? toolNames.join(", ")
+      : thinkingText.length > 100 ? thinkingText.slice(0, 97) + "..." : thinkingText || "Processing...";
+
+  return (
+    <button
+      onClick={() => setExpanded(!expanded)}
+      className="w-full text-left rounded border border-zinc-800/50 bg-zinc-900/30 px-3 py-1.5 group hover:bg-zinc-900/50 transition-colors"
+    >
+      <div className="flex items-center gap-2">
+        {expanded
+          ? <ChevronDown className="h-3 w-3 text-zinc-600 shrink-0" />
+          : <ChevronRight className="h-3 w-3 text-zinc-600 shrink-0" />}
+        {statusIcon}
+        <span className={`text-[11px] truncate ${hasError ? "text-amber-400" : "text-zinc-500"}`}>
+          {summary}
+        </span>
+        {!isRunning && (
+          <span className="text-[10px] text-zinc-700 shrink-0 ml-auto">
+            step {group.stepNum}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div className="mt-2 pl-5 space-y-1.5">
+          {thinkingText && (
+            <div className="text-[11px] text-zinc-400 whitespace-pre-wrap leading-relaxed border-l border-zinc-800 pl-2">
+              {thinkingText}
+            </div>
+          )}
+          {group.events
+            .filter((e) => e.event === "tool_call" || e.event === "tool_result")
+            .map((e, i) => {
+              if (e.event === "tool_call") {
+                return (
+                  <div key={i} className="text-[10px] text-zinc-500">
+                    <span className="text-zinc-400">{friendlyToolName((e.data.tool as string) || "")}</span>
+                  </div>
+                );
+              }
+              const status = (e.data.status as string) || "success";
+              const output = (e.data.output as string) || "";
+              const preview = output.length > 200 ? output.slice(0, 197) + "..." : output;
+              return (
+                <div key={i} className={`text-[10px] ${status === "error" ? "text-red-400" : "text-zinc-600"}`}>
+                  {status === "error" ? "FAILED" : "OK"}
+                  {preview && <span className="ml-1.5">{preview}</span>}
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </button>
+  );
 }
 
 function LiveActivityStatus({ events }: { events: AgentEvent[] }) {
@@ -540,9 +640,24 @@ export function ActivityFeed({
   for (let idx = 0; idx < grouped.length; idx++) {
     const item = grouped[idx];
 
-    if (isStepGroup(item)) continue;
+    if (isStepGroup(item)) {
+      const hasToolCalls = item.events.some((e) => e.event === "tool_call");
+      if (item.isComplete && !hasToolCalls) continue;
+      if (lastMessageId) hasItemsAfterLastMessage = true;
+      renderItems.push(<CollapsedStepGroup key={`step-${item.stepNum}`} group={item} />);
+      continue;
+    }
 
     const event = item;
+
+    if (event.event === "thinking") {
+      const content = (event.data.content as string) || "";
+      if (content.trim()) {
+        if (lastMessageId) hasItemsAfterLastMessage = true;
+        renderItems.push(<ThinkingBlock key={event.id} content={content} />);
+      }
+      continue;
+    }
 
     switch (event.event) {
       case "user_message":

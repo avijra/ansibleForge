@@ -125,10 +125,11 @@ export function useSession() {
 
           if (event.event === "thinking_delta") {
             const events = [...s.events];
-            const lastIdx = findLastIndex(events, (e) => e.event === "thinking");
-            if (lastIdx >= 0) {
-              const existing = events[lastIdx];
-              events[lastIdx] = {
+            const lastThinkingIdx = findLastIndex(events, (e) => e.event === "thinking");
+            const lastStepIdx = findLastIndex(events, (e) => e.event === "step_start");
+            if (lastThinkingIdx >= 0 && lastThinkingIdx > lastStepIdx) {
+              const existing = events[lastThinkingIdx];
+              events[lastThinkingIdx] = {
                 ...existing,
                 data: {
                   ...existing.data,
@@ -146,57 +147,6 @@ export function useSession() {
                 { ...event, event: "thinking" as const },
               ],
             };
-          }
-
-          if (event.event === "message_delta") {
-            const events = [...s.events];
-            const lastIdx = findLastIndex(
-              events,
-              (e) => e.event === "message" && e.data._streaming === true
-            );
-            if (lastIdx >= 0) {
-              const existing = events[lastIdx];
-              events[lastIdx] = {
-                ...existing,
-                data: {
-                  ...existing.data,
-                  content:
-                    ((existing.data.content as string) || "") +
-                    ((event.data.content as string) || ""),
-                },
-              };
-              return { ...s, events };
-            }
-            return {
-              ...s,
-              events: [
-                ...s.events,
-                {
-                  ...event,
-                  event: "message" as const,
-                  data: { content: (event.data.content as string) || "", _streaming: true },
-                },
-              ],
-            };
-          }
-
-          if (event.event === "message") {
-            const events = [...s.events];
-            const streamIdx = findLastIndex(
-              events,
-              (e) => e.event === "message" && e.data._streaming === true
-            );
-            if (streamIdx >= 0) {
-              events[streamIdx] = {
-                ...events[streamIdx],
-                data: {
-                  content: (event.data.content as string) || (events[streamIdx].data.content as string) || "",
-                  usage: event.data.usage,
-                },
-              };
-              const title = s.title || deriveTitle(events);
-              return { ...s, events, title };
-            }
           }
 
           if (event.event === "live_log") {
