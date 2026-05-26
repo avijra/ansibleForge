@@ -133,6 +133,7 @@ export function useSession() {
                 ...existing,
                 data: {
                   ...existing.data,
+                  _streaming: true,
                   content:
                     ((existing.data.content as string) || "") +
                     ((event.data.content as string) || ""),
@@ -144,7 +145,7 @@ export function useSession() {
               ...s,
               events: [
                 ...s.events,
-                { ...event, event: "message" as const },
+                { ...event, event: "message" as const, data: { ...event.data, _streaming: true } },
               ],
             };
           }
