@@ -612,7 +612,7 @@ export function App() {
                       onSend={handleSend}
                       onCancel={chat.cancel}
                       isStreaming={chat.isStreaming}
-                      canCancel={session.active?.status === "active" || session.active?.status === "awaiting_approval" || session.active?.status === "awaiting_secret"}
+                      canCancel={chat.isStreaming || session.active?.status === "awaiting_approval" || session.active?.status === "awaiting_secret"}
                       draft={draftPrompt}
                       onDraftConsumed={() => setDraftPrompt("")}
                       suggestions={ansibleCtx.suggestions}

@@ -650,7 +650,7 @@ export function ActivityFeed({
 
     if (isStepGroup(item)) {
       const hasToolCalls = item.events.some((e) => e.event === "tool_call");
-      if (item.isComplete && !hasToolCalls) continue;
+      if (!hasToolCalls) continue;
       if (lastMessageId) hasItemsAfterLastMessage = true;
       renderItems.push(<CollapsedStepGroup key={`step-${item.stepNum}`} group={item} />);
       continue;

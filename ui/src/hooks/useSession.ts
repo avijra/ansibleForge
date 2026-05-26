@@ -185,6 +185,17 @@ export function useSession() {
             return { ...s, events: [...events, event] };
           }
 
+          if (event.event === "message") {
+            const events = [...s.events];
+            const lastMsgIdx = findLastIndex(events, (e) => e.event === "message");
+            const lastStepIdx = findLastIndex(events, (e) => e.event === "step_start");
+            if (lastMsgIdx >= 0 && lastMsgIdx > lastStepIdx) {
+              events[lastMsgIdx] = { ...event };
+              const title = s.title || deriveTitle(events);
+              return { ...s, events, title };
+            }
+          }
+
           if (event.event === "progress") {
             const events = [...s.events];
             const lastIdx = findLastIndex(events, (e) => e.event === "progress");
