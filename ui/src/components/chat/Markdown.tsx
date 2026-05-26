@@ -65,6 +65,153 @@ function MermaidDiagram({ code }: { code: string }) {
   );
 }
 
+const MERMAID_KEYWORD_RE =
+  /^\s*(graph\s+(TD|TB|BT|LR|RL)|flowchart\s+(TD|TB|BT|LR|RL)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie\b|gitgraph|journey|mindmap|timeline|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|quadrantChart|requirementDiagram|block-beta|sankey-beta|xychart-beta|packet-beta|kanban|architecture-beta)/;
+
+const DIAGRAM_SYNTAX_RE =
+  /(-->|==>|->>|---|~~~|<-->|->|--x|--o|\.\->|subgraph |end$|participant |Note |style |class |linkStyle |rect |loop |alt |else |opt |par |critical |break |activate |deactivate |%%|\|.*\||:::|click )/;
+
+type ContentSegment = { type: "text" | "mermaid"; content: string };
+
+function extractSegments(text: string): ContentSegment[] {
+  const segments: ContentSegment[] = [];
+  const lines = text.split("\n");
+  let textBuf: string[] = [];
+  let i = 0;
+
+  function flush() {
+    if (textBuf.length > 0) {
+      segments.push({ type: "text", content: textBuf.join("\n") });
+      textBuf = [];
+    }
+  }
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    if (/^```mermaid/i.test(trimmed)) {
+      flush();
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        buf.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      if (buf.length) segments.push({ type: "mermaid", content: buf.join("\n") });
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const fenceLang = trimmed.slice(3).trim().toLowerCase();
+      const peek = i + 1 < lines.length ? lines[i + 1].trim() : "";
+      const isMermaidInside = !fenceLang && MERMAID_KEYWORD_RE.test(peek);
+
+      if (isMermaidInside) {
+        flush();
+        const buf: string[] = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith("```")) {
+          buf.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++;
+        if (buf.length) segments.push({ type: "mermaid", content: buf.join("\n") });
+      } else {
+        textBuf.push(lines[i]);
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith("```")) {
+          textBuf.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) {
+          textBuf.push(lines[i]);
+          i++;
+        }
+      }
+      continue;
+    }
+
+    if (/^MERMAID\s*$/i.test(trimmed)) {
+      i++;
+      continue;
+    }
+
+    if (MERMAID_KEYWORD_RE.test(trimmed)) {
+      flush();
+      const buf: string[] = [lines[i]];
+      i++;
+      let emptyRun = 0;
+      while (i < lines.length) {
+        const lt = lines[i].trim();
+        if (lt.startsWith("```")) break;
+        if (/^#{1,6}\s/.test(lt)) break;
+        if (lt === "") {
+          emptyRun++;
+          if (emptyRun >= 2) break;
+          buf.push(lines[i]);
+          i++;
+          continue;
+        }
+        emptyRun = 0;
+        const atCol0 = !/^\s/.test(lines[i]);
+        const hasSyntax = DIAGRAM_SYNTAX_RE.test(lt);
+        if (atCol0 && lt.length > 40 && !hasSyntax) break;
+        buf.push(lines[i]);
+        i++;
+      }
+      while (buf.length > 1 && buf[buf.length - 1].trim() === "") buf.pop();
+      if (buf.length > 1) {
+        segments.push({ type: "mermaid", content: buf.join("\n") });
+      } else {
+        textBuf.push(...buf);
+      }
+      continue;
+    }
+
+    textBuf.push(lines[i]);
+    i++;
+  }
+
+  flush();
+  return segments;
+}
+
+function makeMermaidAwareCode(styles: {
+  blockWrap: string;
+  langLabel: string;
+  pre: string;
+  codeBlock: string;
+  codeInline: string;
+}): Components["code"] {
+  return ({ className, children, ...props }) => {
+    const lang = className?.replace("language-", "") || "";
+    const text = String(children).replace(/\n$/, "");
+    const isBlock = !!lang || text.includes("\n");
+
+    if (isBlock) {
+      if (lang === "mermaid" || (!lang && MERMAID_KEYWORD_RE.test(text.trim()))) {
+        return <MermaidDiagram code={text} />;
+      }
+      return (
+        <div className={styles.blockWrap}>
+          {lang && <div className={styles.langLabel}>{lang}</div>}
+          <pre className={styles.pre}>
+            <code className={styles.codeBlock} {...props}>
+              {children}
+            </code>
+          </pre>
+        </div>
+      );
+    }
+    return (
+      <code className={styles.codeInline} {...props}>
+        {children}
+      </code>
+    );
+  };
+}
+
 const defaultComponents: Components = {
   h1: ({ children }) => (
     <h1 className="mt-4 mb-2 text-base font-bold text-zinc-100">{children}</h1>
@@ -96,35 +243,15 @@ const defaultComponents: Components = {
   em: ({ children }) => (
     <em className="italic text-zinc-400">{children}</em>
   ),
-  code: ({ className, children, ...props }) => {
-    const isBlock = className?.includes("language-");
-    if (isBlock) {
-      const lang = className?.replace("language-", "") || "";
-      if (lang === "mermaid") {
-        const text = String(children).replace(/\n$/, "");
-        return <MermaidDiagram code={text} />;
-      }
-      return (
-        <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
-          {lang && (
-            <div className="border-b border-zinc-800 px-3 py-1 text-[10px] font-mono text-zinc-500 uppercase">
-              {lang}
-            </div>
-          )}
-          <pre className="overflow-x-auto p-3">
-            <code className="text-xs font-mono text-zinc-300 leading-relaxed" {...props}>
-              {children}
-            </code>
-          </pre>
-        </div>
-      );
-    }
-    return (
-      <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-zinc-200" {...props}>
-        {children}
-      </code>
-    );
-  },
+  code: makeMermaidAwareCode({
+    blockWrap: "my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden",
+    langLabel:
+      "border-b border-zinc-800 px-3 py-1 text-[10px] font-mono text-zinc-500 uppercase",
+    pre: "overflow-x-auto p-3",
+    codeBlock: "text-xs font-mono text-zinc-300 leading-relaxed",
+    codeInline:
+      "rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-zinc-200",
+  }),
   pre: ({ children }) => <>{children}</>,
   blockquote: ({ children }) => (
     <blockquote className="my-2 border-l-2 border-zinc-600 pl-3 text-sm italic text-zinc-400">
@@ -189,35 +316,16 @@ const terminalComponents: Components = {
   em: ({ children }) => (
     <em className="italic text-emerald-500/80">{children}</em>
   ),
-  code: ({ className, children, ...props }) => {
-    const isBlock = className?.includes("language-");
-    if (isBlock) {
-      const lang = className?.replace("language-", "") || "";
-      if (lang === "mermaid") {
-        const text = String(children).replace(/\n$/, "");
-        return <MermaidDiagram code={text} />;
-      }
-      return (
-        <div className="my-1.5 rounded border border-emerald-900/40 bg-black/40 overflow-hidden">
-          {lang && (
-            <div className="border-b border-emerald-900/30 px-2.5 py-0.5 text-[9px] font-mono text-emerald-600 uppercase">
-              {lang}
-            </div>
-          )}
-          <pre className="overflow-x-auto p-2.5">
-            <code className="text-[11px] font-mono text-emerald-300/80 leading-relaxed" {...props}>
-              {children}
-            </code>
-          </pre>
-        </div>
-      );
-    }
-    return (
-      <code className="rounded bg-emerald-950/40 px-1 py-0.5 text-[11px] font-mono text-emerald-300" {...props}>
-        {children}
-      </code>
-    );
-  },
+  code: makeMermaidAwareCode({
+    blockWrap:
+      "my-1.5 rounded border border-emerald-900/40 bg-black/40 overflow-hidden",
+    langLabel:
+      "border-b border-emerald-900/30 px-2.5 py-0.5 text-[9px] font-mono text-emerald-600 uppercase",
+    pre: "overflow-x-auto p-2.5",
+    codeBlock: "text-[11px] font-mono text-emerald-300/80 leading-relaxed",
+    codeInline:
+      "rounded bg-emerald-950/40 px-1 py-0.5 text-[11px] font-mono text-emerald-300",
+  }),
   pre: ({ children }) => <>{children}</>,
   blockquote: ({ children }) => (
     <blockquote className="my-1.5 border-l-2 border-emerald-800/50 pl-2.5 text-xs italic text-emerald-500/70">
@@ -251,89 +359,25 @@ const terminalComponents: Components = {
   ),
 };
 
-const MERMAID_START =
-  /^(graph\s+(TD|TB|BT|LR|RL)|flowchart\s+(TD|TB|BT|LR|RL)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitgraph)\s*$/;
-
-const MERMAID_LINE =
-  /^\s*([\w[\]()"|{}]+\s*(-->|---|-\.->|==>|-.->|--\s|~~~|-->|<-->)\s*[\w[\]()"|{}]+|subgraph\s|end\s*$|%%|style\s|class\s|linkStyle\s|\w+\s*-->|participant\s|\w+\s*->>|Note\s|loop\s|alt\s|else\s|opt\s)/;
-
-export function wrapRawMermaid(text: string): string {
-  const lines = text.split("\n");
-  const result: string[] = [];
-  let i = 0;
-  let insideFence = false;
-
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-
-    if (trimmed.startsWith("```")) {
-      if (insideFence) {
-        insideFence = false;
-        result.push(lines[i]);
-        i++;
-        continue;
-      }
-      if (trimmed.startsWith("```mermaid")) {
-        insideFence = true;
-        result.push(lines[i]);
-        i++;
-        continue;
-      }
-      insideFence = true;
-      result.push(lines[i]);
-      i++;
-      continue;
-    }
-
-    if (insideFence) {
-      result.push(lines[i]);
-      i++;
-      continue;
-    }
-
-    if (/^MERMAID\s*$/i.test(trimmed)) {
-      i++;
-      continue;
-    }
-
-    if (MERMAID_START.test(trimmed)) {
-      const block: string[] = [lines[i]];
-      let j = i + 1;
-      while (j < lines.length) {
-        const lt = lines[j].trim();
-        if (lt.startsWith("```")) break;
-        if (lt === "" && j + 1 < lines.length && !MERMAID_LINE.test(lines[j + 1].trim())) break;
-        if (lt === "" || MERMAID_LINE.test(lt) || /^\s/.test(lines[j])) {
-          block.push(lines[j]);
-          j++;
-        } else {
-          break;
-        }
-      }
-      if (block.length > 1) {
-        result.push("```mermaid");
-        result.push(...block);
-        result.push("```");
-        i = j;
-        continue;
-      }
-    }
-    result.push(lines[i]);
-    i++;
-  }
-  return result.join("\n");
-}
-
 export function Markdown({ content, terminal }: { content: string; terminal?: boolean }) {
-  const processed = useMemo(() => wrapRawMermaid(content), [content]);
+  const segments = useMemo(() => extractSegments(content), [content]);
+  const components = terminal ? terminalComponents : defaultComponents;
+
   return (
     <div className={terminal ? "markdown-body font-mono" : "markdown-body"}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={terminal ? terminalComponents : defaultComponents}
-      >
-        {processed}
-      </ReactMarkdown>
+      {segments.map((seg, idx) =>
+        seg.type === "mermaid" ? (
+          <MermaidDiagram key={idx} code={seg.content} />
+        ) : (
+          <ReactMarkdown
+            key={idx}
+            remarkPlugins={[remarkGfm]}
+            components={components}
+          >
+            {seg.content}
+          </ReactMarkdown>
+        ),
+      )}
     </div>
   );
 }
