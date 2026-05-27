@@ -2581,12 +2581,15 @@ class Orchestrator:
             for m in reversed(msgs):
                 content = m.get("content", "") or ""
                 role = m.get("role", "")
-                if role == "assistant" and not prereq_context:
-                    if "prerequisite" in content.lower() or "dependency" in content.lower() or "**target**" in content.lower():
-                        prereq_context = content[:1000]
-                if role == "tool" and len(research_context) < 5:
-                    if "Found" in content or "Page content from" in content:
-                        research_context.append(content[:800])
+                cl = content.lower()
+                if role == "assistant" and not prereq_context and (
+                    "prerequisite" in cl or "dependency" in cl or "**target**" in cl
+                ):
+                    prereq_context = content[:1000]
+                if role == "tool" and len(research_context) < 5 and (
+                    "Found" in content or "Page content from" in content
+                ):
+                    research_context.append(content[:800])
 
             review_input_parts = [
                 f"User request: {user_message[:500]}",
