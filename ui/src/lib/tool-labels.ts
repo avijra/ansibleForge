@@ -14,7 +14,6 @@ export const toolLabels: Record<string, string> = {
   request_secret: "Requesting Credentials",
   run_adhoc: "Running Command",
   detect_drift: "Checking for Drift",
-  scan_compliance: "Running Security Scan",
   terraform_exec: "Running Terraform",
   terraform_to_inventory: "Importing Terraform Hosts",
   generate_terraform: "Generating Terraform Config",
@@ -22,11 +21,8 @@ export const toolLabels: Record<string, string> = {
   render_template: "Previewing Template",
   manage_git: "Git Operation",
   inspect_variables: "Inspecting Variables",
-  compare_configs: "Comparing Configurations",
-  manage_schedule: "Managing Schedule",
   import_project: "Importing Project",
   request_config: "Collecting Configuration",
-  analyze_logs: "Analyzing Run History",
   generate_rollback: "Generating Rollback Plan",
   verify_state: "Verifying State",
   test_connectivity: "Testing Connection",
@@ -135,16 +131,6 @@ export function describeToolCall(
       if (gAction === "search") return `Searching for ${args.query || "packages"}`;
       return `Managing packages`;
     }
-    case "scan_compliance": {
-      const profiles = args.profiles as string[] | undefined;
-      const target = hostLabel(args.host_pattern);
-      const what = profiles?.length ? profiles.join(", ") : "security";
-      return `Scanning ${target} for ${what} compliance`;
-    }
-    case "compare_configs": {
-      const file = String(args.file_path || "config");
-      return `Comparing ${file.split("/").pop()} across hosts`;
-    }
     case "detect_drift": {
       const pb = String(args.playbook || "configuration");
       return `Checking ${pb.split("/").pop() || pb} for drift`;
@@ -157,26 +143,8 @@ export function describeToolCall(
       return `Previewing template ${String(args.template_path || args.template_name || "").split("/").pop() || ""}`.trim();
     case "inspect_variables":
       return `Inspecting variable precedence on ${args.hostname || "host"}`;
-    case "analyze_logs": {
-      const logAction = String(args.analysis_type || "overview");
-      const logLabels: Record<string, string> = {
-        overview: "Analyzing run history overview",
-        failures: "Analyzing recent failures",
-        host_health: "Checking host health trends",
-        playbook_stats: "Analyzing playbook statistics",
-        trends: "Analyzing activity trends",
-      };
-      return logLabels[logAction] || "Analyzing run history";
-    }
     case "import_project":
       return `Importing project from ${args.git_url || args.source_path || "source"}`;
-    case "manage_schedule": {
-      const sAction = String(args.action || "list");
-      if (sAction === "create") return `Scheduling ${args.name || "job"}`;
-      if (sAction === "list") return "Listing scheduled jobs";
-      if (sAction === "delete") return "Removing scheduled job";
-      return `Updating schedule`;
-    }
     case "scaffold_role":
       return `Creating role structure for ${args.role_name || "role"}`;
     case "manage_vault": {

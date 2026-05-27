@@ -93,8 +93,8 @@ def _strip_native_tool_xml(content: str | None) -> str | None:
 
 _PARALLELIZABLE_TOOLS = frozenset({
     "collect_facts", "test_connectivity", "search_docs", "web_search",
-    "run_lint", "inspect_variables", "compare_configs", "detect_drift",
-    "scan_compliance", "analyze_logs", "verify_state", "discover_inventory",
+    "run_lint", "inspect_variables", "detect_drift",
+    "verify_state", "discover_inventory",
 })
 
 _CORE_TOOLS = frozenset({
