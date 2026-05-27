@@ -1,6 +1,6 @@
 {
   "productName": "Tuyere",
-  "version": "5.9.4",
+  "version": "5.9.5",
   "identifier": "ai.tuyere.desktop",
   "build": {
     "frontendDist": "../ui/dist",
@@ -72,7 +72,9 @@
     },
     "deep-link": {
       "desktop": {
-        "schemes": ["ansibleforge"]
+        "schemes": [
+          "ansibleforge"
+        ]
       }
     }
   }
