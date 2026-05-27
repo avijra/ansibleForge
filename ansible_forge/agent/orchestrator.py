@@ -145,6 +145,56 @@ _PREREQ_EXTRACTION_DIRECTIVE = (
     "This list is CRITICAL — skipping a prerequisite causes deployment failure."
 )
 
+_ARTIFACT_GENERATING_TOOLS = frozenset({
+    "generate_playbook", "scaffold_role", "generate_terraform",
+})
+
+_INFRA_ADHOC_TOOLS = frozenset({
+    "run_adhoc", "local_exec",
+})
+
+_PLAYBOOK_FIRST_DIRECTIVE = (
+    "WORKFLOW CORRECTION — You are executing infrastructure changes via ad-hoc "
+    "shell commands instead of generating reusable automation. "
+    "The REQUIRED workflow is: generate → execute → verify. "
+    "1. Use `generate_playbook` to create a playbook with the tasks you need "
+    "(the same operations you were about to run via ad-hoc). "
+    "2. Execute the playbook with `execute_playbook mode=apply`. "
+    "3. Verify with `verify_state` or diagnostic ad-hoc commands. "
+    "Ad-hoc `run_adhoc` with shell/command modules is for DIAGNOSTICS ONLY "
+    "(checking status, reading config, verifying state). For any operation "
+    "that CHANGES infrastructure, you MUST generate a playbook first. "
+    "For tasks with 5+ steps, use `scaffold_role` instead of a flat playbook. "
+    "The user needs repeatable automation — not a list of shell commands that "
+    "were run once. Generate the playbook NOW, then execute it."
+)
+
+_SEARCH_TOOLS = frozenset({"web_search", "search_docs"})
+
+_SEARCH_SPIRAL_DIRECTIVE = (
+    "SEARCH LIMIT — You have run {count} consecutive searches without acting "
+    "on the results. STOP searching and review what you already found. "
+    "If you found documentation URLs, use `web_search url=<URL>` to read "
+    "the full page. If the user provided documentation, USE IT NOW. "
+    "Present your research findings and plan before searching further."
+)
+
+_RESEARCH_SUMMARY_DIRECTIVE = (
+    "RESEARCH SUMMARY REQUIRED — Before generating ANY plan or code, "
+    "present your research findings in this EXACT format:\n"
+    "**Target**: [what the user wants deployed/configured]\n"
+    "**Official docs read**: [URLs you fetched and read]\n"
+    "**Prerequisites** (numbered dependency chain):\n"
+    "  1. [prerequisite] — required by [what depends on it]\n"
+    "  2. ...\n"
+    "**Operators/CRDs/versions required**: [list]\n"
+    "**Installation order**: [full dependency chain]\n\n"
+    "If you did NOT read the official documentation for the target product, "
+    "STOP and use `web_search url=<docs_url>` to read it now. "
+    "Proceeding without reading official docs leads to missed prerequisites "
+    "and wasted steps."
+)
+
 _ANSIBLE_TOOLS = frozenset({
     "generate_playbook", "execute_playbook", "scaffold_role", "run_adhoc",
     "manage_inventory", "manage_vault", "manage_galaxy", "render_template",
@@ -349,6 +399,12 @@ class SessionState:
         self._active_tasks: set[asyncio.Task[Any]] = set()
         self._prereq_directive_injected = False
         self._plan_reviewed = False
+        self._adhoc_change_count = 0
+        self._generated_artifacts: set[str] = set()
+        self._playbook_first_injected = False
+        self._consecutive_search_count = 0
+        self._search_spiral_injected = False
+        self._research_summary_injected = False
 
     def track_task(self, task: asyncio.Task[Any]) -> None:
         self._active_tasks.add(task)
@@ -1385,6 +1441,17 @@ class Orchestrator:
                         if state._has_researched and not state._prereq_directive_injected:
                             state._prereq_directive_injected = True
                             state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
+                            state.memory.add_user(_RESEARCH_SUMMARY_DIRECTIVE)
+                            state._research_summary_injected = True
+                        if tc.name in ("execute_playbook", "terraform_exec"):
+                            state._generated_artifacts.add(tc.name)
+                        if result.status != ToolStatus.ERROR:
+                            if tc.name in _ARTIFACT_GENERATING_TOOLS:
+                                state._generated_artifacts.add(tc.name)
+                            elif tc.name == "write_file":
+                                _wf_path = tc.arguments.get("path", "")
+                                if any(_wf_path.endswith(e) for e in (".yml", ".yaml", ".tf")):
+                                    state._generated_artifacts.add("write_file")
 
                         if result.status == ToolStatus.ERROR:
                             # Auto-remediation: detect missing Python SDK and install it
@@ -1536,6 +1603,25 @@ class Orchestrator:
                         "tool_call_id": tc.id,
                     }))
 
+                    spiral_block = self._check_search_spiral(state, tc)
+                    if spiral_block:
+                        logger.warning(
+                            "search_spiral_gate",
+                            session_id=state.session_id,
+                            tool=tc.name,
+                            count=state._consecutive_search_count,
+                        )
+                        state.memory.add_tool_result(
+                            tc.id, spiral_block.model_dump_json(),
+                        )
+                        yield AgentEvent("tool_result", session_vault.redact_dict({
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": spiral_block.status.value,
+                            "output": spiral_block.output or "",
+                        }))
+                        continue
+
                     tf_nudge = self._tf_plan_nudge(tc, state)
                     if tf_nudge:
                         state.memory.add_tool_result(
@@ -1547,6 +1633,25 @@ class Orchestrator:
                             "status": "error",
                             "output": tf_nudge,
                         })
+                        continue
+
+                    pbf_block = self._check_playbook_first_gate(state, tc)
+                    if pbf_block:
+                        logger.warning(
+                            "playbook_first_gate",
+                            session_id=state.session_id,
+                            tool=tc.name,
+                            adhoc_change_count=state._adhoc_change_count,
+                        )
+                        state.memory.add_tool_result(
+                            tc.id, pbf_block.model_dump_json(),
+                        )
+                        yield AgentEvent("tool_result", session_vault.redact_dict({
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": pbf_block.status.value,
+                            "output": pbf_block.output or pbf_block.error or "",
+                        }))
                         continue
 
                     if self._requires_unapproved_apply_gate(tc, state):
@@ -2157,6 +2262,17 @@ class Orchestrator:
                     if state._has_researched and not state._prereq_directive_injected:
                         state._prereq_directive_injected = True
                         state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
+                        state.memory.add_user(_RESEARCH_SUMMARY_DIRECTIVE)
+                        state._research_summary_injected = True
+                    if tc.name in ("execute_playbook", "terraform_exec"):
+                        state._generated_artifacts.add(tc.name)
+                    if result.status != ToolStatus.ERROR:
+                        if tc.name in _ARTIFACT_GENERATING_TOOLS:
+                            state._generated_artifacts.add(tc.name)
+                        elif tc.name == "write_file":
+                            _wf_path = tc.arguments.get("path", "")
+                            if any(_wf_path.endswith(e) for e in (".yml", ".yaml", ".tf")):
+                                state._generated_artifacts.add("write_file")
 
                     if result.status == ToolStatus.ERROR:
                         # Auto-remediation: detect missing Python SDK and install it
@@ -2460,13 +2576,17 @@ class Orchestrator:
     ) -> dict[str, Any]:
         try:
             prereq_context = ""
+            research_context: list[str] = []
             msgs = state.memory._messages if hasattr(state.memory, "_messages") else []
             for m in reversed(msgs):
-                if m.get("role") == "assistant" and m.get("content"):
-                    c = m["content"]
-                    if "prerequisite" in c.lower() or "dependency" in c.lower():
-                        prereq_context = c[:800]
-                        break
+                content = m.get("content", "") or ""
+                role = m.get("role", "")
+                if role == "assistant" and not prereq_context:
+                    if "prerequisite" in content.lower() or "dependency" in content.lower() or "**target**" in content.lower():
+                        prereq_context = content[:1000]
+                if role == "tool" and len(research_context) < 5:
+                    if "Found" in content or "Page content from" in content:
+                        research_context.append(content[:800])
 
             review_input_parts = [
                 f"User request: {user_message[:500]}",
@@ -2476,6 +2596,11 @@ class Orchestrator:
                 review_input_parts.append(
                     f"Agent's prerequisite analysis:\n{prereq_context}"
                 )
+            if research_context:
+                review_input_parts.append(
+                    "Research findings the agent discovered:\n"
+                    + "\n---\n".join(research_context)
+                )
 
             response = await asyncio.wait_for(
                 self._llm.complete(
@@ -2484,9 +2609,9 @@ class Orchestrator:
                         {"role": "user", "content": "\n\n".join(review_input_parts)},
                     ],
                     tools=None,
-                    max_tokens=500,
+                    max_tokens=800,
                 ),
-                timeout=15,
+                timeout=20,
             )
             if not response.content:
                 return plan
@@ -2786,6 +2911,80 @@ class Orchestrator:
         return RiskLevel.MEDIUM
 
     @staticmethod
+    def _is_diagnostic_adhoc(tc: Any) -> bool:
+        """True if this ad-hoc/local_exec call is read-only diagnostics."""
+        if tc.name == "run_adhoc":
+            module = tc.arguments.get("module", "shell").lower()
+            if module not in Orchestrator._HIGH_RISK_MODULES:
+                return True
+            args_str = (tc.arguments.get("module_args", "") or "").lower()
+            if tc.arguments.get("check_mode") is True:
+                return True
+            return any(
+                p.search(args_str) for p in Orchestrator._SAFE_SHELL_PATTERNS
+            )
+        if tc.name == "local_exec":
+            command = (tc.arguments.get("command", "") or "").lower()
+            return any(
+                p.search(command) for p in Orchestrator._SAFE_SHELL_PATTERNS
+            )
+        return False
+
+    def _check_playbook_first_gate(
+        self, state: SessionState, tc: Any,
+    ) -> ToolResult | None:
+        """Block change-making ad-hoc when no artifacts have been generated."""
+        if tc.name not in _INFRA_ADHOC_TOOLS:
+            return None
+        if state._generated_artifacts:
+            return None
+        if self._is_diagnostic_adhoc(tc):
+            return None
+        state._adhoc_change_count += 1
+        if state._adhoc_change_count <= 1:
+            return None
+        if not state._playbook_first_injected:
+            state._playbook_first_injected = True
+            state.memory.add_user(_PLAYBOOK_FIRST_DIRECTIVE)
+        return ToolResult(
+            status=ToolStatus.ERROR,
+            output=(
+                "BLOCKED: You are making infrastructure changes via ad-hoc "
+                "commands without generating reusable automation first. "
+                "Use `generate_playbook` or `scaffold_role` to create a "
+                "playbook with these tasks, then execute it with "
+                "`execute_playbook`. Ad-hoc shell is for diagnostics only."
+            ),
+        )
+
+    def _check_search_spiral(
+        self, state: SessionState, tc: Any,
+    ) -> ToolResult | None:
+        """Block runaway consecutive search calls."""
+        if tc.name not in _SEARCH_TOOLS:
+            state._consecutive_search_count = 0
+            return None
+        state._consecutive_search_count += 1
+        if state._consecutive_search_count < 5:
+            return None
+        if tc.name == "web_search" and tc.arguments.get("url"):
+            return None
+        if not state._search_spiral_injected:
+            state._search_spiral_injected = True
+            state.memory.add_user(
+                _SEARCH_SPIRAL_DIRECTIVE.format(count=state._consecutive_search_count)
+            )
+        return ToolResult(
+            status=ToolStatus.ERROR,
+            output=(
+                f"BLOCKED: You have run {state._consecutive_search_count} "
+                "consecutive searches. Stop searching and act on what you "
+                "found. If you need to read a specific documentation page, "
+                "use `web_search url=<URL>` instead of searching again."
+            ),
+        )
+
+    @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
         """Return a nudge message if terraform apply is called without a prior plan."""
         if tc.name != "terraform_exec":
@@ -2867,6 +3066,12 @@ class Orchestrator:
         state._total_prompt_tokens = 0
         state._total_completion_tokens = 0
         state._total_cost = 0.0
+        state._adhoc_change_count = 0
+        state._generated_artifacts.clear()
+        state._playbook_first_injected = False
+        state._consecutive_search_count = 0
+        state._search_spiral_injected = False
+        state._research_summary_injected = False
         state._generation += 1
         state.cancel_active_work()
         state._consec_fails_by_tool.clear()

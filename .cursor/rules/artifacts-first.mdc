@@ -1,0 +1,36 @@
+---
+description: Core product principle — Tuyere is an automation-first platform. Every infrastructure change MUST produce reusable artifacts (playbooks, roles, Terraform). Ad-hoc/shell is for diagnostics only.
+alwaysApply: true
+---
+
+# Artifacts-First: Non-Negotiable Product Principle
+
+Tuyere is an Ansible, Terraform, CI/CD, and GitOps platform. Its value is **repeatable automation artifacts** — not one-shot shell commands. If the user walks away without playbooks/roles/Terraform configs they can re-run independently, the session has failed.
+
+## The Required Workflow
+
+generate_playbook / scaffold_role / generate_terraform → execute_playbook / terraform_exec → verify_state
+
+## What This Means
+
+- `run_adhoc` with shell/command modules is for **diagnostics only**: checking status, reading configs, verifying results.
+- `local_exec` is for **diagnostics and fallback only**: version checks, process inspection, DNS lookups.
+- Multi-step infrastructure deployments MUST go through generated playbooks or Terraform configs that are then executed.
+- The generated artifact is what gets executed — so it is battle-tested, not a post-hoc guess.
+- For tasks with 5+ steps, prefer `scaffold_role` + thin playbook wrapper over flat playbooks.
+
+## Hard Enforcement (orchestrator.py)
+
+The orchestrator has a proactive gate: if the agent makes 2+ change-making ad-hoc calls without having generated any artifact, the call is BLOCKED and the agent is redirected to generate a playbook first. This gate:
+
+- Never blocks diagnostic/read-only ad-hoc (oc get, kubectl describe, status checks)
+- Allows a single change-making ad-hoc (legitimate one-shot tasks)
+- Opens permanently once any artifact is generated (generate_playbook, scaffold_role, generate_terraform, or write_file with .yml/.tf)
+- Does NOT interfere with the existing fallback chain (if execute_playbook fails, run_adhoc is still available as fallback)
+
+## When Modifying Agent Behavior
+
+- Never weaken this gate. If anything, strengthen it.
+- New execution tools must be classified as either artifact-generating or ad-hoc and handled accordingly.
+- System prompt changes must reinforce generate-first, not undermine it.
+- Test that the gate fires correctly: multi-step ad-hoc deployments must be blocked and redirected.

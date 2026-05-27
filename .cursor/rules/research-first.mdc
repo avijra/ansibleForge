@@ -1,0 +1,42 @@
+# Research-First Principle
+
+## Core Principle
+Tuyere MUST find and READ official documentation for ANY target technology before generating code or plans. Search snippets are never sufficient — the agent must fetch and read full documentation pages to extract complete prerequisites.
+
+## What This Means in Practice
+
+### The Research Workflow (mandatory, in order)
+1. **Find official docs** — `web_search` for "<product> official documentation prerequisites"
+2. **READ the docs** — `web_search url=<docs_url>` to fetch the full page (up to 12000 chars for recognized doc domains)
+3. **Galaxy/provider discovery** — `manage_galaxy action=search` or `search_docs` for every technology involved
+4. **Extract ALL prerequisites** — from the docs that were READ, list every prerequisite, dependency, operator, CRD, version, and configuration step
+5. **Present structured summary** — before planning, output: Target, Official docs read, Prerequisites (numbered chain), Operators/CRDs/versions, Installation order
+
+### Technology-Agnostic
+This applies to everything: Ansible, Terraform, Kubernetes, OpenShift, AWS, Azure, GCP, Helm, ArgoCD, Jenkins, bare metal, networking, databases, CI/CD — anything the user asks Tuyere to deploy or configure.
+
+### Hard Enforcement in orchestrator.py
+- `_has_researched` gate blocks generation/execution tools until at least one research call completes
+- `_consecutive_search_count` tracks consecutive `web_search`/`search_docs` calls; at 5+ the system BLOCKS further searches and injects `_SEARCH_SPIRAL_DIRECTIVE` forcing the agent to act on what it found
+- `_RESEARCH_SUMMARY_DIRECTIVE` fires after research to force a structured prerequisite summary
+- `_review_plan` feeds actual research tool results (page content, search findings) to the plan reviewer LLM so it can cross-check prerequisites against what was actually read
+- `web_search url=<URL>` parameter allows direct page reading — no re-searching required
+
+### What Counts as Research
+- `web_search` with a query (standard search)
+- `web_search url=<URL>` (direct page read — preferred after finding docs)
+- `search_docs` (local Ansible docs)
+- `manage_galaxy action=search` (Galaxy collection discovery)
+
+### Anti-Patterns to Prevent
+- **Search spirals**: 10+ consecutive searches with different queries but never reading any result → blocked at 5
+- **Snippet reliance**: reading only the 200-char DuckDuckGo snippet instead of fetching the full page → url= parameter exists for this
+- **Ignoring user input**: user pastes a URL or doc content and agent searches for it instead of using it → system prompt explicitly forbids this
+- **Ansible-biased scope**: all searches getting "ansible" prepended → general scope no longer prepends anything
+- **Blind plan review**: reviewer only sees plan steps, not what was researched → reviewer now receives research content
+
+### When Adding Research Features
+- If adding new search/research tools: register them in `_SEARCH_TOOLS` in orchestrator.py
+- If changing content limits: update `_DEEP_CONTENT_LIMIT` and `_DEFAULT_CONTENT_LIMIT` in web_searcher.py
+- If adding documentation domains: update `_DOCS_DOMAINS` in web_searcher.py
+- Always test that the search spiral breaker still allows `web_search url=` calls (direct reads are exempt from the counter)
