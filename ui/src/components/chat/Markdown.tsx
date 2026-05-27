@@ -62,11 +62,15 @@ function enqueueRender(code: string, id: string): Promise<string> {
 
 function MermaidDiagram({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<"loading" | "done" | "error">(
     svgCache.has(code) ? "done" : "loading"
   );
   const [error, setError] = useState<string | null>(null);
   const uniqueId = useId().replace(/:/g, "_");
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +97,35 @@ function MermaidDiagram({ code }: { code: string }) {
     return () => { cancelled = true; };
   }, [code, uniqueId]);
 
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setZoom((z) => Math.min(5, Math.max(0.2, z - e.deltaY * 0.002)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    setPan({
+      x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+      y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+    });
+  };
+  const onPointerUp = () => { dragRef.current = null; };
+
+  const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  const isTransformed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
+
   if (state === "error") {
     return (
       <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden">
@@ -108,17 +141,66 @@ function MermaidDiagram({ code }: { code: string }) {
   }
 
   return (
-    <div className="my-2 rounded-lg border border-zinc-800 bg-zinc-950/80 overflow-x-auto p-4">
-      {state === "loading" && (
-        <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-zinc-500">
-          <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          Rendering diagram…
+    <div className="group/diagram my-2 rounded-lg border border-zinc-800 bg-zinc-950/80 overflow-hidden relative">
+      <div
+        className="absolute top-2 right-2 z-10 flex items-center gap-0.5 rounded-md border border-zinc-700/60 bg-zinc-900/90 p-0.5 opacity-0 transition-opacity group-hover/diagram:opacity-100"
+      >
+        <button
+          onClick={() => setZoom((z) => Math.min(5, z + 0.25))}
+          className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200 transition-colors"
+          title="Zoom in"
+        >
+          <svg viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M8 4a.5.5 0 01.5.5v3h3a.5.5 0 010 1h-3v3a.5.5 0 01-1 0v-3h-3a.5.5 0 010-1h3v-3A.5.5 0 018 4z"/></svg>
+        </button>
+        <span className="min-w-[32px] text-center text-[9px] tabular-nums text-zinc-500 select-none">
+          {Math.round(zoom * 100)}%
+        </span>
+        <button
+          onClick={() => setZoom((z) => Math.max(0.2, z - 0.25))}
+          className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200 transition-colors"
+          title="Zoom out"
+        >
+          <svg viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M4 8a.5.5 0 01.5-.5h7a.5.5 0 010 1h-7A.5.5 0 014 8z"/></svg>
+        </button>
+        {isTransformed && (
+          <button
+            onClick={resetView}
+            className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200 transition-colors"
+            title="Reset view"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3"><path d="M1 8a7 7 0 1113.06-3.5h-2.12A5 5 0 008 3a5 5 0 100 10 5 5 0 003.54-1.46l1.41 1.41A7 7 0 011 8z"/><path d="M14 1v4h-4l1.5-1.5L14 1z"/></svg>
+          </button>
+        )}
+      </div>
+      <div
+        ref={viewportRef}
+        className="overflow-hidden p-4"
+        style={{ cursor: dragRef.current ? "grabbing" : "grab" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        {state === "loading" && (
+          <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-zinc-500">
+            <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Rendering diagram…
+          </div>
+        )}
+        <div
+          ref={containerRef}
+          className="flex justify-center [&>svg]:max-w-none transition-transform duration-75"
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }}
+        />
+      </div>
+      {isTransformed && (
+        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 text-[9px] text-zinc-600 select-none pointer-events-none">
+          Ctrl+scroll to zoom · drag to pan
         </div>
       )}
-      <div ref={containerRef} className="flex justify-center [&>svg]:max-w-full" />
     </div>
   );
 }

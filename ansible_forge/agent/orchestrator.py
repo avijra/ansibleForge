@@ -1449,9 +1449,12 @@ class Orchestrator:
                             if tc.name in _ARTIFACT_GENERATING_TOOLS:
                                 state._generated_artifacts.add(tc.name)
                             elif tc.name == "write_file":
-                                _wf_path = tc.arguments.get("path", "")
-                                if any(_wf_path.endswith(e) for e in (".yml", ".yaml", ".tf")):
-                                    state._generated_artifacts.add("write_file")
+                                _wf_path = (tc.arguments.get("path", "") or tc.arguments.get("file_path", "")).lower()
+                                _wf_content = (tc.arguments.get("content", "") or "")[:200].lower()
+                                if any(_wf_path.endswith(e) for e in (".tf", ".tfvars")):
+                                    state._generated_artifacts.add("write_file:terraform")
+                                elif "hosts:" in _wf_content and "tasks:" in _wf_content:
+                                    state._generated_artifacts.add("write_file:playbook")
 
                         if result.status == ToolStatus.ERROR:
                             # Auto-remediation: detect missing Python SDK and install it
@@ -1656,7 +1659,6 @@ class Orchestrator:
 
                     if self._requires_unapproved_apply_gate(tc, state):
                         ws_path = tc.arguments.get("workspace_path", str(state.workspace.path))
-                        skip_dry = tc.arguments.get("skip_dry_run", False)
                         is_terraform = tc.name == "terraform_exec"
                         is_adhoc = tc.name == "run_adhoc"
                         is_local = tc.name == "local_exec"
@@ -1691,7 +1693,7 @@ class Orchestrator:
                         diff_summary = ""
                         auto_checked = False
 
-                        if not is_terraform and not is_adhoc and not is_local and not skip_dry and label not in state._checked_playbooks:
+                        if not is_terraform and not is_adhoc and not is_local and label not in state._checked_playbooks:
                             try:
                                 yield AgentEvent("progress", {
                                     "tool": "execute_playbook",
@@ -1722,8 +1724,9 @@ class Orchestrator:
                                     "risk": risk, "diff": diff_summary,
                                 }
                                 auto_checked = True
-                            except Exception:
+                            except Exception as dry_exc:
                                 logger.warning("enforced_dryrun_failed", playbook=label, exc_info=True)
+                                diff_summary = f"Dry-run failed: {dry_exc}"
                         elif not is_terraform and not is_adhoc and not is_local and label in state._checked_playbooks:
                             cached = state._checked_playbooks[label]
                             risk = RiskLevel(cached.get("risk", "medium"))
@@ -1751,8 +1754,6 @@ class Orchestrator:
                             gate_msg = f"{display_name} — risk: {risk.upper()}"
                             if diff_summary:
                                 gate_msg += f"\n\n{diff_summary}"
-                            elif skip_dry:
-                                gate_msg += "\n\nDry-run was skipped (skip_dry_run=true)."
 
                             event_data: dict[str, Any] = {
                                 "session_id": state.session_id,
@@ -2270,9 +2271,12 @@ class Orchestrator:
                         if tc.name in _ARTIFACT_GENERATING_TOOLS:
                             state._generated_artifacts.add(tc.name)
                         elif tc.name == "write_file":
-                            _wf_path = tc.arguments.get("path", "")
-                            if any(_wf_path.endswith(e) for e in (".yml", ".yaml", ".tf")):
-                                state._generated_artifacts.add("write_file")
+                            _wf_path = (tc.arguments.get("path", "") or tc.arguments.get("file_path", "")).lower()
+                            _wf_content = (tc.arguments.get("content", "") or "")[:200].lower()
+                            if any(_wf_path.endswith(e) for e in (".tf", ".tfvars")):
+                                state._generated_artifacts.add("write_file:terraform")
+                            elif "hosts:" in _wf_content and "tasks:" in _wf_content:
+                                state._generated_artifacts.add("write_file:playbook")
 
                     if result.status == ToolStatus.ERROR:
                         # Auto-remediation: detect missing Python SDK and install it
@@ -2904,32 +2908,64 @@ class Orchestrator:
     @staticmethod
     def _score_local_risk(tc: Any) -> RiskLevel:
         command = (tc.arguments.get("command", "") or "").lower()
+        segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", command)
+        effective = segments[-1].strip() if segments else command
 
-        if any(p.search(command) for p in Orchestrator._DESTRUCTIVE_SHELL_PATTERNS):
+        if any(p.search(effective) for p in Orchestrator._DESTRUCTIVE_SHELL_PATTERNS):
             return RiskLevel.HIGH
 
-        if any(p.search(command) for p in Orchestrator._SAFE_SHELL_PATTERNS):
+        if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
+            return RiskLevel.MEDIUM
+
+        if any(p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS):
             return RiskLevel.LOW
 
         return RiskLevel.MEDIUM
+
+    _MUTATING_SHELL_VERBS = re.compile(
+        r"\b(?:apply|create|delete|patch|replace|set|adm|scale|drain|cordon"
+        r"|taint|label|annotate|edit|rollout\s+(?:undo|restart)|expose"
+        r"|run\b(?!\s+--dry-run))\b"
+    )
+
+    _READONLY_ADHOC_MODULES = frozenset({
+        *_READONLY_MODULES,
+        "ansible.builtin.assert", "assert",
+        "ansible.builtin.debug", "debug",
+        "ansible.builtin.set_fact", "set_fact",
+        "ansible.builtin.wait_for", "wait_for",
+        "ansible.builtin.pause", "pause",
+    })
 
     @staticmethod
     def _is_diagnostic_adhoc(tc: Any) -> bool:
         """True if this ad-hoc/local_exec call is read-only diagnostics."""
         if tc.name == "run_adhoc":
-            module = tc.arguments.get("module", "shell").lower()
-            if module not in Orchestrator._HIGH_RISK_MODULES:
-                return True
-            args_str = (tc.arguments.get("module_args", "") or "").lower()
             if tc.arguments.get("check_mode") is True:
                 return True
+            module = tc.arguments.get("module", "shell").lower()
+            if any(module.endswith(s) for s in Orchestrator._READONLY_MODULE_SUFFIXES):
+                return True
+            if module in Orchestrator._READONLY_ADHOC_MODULES:
+                return True
+            args_str = (tc.arguments.get("module_args", "") or "").lower()
+            segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", args_str)
+            effective = segments[-1].strip() if segments else args_str
+            if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
+                return False
             return any(
-                p.search(args_str) for p in Orchestrator._SAFE_SHELL_PATTERNS
+                p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS
             )
         if tc.name == "local_exec":
             command = (tc.arguments.get("command", "") or "").lower()
+            segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", command)
+            effective = segments[-1].strip() if segments else command
+            if not effective:
+                return True
+            if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
+                return False
             return any(
-                p.search(command) for p in Orchestrator._SAFE_SHELL_PATTERNS
+                p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS
             )
         return False
 
@@ -2944,8 +2980,6 @@ class Orchestrator:
         if self._is_diagnostic_adhoc(tc):
             return None
         state._adhoc_change_count += 1
-        if state._adhoc_change_count <= 1:
-            return None
         if not state._playbook_first_injected:
             state._playbook_first_injected = True
             state.memory.add_user(_PLAYBOOK_FIRST_DIRECTIVE)
@@ -2954,9 +2988,12 @@ class Orchestrator:
             output=(
                 "BLOCKED: You are making infrastructure changes via ad-hoc "
                 "commands without generating reusable automation first. "
-                "Use `generate_playbook` or `scaffold_role` to create a "
-                "playbook with these tasks, then execute it with "
-                "`execute_playbook`. Ad-hoc shell is for diagnostics only."
+                "This is an Ansible/Terraform/GitOps-first platform — NOT a "
+                "CLI wrapper. Use `generate_playbook` to create a playbook "
+                "that uses `kubernetes.core.k8s` module to apply manifests, "
+                "then execute it with `execute_playbook`. "
+                "Do NOT use `write_file` + `oc apply` — that is not "
+                "repeatable automation. Generate a proper playbook."
             ),
         )
 
@@ -2989,7 +3026,7 @@ class Orchestrator:
 
     @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
-        """Return a nudge message if terraform apply is called without a prior plan."""
+        """Return a block message if terraform apply/destroy is called without prior plan."""
         if tc.name != "terraform_exec":
             return None
         action = tc.arguments.get("action", "")
@@ -2999,10 +3036,9 @@ class Orchestrator:
         if ws and ws in state._tf_plan_ran:
             return None
         return (
-            f"WARNING: You are calling terraform {action} without running "
-            f"terraform plan first in this session. Best practice is to ALWAYS "
-            f"run plan before {action} so the user can review changes. "
-            f"Run terraform_exec with action=plan first."
+            f"BLOCKED: terraform {action} requires a plan first. "
+            f"Run `terraform_exec action=plan` to preview changes before "
+            f"applying. Dry-run/plan is mandatory — never skip it."
         )
 
     @staticmethod

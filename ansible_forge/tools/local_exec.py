@@ -69,6 +69,7 @@ _ANSIBLE_REDIRECT: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _ALLOWED_PATTERNS = [
+    re.compile(r"^\s*export\s+"),
     re.compile(r"\btart\s+"),
     re.compile(r"\bvagrant\s+"),
     re.compile(r"^\s*ps\s+"),
@@ -91,6 +92,9 @@ _ALLOWED_PATTERNS = [
     re.compile(r"--version\b"),
     re.compile(r"\bdig\s+"),
     re.compile(r"\bnslookup\b"),
+    re.compile(r"\b(?:oc|kubectl|helm)\s+(?:get|describe|logs|explain|version"
+               r"|whoami|api-resources|api-versions|config\s+view"
+               r"|config\s+current-context|status|list|show|inspect)\b"),
 ]
 
 _ESCAPE_HATCH_THRESHOLD = 3

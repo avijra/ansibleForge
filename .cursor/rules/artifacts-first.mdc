@@ -13,24 +13,38 @@ generate_playbook / scaffold_role / generate_terraform → execute_playbook / te
 
 ## What This Means
 
-- `run_adhoc` with shell/command modules is for **diagnostics only**: checking status, reading configs, verifying results.
-- `local_exec` is for **diagnostics and fallback only**: version checks, process inspection, DNS lookups.
+- `run_adhoc` with ANY module is for **diagnostics only**: checking status, reading configs, verifying results.
+- `local_exec` is for **diagnostics only**: version checks, process inspection, DNS lookups.
 - Multi-step infrastructure deployments MUST go through generated playbooks or Terraform configs that are then executed.
 - The generated artifact is what gets executed — so it is battle-tested, not a post-hoc guess.
 - For tasks with 5+ steps, prefer `scaffold_role` + thin playbook wrapper over flat playbooks.
+- Do NOT use `write_file` + `oc apply`/`kubectl apply` as a substitute for playbooks. Generate a playbook that uses `kubernetes.core.k8s` module instead.
 
 ## Hard Enforcement (orchestrator.py)
 
-The orchestrator has a proactive gate: if the agent makes 2+ change-making ad-hoc calls without having generated any artifact, the call is BLOCKED and the agent is redirected to generate a playbook first. This gate:
+The orchestrator has a proactive gate (`_check_playbook_first_gate`): the FIRST change-making ad-hoc call is BLOCKED if no artifact has been generated. This gate:
 
-- Never blocks diagnostic/read-only ad-hoc (oc get, kubectl describe, status checks)
-- Allows a single change-making ad-hoc (legitimate one-shot tasks)
-- Opens permanently once any artifact is generated (generate_playbook, scaffold_role, generate_terraform, or write_file with .yml/.tf)
-- Does NOT interfere with the existing fallback chain (if execute_playbook fails, run_adhoc is still available as fallback)
+- Uses segment-aware parsing: splits `&&`/`;`/`||` chains and checks the LAST segment for mutating verbs (`apply`, `create`, `delete`, `patch`, `scale`, etc.)
+- Never blocks diagnostic/read-only operations (get, describe, logs, explain, status)
+- Blocks ALL mutating ad-hoc — zero free passes — until an artifact is generated
+- Recognizes only proper artifacts: `generate_playbook`, `scaffold_role`, `generate_terraform`, `execute_playbook`, `terraform_exec`, or `write_file` containing `hosts:` + `tasks:` (actual playbooks) or `.tf`/`.tfvars` files
+- Raw K8s manifests written via `write_file` do NOT count as artifacts
+- For `run_adhoc`: any module NOT in the readonly list (`_info`, `_facts`, `ping`, `setup`, `debug`, `assert`) is treated as potentially mutating and checked for safe/mutating verbs in its args
+- The `export KUBECONFIG=...` prefix does NOT bypass detection — only the effective command segment after `&&` is evaluated
+
+## Known Attack Vectors (all blocked)
+
+1. `run_adhoc shell` + `export KUBECONFIG=... && oc apply` → BLOCKED (segment parsing, mutating verb)
+2. `run_adhoc kubernetes.core.k8s state=present` → BLOCKED (not a readonly module)
+3. `run_adhoc ansible.builtin.copy/file/yum` → BLOCKED (not readonly)
+4. `local_exec` + `oc apply -f manifest.yml` → BLOCKED (mutating verb in last segment)
+5. `write_file` K8s manifest + `oc apply` → manifest doesn't count as artifact, apply is BLOCKED
+6. `local_exec` + `for f in *.yml; do oc apply -f $f; done` → BLOCKED (apply in loop)
 
 ## When Modifying Agent Behavior
 
 - Never weaken this gate. If anything, strengthen it.
 - New execution tools must be classified as either artifact-generating or ad-hoc and handled accordingly.
+- New readonly modules: add to `_READONLY_ADHOC_MODULES` or ensure they end in `_info`/`_facts`.
 - System prompt changes must reinforce generate-first, not undermine it.
-- Test that the gate fires correctly: multi-step ad-hoc deployments must be blocked and redirected.
+- Test the gate against ALL vectors above after any change.

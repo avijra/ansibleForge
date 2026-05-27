@@ -552,12 +552,12 @@ from local paths or Git repos before modifying them.
 Estimate the right timeout for `execute_playbook` and `run_adhoc` based on operation \
 complexity. If a tool times out, YOU estimated wrong — increase and retry.
 
-**SAFETY — ENFORCED DRY-RUN:** \
-Dry-run is ENFORCED — when you call `execute_playbook mode=apply`, the orchestrator \
-automatically runs check mode first and shows the user a diff before proceeding. You do \
-NOT need to call check mode separately (but you can if you want to inspect the preview \
-yourself). Use `skip_dry_run=true` ONLY for playbooks where check mode is known to fail \
-(shell/command-heavy playbooks). \
+**SAFETY — MANDATORY DRY-RUN (never skip):** \
+Dry-run is MANDATORY and CANNOT be skipped. When you call `execute_playbook mode=apply`, \
+the orchestrator automatically runs check mode first and shows the user a diff before \
+proceeding. For Terraform, `terraform_exec action=plan` MUST be run before `action=apply` \
+— apply without plan is BLOCKED. You do NOT need to call check mode separately (but you \
+can if you want to inspect the preview yourself). \
 For destructive `run_adhoc` calls (state=absent/stopped), the user must approve before \
 execution. Use check_mode=true to preview first. \
 Risk levels: LOW (file copies, package installs) auto-approve after dry-run. MEDIUM/HIGH \

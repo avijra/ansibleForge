@@ -155,11 +155,39 @@ class WebSearcher(BaseTool):
     async def _fetch_url_direct(self, url: str) -> ToolResult:
         try:
             content = await self._fetch_page_content(url, deep=True)
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.warning("url_fetch_http_error", url=url, status=status)
+            parent = _parent_url(url)
+            hint = (
+                f"The page returned HTTP {status}. This often means the URL "
+                "has a wrong version number, moved, or the path is incorrect."
+            )
+            if parent:
+                hint += (
+                    f"\n\nTry the parent page: `web_search url={parent}`"
+                    "\nOr search for the correct URL: "
+                    "`web_search query=\"<product name> <topic> documentation\"`"
+                )
+            else:
+                hint += (
+                    "\nSearch for the correct URL: "
+                    "`web_search query=\"<product name> <topic> documentation\"`"
+                )
+            return ToolResult.fail(hint)
         except Exception as exc:
             logger.warning("url_fetch_failed", url=url, error=str(exc))
-            return ToolResult.fail(f"Could not fetch content from {url}: {exc}")
+            return ToolResult.fail(
+                f"Could not fetch content from {url}: {exc}\n"
+                "Try searching for the correct URL instead: "
+                "`web_search query=\"<topic> official documentation\"`"
+            )
         if not content:
-            return ToolResult.fail(f"No readable content found at: {url}")
+            return ToolResult.fail(
+                f"No readable content extracted from: {url}\n"
+                "The page may require JavaScript or authentication. "
+                "Try searching for an alternative source."
+            )
         return ToolResult.ok(
             output=f"**Page content from {url}:**\n\n{content}",
             url=url,
@@ -193,9 +221,17 @@ class WebSearcher(BaseTool):
     @staticmethod
     async def _fetch_page_content(url: str, deep: bool = False) -> str:
         async with httpx.AsyncClient(
-            timeout=15,
+            timeout=20,
             follow_redirects=True,
-            headers={"User-Agent": "Tuyere/1.0 (Infrastructure automation agent)"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
@@ -230,6 +266,18 @@ class WebSearcher(BaseTool):
             lines.append("")
 
         return "\n".join(lines)
+
+
+def _parent_url(url: str) -> str | None:
+    """Return the parent path of a URL, or None if already at root."""
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if not path or "/" not in path:
+        return None
+    parent_path = path.rsplit("/", 1)[0]
+    if not parent_path or parent_path == "/":
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{parent_path}"
 
 
 def _parse_duckduckgo_html(html_content: str, max_results: int) -> list[dict[str, str]]:
