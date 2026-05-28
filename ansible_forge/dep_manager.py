@@ -281,12 +281,36 @@ async def download_uv_async(version: str = UV_VERSION) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_uv_binary() -> str:
+    """Find the uv binary: cached, system, or download."""
+    binary_name = "uv.exe" if platform.system().lower() == "windows" else "uv"
+    cached_uv = _BIN_DIR / binary_name
+    if cached_uv.is_file():
+        return str(cached_uv)
+
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
+
+    path = download_uv()
+    return str(path)
+
+
 def _resolve_installer() -> tuple[str, list[str]]:
     """Find the best available package installer.
 
-    Returns (binary_path, base_args) for installing with --target.
-    Preference: cached uv -> system uv -> system pip3 -> download uv.
+    In frozen mode with a standalone Python, installs into that interpreter's
+    site-packages via ``uv pip install --python <path>``. Otherwise falls back
+    to ``--target ~/.ansibleforge/site-packages/``.
+
+    Returns (binary_path, base_args).
     """
+    standalone_python = _get_standalone_python()
+
+    if standalone_python:
+        uv = _resolve_uv_binary()
+        return uv, ["pip", "install", "--python", standalone_python]
+
     binary_name = "uv.exe" if platform.system().lower() == "windows" else "uv"
     cached_uv = _BIN_DIR / binary_name
     if cached_uv.is_file():
@@ -300,9 +324,20 @@ def _resolve_installer() -> tuple[str, list[str]]:
     if system_pip:
         return system_pip, ["install", "--target"]
 
-    # Last resort: download uv
     path = download_uv()
     return str(path), ["pip", "install", "--target"]
+
+
+def _get_standalone_python() -> str | None:
+    """Return standalone Python path if available (frozen mode only)."""
+    import sys
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        from ansible_forge.tools.python_resolver import resolve_standalone_python
+        return resolve_standalone_python()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -310,19 +345,44 @@ def _resolve_installer() -> tuple[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _is_package_installed(package: str) -> bool:
-    """Check if a package is already in the managed site-packages."""
-    if not MANAGED_SITE_PACKAGES.is_dir():
+def _dir_has_package(directory: Path, normalized: str) -> bool:
+    """Check if a normalized package name exists as a dist-info in a directory."""
+    if not directory.is_dir():
         return False
-    normalized = package.lower().replace("-", "_").replace(".", "_")
-    for entry in MANAGED_SITE_PACKAGES.iterdir():
+    for entry in directory.iterdir():
         entry_name = entry.name.lower().replace("-", "_").replace(".", "_")
         if entry_name == normalized:
             return True
-        # Match "boto3-1.28.0.dist-info" or "boto3-1.28.0"
         if entry_name.startswith(normalized + "-") or entry_name.startswith(normalized + "_"):
             return True
     return False
+
+
+def _standalone_site_packages() -> Path | None:
+    """Derive site-packages from the standalone Python binary path."""
+    standalone = _get_standalone_python()
+    if not standalone:
+        return None
+    bin_dir = Path(standalone).parent
+    lib_dir = bin_dir.parent / "lib"
+    if not lib_dir.is_dir():
+        return None
+    for child in lib_dir.iterdir():
+        sp = child / "site-packages"
+        if sp.is_dir():
+            return sp
+    return None
+
+
+def _is_package_installed(package: str) -> bool:
+    """Check if a package is already installed (managed site-packages or standalone Python)."""
+    normalized = package.lower().replace("-", "_").replace(".", "_")
+
+    if _dir_has_package(MANAGED_SITE_PACKAGES, normalized):
+        return True
+
+    standalone_sp = _standalone_site_packages()
+    return bool(standalone_sp and _dir_has_package(standalone_sp, normalized))
 
 
 async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, str]:
@@ -347,14 +407,13 @@ async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, 
         logger.error("dep_installer_resolve_failed", error=str(exc))
         return False, msg
 
-    cmd = [installer, *base_args, str(MANAGED_SITE_PACKAGES), "--system", *needed]
-
-    # pip doesn't accept --system
-    if "pip" not in Path(installer).name.lower() or base_args[0] == "pip":
-        pass  # uv pip install --target ... --system is correct
+    uses_python_target = "--python" in base_args
+    if uses_python_target:
+        cmd = [installer, *base_args, *needed]
     else:
-        # Direct pip: remove --system flag
-        cmd = [installer, *base_args, str(MANAGED_SITE_PACKAGES), *needed]
+        cmd = [installer, *base_args, str(MANAGED_SITE_PACKAGES), "--system", *needed]
+        if "pip" in Path(installer).name.lower() and base_args[0] != "pip":
+            cmd = [installer, *base_args, str(MANAGED_SITE_PACKAGES), *needed]
 
     logger.info("dep_installing", packages=needed, reason=reason, cmd=" ".join(cmd))
 
@@ -399,8 +458,18 @@ async def ensure_packages(packages: list[str], reason: str = "") -> tuple[bool, 
 
 
 def _installer_env() -> dict[str, str]:
-    """Build environment for the installer subprocess."""
-    env = os.environ.copy()
+    """Build environment for the installer subprocess.
+
+    When a standalone Python is in use, strips PyInstaller-specific vars
+    that could interfere with the real CPython interpreter.
+    """
+    standalone = _get_standalone_python()
+    if standalone:
+        from ansible_forge.tools.python_resolver import _sanitized_env
+        env = _sanitized_env()
+    else:
+        env = os.environ.copy()
+
     ssl_cert = env.get("SSL_CERT_FILE", "")
     if ssl_cert:
         env.setdefault("REQUESTS_CA_BUNDLE", ssl_cert)

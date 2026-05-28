@@ -345,7 +345,12 @@ def _check_package_installer() -> CheckResult:
 
 
 async def _check_ansible_python_interpreter() -> CheckResult:
-    """Verify the configured ANSIBLE_PYTHON_INTERPRETER is functional."""
+    """Verify the Ansible Python interpreter is functional.
+
+    In frozen mode, checks for a standalone (real) CPython downloaded via uv.
+    If not yet installed, downloads it now (~24 MB) so it's ready before the
+    first Ansible run.
+    """
     import sys
 
     if not getattr(sys, "frozen", False):
@@ -356,43 +361,53 @@ async def _check_ansible_python_interpreter() -> CheckResult:
             critical=False,
         )
 
-    bundle_dir = Path(sys.executable).resolve().parent
-    ansible_python = bundle_dir / "ansible-python"
-    if not ansible_python.is_file():
-        return CheckResult(
-            name="ansible_python_interpreter",
-            passed=False,
-            message=f"Bundled ansible-python not found at {ansible_python}",
-        )
+    from ansible_forge.tools.python_resolver import (
+        _sanitized_env,
+        install_standalone_python_async,
+        resolve_standalone_python,
+    )
+
+    python_path = resolve_standalone_python()
+    if not python_path:
+        try:
+            python_path = await install_standalone_python_async()
+        except Exception as exc:
+            return CheckResult(
+                name="ansible_python_interpreter",
+                passed=False,
+                message=f"Failed to install standalone Python: {exc}",
+            )
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            str(ansible_python), "-c", "import sys; print(sys.path)",
+            python_path, "-c",
+            "import sys, json, zipimport, tempfile; print(json.dumps({'ok': True, 'version': sys.version}))",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_sanitized_env(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode == 0:
             return CheckResult(
                 name="ansible_python_interpreter",
                 passed=True,
-                message=f"ansible-python functional at {ansible_python}",
+                message=f"Standalone Python functional at {python_path}",
                 critical=False,
             )
         return CheckResult(
             name="ansible_python_interpreter",
             passed=False,
-            message=f"ansible-python failed (rc={proc.returncode}): {stderr.decode()[:200]}",
+            message=f"Standalone Python failed (rc={proc.returncode}): {stderr.decode()[:200]}",
         )
     except TimeoutError:
         return CheckResult(
             name="ansible_python_interpreter",
             passed=False,
-            message="ansible-python timed out",
+            message="Standalone Python timed out",
         )
     except Exception as e:
         return CheckResult(
             name="ansible_python_interpreter",
             passed=False,
-            message=f"ansible-python error: {e}",
+            message=f"Standalone Python error: {e}",
         )

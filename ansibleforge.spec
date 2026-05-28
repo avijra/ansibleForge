@@ -87,6 +87,7 @@ hidden_imports = [
     "ansible_forge.tools.secret_requester",
     "ansible_forge.tools.vault_manager",
     "ansible_forge.tools.web_searcher",
+    "ansible_forge.tools.python_resolver",
     "ansible_forge.tools.adhoc_runner",
     "ansible_forge.tools.drift_detector",
     "ansible_forge.tools.git_manager",

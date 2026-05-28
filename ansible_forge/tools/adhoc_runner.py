@@ -35,8 +35,21 @@ _STDOUT_TAIL_MAX_LINE = 500
 _STDOUT_MODULES = frozenset({"ansible.builtin.shell", "ansible.builtin.command", "shell", "command"})
 
 
+def _localhost_inventory_content() -> str:
+    """Build localhost inventory with the best available Python interpreter."""
+    interp = _resolve_python_interpreter()
+    if interp and interp != "auto_silent":
+        return (
+            f"[local]\nlocalhost ansible_connection=local"
+            f" ansible_python_interpreter={interp}\n"
+        )
+    return "[local]\nlocalhost ansible_connection=local\n"
+
+
 def _adhoc_envvars() -> dict[str, str]:
-    return {
+    import sys
+
+    envvars: dict[str, str] = {
         "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
@@ -44,6 +57,12 @@ def _adhoc_envvars() -> dict[str, str]:
         "LC_ALL": "en_US.UTF-8",
         "LANG": "en_US.UTF-8",
     }
+
+    if getattr(sys, "frozen", False):
+        envvars["PYTHONHOME"] = ""
+        envvars["PYTHONPATH"] = ""
+
+    return envvars
 
 
 def _kill_runner(runner: Any) -> None:
@@ -277,9 +296,7 @@ class AdhocRunner(BaseTool):
         if not inv_path.exists():
             if host_pattern in local_targets:
                 inv_path.parent.mkdir(parents=True, exist_ok=True)
-                inv_path.write_text(
-                    "[local]\nlocalhost ansible_connection=local\n"
-                )
+                inv_path.write_text(_localhost_inventory_content())
                 host_pattern = "localhost"
                 logger.info("auto_created_localhost_inventory", path=str(inv_path))
             else:

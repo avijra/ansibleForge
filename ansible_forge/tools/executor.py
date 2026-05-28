@@ -39,29 +39,27 @@ _MAX_PLAYBOOK_TIMEOUT = 86400
 def _resolve_python_interpreter() -> str:
     """Return a Python interpreter path suitable for ANSIBLE_PYTHON_INTERPRETER.
 
-    In a PyInstaller bundle we point to the bundled ``ansible-python`` binary
-    which shares _internal/ with the main app AND prepends
-    ~/.ansibleforge/site-packages/ to sys.path. This means cloud modules
-    (boto3, kubernetes, azure, etc.) installed on demand by dep_manager are
-    available without requiring a system Python.
+    In a packaged app, uses a standalone (non-frozen) CPython downloaded via
+    uv on first use. This real interpreter handles AnsiballZ module execution
+    correctly, unlike the PyInstaller-frozen ``ansible-python`` wrapper.
 
-    Falls back to ``auto_silent`` if the bundled binary is missing.
+    Falls back to ``auto_silent`` if standalone Python is unavailable.
     In dev mode we use sys.executable (the venv Python) which has all deps.
     """
-    import sys
+    from ansible_forge.tools.python_resolver import resolve_python_for_localhost
 
-    if getattr(sys, "frozen", False):
-        bundle_dir = Path(sys.executable).resolve().parent
-        ansible_python = bundle_dir / "ansible-python"
-        if ansible_python.is_file():
-            return str(ansible_python)
-        return "auto_silent"
-    return sys.executable
+    return resolve_python_for_localhost()
 
 
 def _runner_envvars() -> dict[str, str]:
-    """Environment variables passed to ansible-runner for every invocation."""
-    return {
+    """Environment variables passed to ansible-runner for every invocation.
+
+    In frozen (PyInstaller) mode, strips vars that would interfere with the
+    standalone Python used for module execution on localhost.
+    """
+    import sys
+
+    envvars: dict[str, str] = {
         "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
@@ -70,6 +68,12 @@ def _runner_envvars() -> dict[str, str]:
         "LC_ALL": "en_US.UTF-8",
         "LANG": "en_US.UTF-8",
     }
+
+    if getattr(sys, "frozen", False):
+        envvars["PYTHONHOME"] = ""
+        envvars["PYTHONPATH"] = ""
+
+    return envvars
 
 _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
