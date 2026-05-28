@@ -162,6 +162,12 @@ def _is_destructive_adhoc(module: str, module_args: str) -> bool:
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
 
+_BLOCKED_ADHOC_MODULES = frozenset({
+    "shell", "command", "raw", "script",
+    "ansible.builtin.shell", "ansible.builtin.command",
+    "ansible.builtin.raw", "ansible.builtin.script",
+})
+
 
 class AdhocRunner(BaseTool):
     @property
@@ -171,13 +177,13 @@ class AdhocRunner(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Run an ad-hoc Ansible module command against one or more hosts without "
-            "writing a playbook. ALWAYS prefer purpose-built modules over shell/command: "
-            "ansible.builtin.service for services, ansible.builtin.apt/yum for packages, "
-            "ansible.builtin.copy/file for files, ansible.builtin.user for users. "
-            "Use ansible.builtin.shell/command ONLY for app-specific CLIs or diagnostics "
-            "where no module exists. Set check_mode=true to preview changes before applying. "
-            "Default timeout: 5 minutes. Max: 2 hours."
+            "Run a DIAGNOSTIC ad-hoc Ansible module against hosts. Allowed modules: "
+            "ping, setup, stat, find, debug, assert, gather_facts, k8s_info, "
+            "ec2_instance_info, and other *_info read-only modules. "
+            "shell/command/raw/script are BLOCKED — write a playbook instead. "
+            "For any mutating operation, use execute_playbook with a proper playbook "
+            "that includes idempotency guards (creates:, when:, changed_when:). "
+            "Set check_mode=true to preview changes. Default timeout: 5 min. Max: 2 hours."
         )
 
     @property
@@ -289,6 +295,15 @@ class AdhocRunner(BaseTool):
     ) -> ToolResult:
         if not workspace_path or not module or not inventory:
             return ToolResult.fail("workspace_path, module, and inventory are required")
+
+        if module.strip() in _BLOCKED_ADHOC_MODULES:
+            return ToolResult.fail(
+                f"Ad-hoc '{module}' is not allowed. Write a playbook instead.\n\n"
+                "run_adhoc is for diagnostic Ansible modules only (ping, setup, stat, "
+                "find, debug, k8s_info, ec2_instance_info, etc.).\n"
+                "For shell commands, write a playbook with ansible.builtin.command "
+                "and appropriate guards (creates:, when:), then use execute_playbook."
+            )
 
         ws = Path(workspace_path)
         local_targets = {"localhost", "127.0.0.1", "::1", "local"}

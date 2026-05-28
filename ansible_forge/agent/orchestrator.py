@@ -59,7 +59,7 @@ STEP_NUDGE_URGENT = (
     "Only continue if you are within 5 steps of completion."
 )
 
-LOOP_BREAK_PROMPT = (
+_LOOP_BREAK_LEVEL_1 = (
     "Caution: you may be in a loop — the same tool has been called many times. "
     "Before your next action, briefly assess:\n"
     "1. Are you making real progress with distinct arguments each call? If YES, continue.\n"
@@ -69,6 +69,33 @@ LOOP_BREAK_PROMPT = (
     "If you are genuinely iterating over multiple hosts/VMs/resources, that is FINE — "
     "continue your work. Only stop if you are truly stuck."
 )
+
+_LOOP_BREAK_LEVEL_2 = (
+    "HARD STOP — this is the SECOND loop warning. You ARE stuck. "
+    "Do NOT call the same tool again. You MUST:\n"
+    "1. EXPLAIN to the user exactly what is blocking you — the specific error, "
+    "what you tried, and why it failed.\n"
+    "2. Present at least TWO alternative approaches.\n"
+    "3. Ask the user which approach to take.\n\n"
+    "Do NOT generate another playbook or retry the same tool until the user responds."
+)
+
+_LOOP_BREAK_LEVEL_3 = (
+    "FINAL WARNING — this is the THIRD loop warning. You have been stuck on the same "
+    "problem for too long. You MUST take a COMPLETELY different approach:\n"
+    "1. STOP all current work on this sub-task.\n"
+    "2. Tell the user what you cannot accomplish and why.\n"
+    "3. Ask if they want to skip this step and move to the next part of the plan.\n\n"
+    "Continuing to retry is FORBIDDEN. Change course NOW."
+)
+
+
+def _get_loop_break_prompt(break_count: int) -> str:
+    if break_count >= 3:
+        return _LOOP_BREAK_LEVEL_3
+    if break_count >= 2:
+        return _LOOP_BREAK_LEVEL_2
+    return _LOOP_BREAK_LEVEL_1
 
 _PROGRESS_INTERVAL = 5
 _CHUNK_DEAD_TICKS = 6
@@ -99,7 +126,7 @@ _PARALLELIZABLE_TOOLS = frozenset({
 
 _CORE_TOOLS = frozenset({
     "read_file", "write_file", "web_search", "search_docs", "memory",
-    "request_secret", "session_search", "local_exec",
+    "request_secret", "session_search",
 })
 
 _RECON_TOOLS = frozenset({
@@ -129,7 +156,7 @@ _ALL_TOOL_NAMES = (
 _RESEARCH_GATED_TOOLS = frozenset({
     "generate_playbook", "scaffold_role", "render_template",
     "generate_rollback", "execute_playbook", "run_adhoc",
-    "terraform_exec", "local_exec",
+    "terraform_exec",
 })
 
 _PREREQ_EXTRACTION_DIRECTIVE = (
@@ -150,7 +177,7 @@ _ARTIFACT_GENERATING_TOOLS = frozenset({
 })
 
 _INFRA_ADHOC_TOOLS = frozenset({
-    "run_adhoc", "local_exec",
+    "run_adhoc",
 })
 
 _PLAYBOOK_FIRST_DIRECTIVE = (
@@ -290,12 +317,6 @@ _TOOL_PROGRESS_MESSAGES: dict[str, list[str]] = {
         "Command in progress. Some operations take time to complete.",
         "Still running. Will report results when the command finishes.",
     ],
-    "local_exec": [
-        "Running local command...",
-        "Command still executing. Waiting for output.",
-        "Command in progress.",
-        "Still running. Some operations take time to complete.",
-    ],
     "terraform_exec": [
         "Terraform operation running...",
         "Terraform still executing. Infrastructure changes can take several minutes.",
@@ -382,6 +403,8 @@ class SessionState:
         self._exec_fail_count = 0
         self._searched_since_exec_fail = False
         self._has_researched = False
+        self._has_searched = False
+        self._has_read_docs = False
         self._research_gate_fired = False
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
@@ -567,14 +590,26 @@ class Orchestrator:
     def _check_research_gate(state: SessionState, tool_name: str) -> ToolResult | None:
         if tool_name not in _RESEARCH_GATED_TOOLS:
             return None
-        if state._has_researched or state._research_gate_fired:
+        if state._has_researched:
             return None
+        if state._has_searched and state._has_read_docs:
+            state._has_researched = True
+            return None
+        missing: list[str] = []
+        if not state._has_searched:
+            missing.append(
+                "search for relevant docs (`web_search` or `search_docs` or "
+                "`manage_galaxy action=search`)"
+            )
+        if not state._has_read_docs:
+            missing.append(
+                "READ the official docs (`web_search url=<docs_url>` returning "
+                "substantial content)"
+            )
         state._research_gate_fired = True
         return ToolResult.fail(
-            "You must research before generating. Call `manage_galaxy action=search` "
-            "to find relevant Ansible collections, `search_docs` for module docs, or "
-            "`web_search` for Terraform providers/cloud prerequisites. "
-            "After at least one search, you may proceed. "
+            "Research incomplete — you must still: "
+            + "; AND ".join(missing) + ". "
             "Do not surface this to the user.",
         )
 
@@ -1322,6 +1357,11 @@ class Orchestrator:
                     cleaned_content = _strip_native_tool_xml(response.content)
                     if cleaned_content:
                         yield AgentEvent("thinking", {"content": cleaned_content})
+                elif response.content:
+                    yield AgentEvent("message", {
+                        "content": _strip_native_tool_xml(response.content) or "",
+                        "usage": response.usage,
+                    })
 
                 loop_broken = False
                 deferred_user_msgs: list[str] = []
@@ -1431,13 +1471,21 @@ class Orchestrator:
                             )
                         if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
                             state._searched_since_exec_fail = True
-                            state._has_researched = True
+                            is_url_read = bool(tc.arguments.get("url"))
+                            if is_url_read and len(result.output or "") > 500:
+                                state._has_read_docs = True
+                            else:
+                                state._has_searched = True
+                            if state._has_searched and state._has_read_docs:
+                                state._has_researched = True
                         if (
                             tc.name == "manage_galaxy"
                             and tc.arguments.get("action") == "search"
                             and result.status != ToolStatus.ERROR
                         ):
-                            state._has_researched = True
+                            state._has_searched = True
+                            if state._has_searched and state._has_read_docs:
+                                state._has_researched = True
                         if state._has_researched and not state._prereq_directive_injected:
                             state._prereq_directive_injected = True
                             state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
@@ -1575,7 +1623,9 @@ class Orchestrator:
                                 )
                             state._recent_tool_calls.clear()
                             state._consec_fails_by_tool.clear()
-                            deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                            deferred_user_msgs.append(
+                                _get_loop_break_prompt(state._loop_break_count)
+                            )
                             deferred_events.append(AgentEvent("error_recovery", {
                                 "tool": tc.name,
                                 "error": "The agent appears to be stuck repeating the same action. Pausing to reassess.",
@@ -1583,7 +1633,9 @@ class Orchestrator:
                             loop_broken = True
                             break
                         state._recent_tool_calls[:] = state._recent_tool_calls[-5:]
-                        deferred_user_msgs.append(LOOP_BREAK_PROMPT)
+                        deferred_user_msgs.append(
+                            _get_loop_break_prompt(state._loop_break_count)
+                        )
                         deferred_events.append(AgentEvent("error_recovery", {
                             "tool": tc.name,
                             "error": "The agent has been running the same type of action many times — checking if this is intentional.",
@@ -1661,7 +1713,7 @@ class Orchestrator:
                         ws_path = tc.arguments.get("workspace_path", str(state.workspace.path))
                         is_terraform = tc.name == "terraform_exec"
                         is_adhoc = tc.name == "run_adhoc"
-                        is_local = tc.name == "local_exec"
+                        is_local = False
                         tf_action = tc.arguments.get("action", "") if is_terraform else ""
 
                         if is_terraform:
@@ -1676,10 +1728,6 @@ class Orchestrator:
                             display_name = f"Ad-hoc '{module}' on {hosts}"
                             if args_preview:
                                 display_name += f" — {args_preview}"
-                        elif is_local:
-                            cmd = (tc.arguments.get("command", "") or "")[:120]
-                            label = f"local:{cmd[:40]}"
-                            display_name = f"Shell command: {cmd}"
                         else:
                             pb = tc.arguments.get("playbook", "")
                             label = Path(pb).name if pb else "playbook"
@@ -1688,12 +1736,10 @@ class Orchestrator:
                         risk = RiskLevel.MEDIUM
                         if is_adhoc:
                             risk = self._score_adhoc_risk(tc)
-                        elif is_local:
-                            risk = self._score_local_risk(tc)
                         diff_summary = ""
                         auto_checked = False
 
-                        if not is_terraform and not is_adhoc and not is_local and label not in state._checked_playbooks:
+                        if not is_terraform and not is_adhoc and label not in state._checked_playbooks:
                             try:
                                 yield AgentEvent("progress", {
                                     "tool": "execute_playbook",
@@ -1871,7 +1917,7 @@ class Orchestrator:
                         })
 
                     live_queue: asyncio.Queue[dict[str, Any]] | None = None
-                    if tc.name in ("execute_playbook", "run_adhoc", "local_exec", "terraform_exec"):
+                    if tc.name in ("execute_playbook", "run_adhoc", "terraform_exec"):
                         live_queue = asyncio.Queue()
                         tc.arguments["_live_log_queue"] = live_queue
 
@@ -1927,10 +1973,6 @@ class Orchestrator:
                     elif tc.name == "terraform_exec":
                         _act = tc.arguments.get("action", "")
                         _tool_ctx_label = f" [terraform {_act}]" if _act else ""
-                    elif tc.name == "local_exec":
-                        _cmd = tc.arguments.get("command", "")
-                        _tool_ctx_label = f" [{_cmd[:60]}]" if _cmd else ""
-
                     _timeout_for_display = tc.arguments.get("timeout", 0) or 0
 
                     while not task.done():
@@ -2253,13 +2295,21 @@ class Orchestrator:
 
                     if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
                         state._searched_since_exec_fail = True
-                        state._has_researched = True
+                        is_url_read = bool(tc.arguments.get("url"))
+                        if is_url_read and len(result.output or "") > 500:
+                            state._has_read_docs = True
+                        else:
+                            state._has_searched = True
+                        if state._has_searched and state._has_read_docs:
+                            state._has_researched = True
                     if (
                         tc.name == "manage_galaxy"
                         and tc.arguments.get("action") == "search"
                         and result.status != ToolStatus.ERROR
                     ):
-                        state._has_researched = True
+                        state._has_searched = True
+                        if state._has_searched and state._has_read_docs:
+                            state._has_researched = True
                     if state._has_researched and not state._prereq_directive_injected:
                         state._prereq_directive_injected = True
                         state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
@@ -2670,8 +2720,6 @@ class Orchestrator:
 
         arguments["_session_id"] = state.session_id
         arguments["_workspace_path"] = str(state.workspace.path)
-        arguments["_exec_fail_count"] = state._exec_fail_count
-        arguments["_searched_since_exec_fail"] = state._searched_since_exec_fail
 
         if is_file_writing_tool(tool_name):
             profiles = _detect_profiles(tool_name, arguments)
@@ -2814,24 +2862,6 @@ class Orchestrator:
                 return False
             return not any(mod_lower.endswith(s) for s in Orchestrator._READONLY_MODULE_SUFFIXES)
 
-        if tc.name == "local_exec":
-            from ansible_forge.tools.local_exec import (
-                _ALLOWED_PATTERNS,
-                _SPLIT_RE,
-                _VERSION_RE,
-            )
-            command = tc.arguments.get("command", "")
-            for seg in _SPLIT_RE.split(command):
-                stripped = seg.strip()
-                if not stripped:
-                    continue
-                if _VERSION_RE.match(stripped):
-                    continue
-                if any(p.search(stripped) for p in _ALLOWED_PATTERNS):
-                    continue
-                return True
-            return False
-
         return False
 
     _HIGH_RISK_MODULES = frozenset({
@@ -2905,23 +2935,6 @@ class Orchestrator:
 
         return RiskLevel.MEDIUM
 
-    @staticmethod
-    def _score_local_risk(tc: Any) -> RiskLevel:
-        command = (tc.arguments.get("command", "") or "").lower()
-        segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", command)
-        effective = segments[-1].strip() if segments else command
-
-        if any(p.search(effective) for p in Orchestrator._DESTRUCTIVE_SHELL_PATTERNS):
-            return RiskLevel.HIGH
-
-        if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
-            return RiskLevel.MEDIUM
-
-        if any(p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS):
-            return RiskLevel.LOW
-
-        return RiskLevel.MEDIUM
-
     _MUTATING_SHELL_VERBS = re.compile(
         r"\b(?:apply|create|delete|patch|replace|set|adm|scale|drain|cordon"
         r"|taint|label|annotate|edit|rollout\s+(?:undo|restart)|expose"
@@ -2939,35 +2952,15 @@ class Orchestrator:
 
     @staticmethod
     def _is_diagnostic_adhoc(tc: Any) -> bool:
-        """True if this ad-hoc/local_exec call is read-only diagnostics."""
-        if tc.name == "run_adhoc":
-            if tc.arguments.get("check_mode") is True:
-                return True
-            module = tc.arguments.get("module", "shell").lower()
-            if any(module.endswith(s) for s in Orchestrator._READONLY_MODULE_SUFFIXES):
-                return True
-            if module in Orchestrator._READONLY_ADHOC_MODULES:
-                return True
-            args_str = (tc.arguments.get("module_args", "") or "").lower()
-            segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", args_str)
-            effective = segments[-1].strip() if segments else args_str
-            if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
-                return False
-            return any(
-                p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS
-            )
-        if tc.name == "local_exec":
-            command = (tc.arguments.get("command", "") or "").lower()
-            segments = re.split(r"\s*&&\s*|\s*;\s*|\s*\|\|\s*", command)
-            effective = segments[-1].strip() if segments else command
-            if not effective:
-                return True
-            if Orchestrator._MUTATING_SHELL_VERBS.search(effective):
-                return False
-            return any(
-                p.search(effective) for p in Orchestrator._SAFE_SHELL_PATTERNS
-            )
-        return False
+        """True if this ad-hoc call is read-only diagnostics."""
+        if tc.name != "run_adhoc":
+            return False
+        if tc.arguments.get("check_mode") is True:
+            return True
+        module = tc.arguments.get("module", "").lower()
+        if any(module.endswith(s) for s in Orchestrator._READONLY_MODULE_SUFFIXES):
+            return True
+        return module in Orchestrator._READONLY_ADHOC_MODULES
 
     def _check_playbook_first_gate(
         self, state: SessionState, tc: Any,
@@ -3061,9 +3054,6 @@ class Orchestrator:
             module = tc.arguments.get("module", "shell")
             args = tc.arguments.get("module_args", "")[:60]
             return f"Ad-hoc: {module} — {args}" if args else f"Ad-hoc: {module}"
-        if tc.name == "local_exec":
-            cmd = (tc.arguments.get("command", "") or "")[:120]
-            return f"Shell command: {cmd}"
         if tc.name == "request_config":
             return "Configuration required"
         return f"Execute {tc.name}"
@@ -3102,6 +3092,11 @@ class Orchestrator:
         state._consecutive_errors = 0
         state._exec_fail_count = 0
         state._searched_since_exec_fail = False
+        state._has_researched = False
+        state._has_searched = False
+        state._has_read_docs = False
+        state._research_gate_fired = False
+        state._prereq_directive_injected = False
         state._total_prompt_tokens = 0
         state._total_completion_tokens = 0
         state._total_cost = 0.0

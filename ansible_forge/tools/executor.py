@@ -433,7 +433,24 @@ class Executor(BaseTool):
 
         ws = Path(workspace_path)
         if not (ws / playbook).exists():
-            return ToolResult.fail(f"Playbook not found: {ws / playbook}")
+            existing = sorted(
+                str(p.relative_to(ws))
+                for p in ws.rglob("*.y*ml")
+                if p.suffix in (".yml", ".yaml")
+                and not any(
+                    part.startswith(".") or part == "__pycache__"
+                    for part in p.relative_to(ws).parts
+                )
+                and p.stat().st_size < 1_000_000
+            )[:20]
+            hint = ""
+            if existing:
+                hint = "\n\nExisting playbook/YAML files in workspace:\n" + "\n".join(
+                    f"  - {f}" for f in existing
+                )
+            return ToolResult.fail(
+                f"Playbook not found: {ws / playbook}{hint}"
+            )
 
         cmdline_args: list[str] = []
         if mode == "check":

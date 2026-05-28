@@ -41,7 +41,7 @@ _MIN_USEFUL_CONTENT = 150
 
 _JINA_READER_URL = "https://r.jina.ai/"
 _JINA_SEARCH_URL = "https://s.jina.ai/"
-_JINA_TIMEOUT = 30
+_JINA_TIMEOUT = 45
 _JINA_CONTENT_LIMIT = 15000
 
 _BROWSER_UA = (
@@ -76,16 +76,57 @@ def _is_boilerplate(text: str) -> bool:
     return len(lines) > 3 and nav_markers / len(lines) > 0.3
 
 
-def _jina_headers() -> dict[str, str]:
-    """Build Jina API headers, optionally including an API key."""
+_cached_jina_key: str | None = None
+
+
+def _resolve_jina_key() -> str:
+    """Resolve JINA_API_KEY from env or ~/.ansibleforge/.env."""
+    global _cached_jina_key
+    if _cached_jina_key is not None:
+        return _cached_jina_key
+
+    key = os.environ.get("JINA_API_KEY", "").strip()
+    if not key:
+        from pathlib import Path
+        env_file = Path.home() / ".ansibleforge" / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("JINA_API_KEY=") and not line.startswith("#"):
+                    key = line.split("=", 1)[1].strip()
+                    break
+    _cached_jina_key = key
+    return key
+
+
+def _jina_base_headers() -> dict[str, str]:
+    """Minimal Jina headers: auth + JSON accept (required by all Jina APIs)."""
     headers: dict[str, str] = {
         "Accept": "application/json",
-        "X-No-Cache": "true",
-        "X-Return-Format": "markdown",
+        "Content-Type": "application/json",
     }
-    api_key = os.environ.get("JINA_API_KEY", "").strip()
+    api_key = _resolve_jina_key()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _jina_reader_headers(is_docs: bool = False) -> dict[str, str]:
+    """Headers for Jina Reader API (r.jina.ai)."""
+    headers = _jina_base_headers()
+    headers["X-Engine"] = "browser"
+    headers["X-Retain-Images"] = "none"
+    headers["X-No-Cache"] = "true"
+    headers["X-Remove-Selector"] = "nav,header,footer,.cookie-banner,.breadcrumb,#footer,#header"
+    if is_docs:
+        headers["X-Timeout"] = "40"
+    return headers
+
+
+def _jina_search_headers() -> dict[str, str]:
+    """Headers for Jina Search API (s.jina.ai)."""
+    headers = _jina_base_headers()
+    headers["X-Retain-Images"] = "none"
     return headers
 
 
@@ -169,14 +210,12 @@ class WebSearcher(BaseTool):
         if not query:
             return ToolResult.fail("Provide either `query` (to search) or `url` (to read a page)")
 
-        scoped_query = self._apply_scope(query, scope)
         max_results = min(max_results, 10)
-
-        results, source = await self._search_with_fallback(scoped_query, max_results)
+        results, source = await self._search_with_fallback(query, scope, max_results)
 
         if not results:
             return ToolResult.ok(
-                output=f"No results found for: {scoped_query}",
+                output=f"No results found for: {query}",
                 results=[],
             )
 
@@ -198,24 +237,26 @@ class WebSearcher(BaseTool):
         return ToolResult.ok(
             output=formatted,
             results=results,
-            query=scoped_query,
+            query=query,
         )
 
     async def _search_with_fallback(
-        self, query: str, max_results: int,
+        self, query: str, scope: str, max_results: int,
     ) -> tuple[list[dict[str, str]], str]:
         """Try Jina Search first (returns content), fall back to DuckDuckGo."""
-        try:
-            results = await self._search_jina(query, max_results)
-            if results:
-                logger.info("search_via_jina", query=query, count=len(results))
-                return results, "jina"
-        except Exception as exc:
-            logger.info("jina_search_fallback", error=str(exc)[:200])
+        if _resolve_jina_key():
+            try:
+                results = await self._search_jina(query, scope, max_results)
+                if results:
+                    logger.info("search_via_jina", query=query, count=len(results))
+                    return results, "jina"
+            except Exception as exc:
+                logger.info("jina_search_fallback", error=str(exc)[:200])
 
+        ddg_query = self._apply_scope(query, scope)
         try:
-            results = await self._search_duckduckgo(query, max_results)
-            logger.info("search_via_duckduckgo", query=query, count=len(results))
+            results = await self._search_duckduckgo(ddg_query, max_results)
+            logger.info("search_via_duckduckgo", query=ddg_query, count=len(results))
             return results, "duckduckgo"
         except Exception as exc:
             logger.warning("all_search_failed", error=str(exc))
@@ -296,43 +337,65 @@ class WebSearcher(BaseTool):
 
     @staticmethod
     async def _fetch_via_jina_reader(url: str) -> str:
-        """Fetch URL content via Jina Reader API (handles JS rendering)."""
-        jina_url = f"{_JINA_READER_URL}{url}"
-        headers = _jina_headers()
-        headers["Accept"] = "text/markdown"
+        """Fetch URL content via Jina Reader API POST endpoint.
+
+        Uses X-Engine: browser for JS-heavy sites and X-Remove-Selector to
+        strip nav/header/footer boilerplate server-side.
+        """
+        is_docs = _is_docs_domain(url)
+        headers = _jina_reader_headers(is_docs=is_docs)
 
         async with httpx.AsyncClient(
             timeout=_JINA_TIMEOUT,
             follow_redirects=True,
         ) as client:
-            resp = await client.get(jina_url, headers=headers)
+            resp = await client.post(
+                _JINA_READER_URL,
+                headers=headers,
+                json={"url": url},
+            )
             resp.raise_for_status()
 
-        content_type = resp.headers.get("content-type", "")
-        if "application/json" in content_type:
-            data = resp.json()
-            text = data.get("data", {}).get("content", "") if isinstance(data.get("data"), dict) else ""
-        else:
-            text = resp.text
+        data = resp.json()
+        payload = data.get("data", {})
+        if not isinstance(payload, dict):
+            return ""
 
+        text = payload.get("content", "")
         if not text:
             return ""
 
         text = _clean_jina_markdown(text)
-        limit = _JINA_CONTENT_LIMIT if _is_docs_domain(url) else _DEEP_CONTENT_LIMIT
+        limit = _JINA_CONTENT_LIMIT if is_docs else _DEEP_CONTENT_LIMIT
         return text[:limit]
 
     @staticmethod
-    async def _search_jina(query: str, max_results: int) -> list[dict[str, str]]:
-        """Search via Jina Search API — returns results WITH full page content."""
-        jina_url = f"{_JINA_SEARCH_URL}{quote_plus(query)}"
-        headers = _jina_headers()
+    async def _search_jina(query: str, scope: str, max_results: int) -> list[dict[str, str]]:
+        """Search via Jina Search API POST endpoint.
+
+        Returns results with full page content rendered as markdown.
+        Uses X-Site header for domain-scoped searches.
+        """
+        headers = _jina_search_headers()
+
+        site_map = {
+            "ansible_docs": "https://docs.ansible.com",
+            "stackoverflow": "https://stackoverflow.com",
+            "galaxy": "https://galaxy.ansible.com",
+        }
+        site = site_map.get(scope)
+        if site:
+            headers["X-Site"] = site
 
         async with httpx.AsyncClient(
             timeout=_JINA_TIMEOUT,
             follow_redirects=True,
         ) as client:
-            resp = await client.get(jina_url, headers=headers)
+            resp = await client.post(
+                _JINA_SEARCH_URL,
+                headers=headers,
+                json={"q": query},
+            )
             resp.raise_for_status()
 
         data = resp.json()
@@ -445,11 +508,13 @@ def _parent_url(url: str) -> str | None:
 
 
 def _clean_jina_markdown(text: str) -> str:
-    """Clean up Jina Reader markdown output."""
-    text = re.sub(r"^Title:.*\n", "", text)
-    text = re.sub(r"^URL Source:.*\n", "", text)
-    text = re.sub(r"^Markdown Content:\n", "", text)
-    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    """Clean up Jina Reader markdown output headers and excess whitespace."""
+    text = re.sub(r"^Title:.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^URL Source:.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^Published Time:.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^Markdown Content:\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^Warning:.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
