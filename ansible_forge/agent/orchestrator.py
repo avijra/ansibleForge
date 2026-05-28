@@ -405,7 +405,7 @@ class SessionState:
         self._has_researched = False
         self._has_searched = False
         self._has_read_docs = False
-        self._research_gate_fired = False
+        self._research_gate_block_count = 0
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._total_cost = 0.0
@@ -595,6 +595,26 @@ class Orchestrator:
         if state._has_searched and state._has_read_docs:
             state._has_researched = True
             return None
+
+        state._research_gate_block_count += 1
+
+        if state._has_searched and state._research_gate_block_count >= 3:
+            state._has_researched = True
+            state._has_read_docs = True
+            logger.warning(
+                "research_gate_escape",
+                block_count=state._research_gate_block_count,
+                has_searched=state._has_searched,
+            )
+            state.memory.add_user(
+                "RESEARCH GATE RELEASED — you searched but could not read full "
+                "documentation (likely JS-rendered or unreachable). Proceed with "
+                "your best-effort knowledge. List what you found AND what you "
+                "could not verify, so the user knows the risk. Be extra careful "
+                "with prerequisites — if unsure, add a pre-flight check task."
+            )
+            return None
+
         missing: list[str] = []
         if not state._has_searched:
             missing.append(
@@ -603,15 +623,53 @@ class Orchestrator:
             )
         if not state._has_read_docs:
             missing.append(
-                "READ the official docs (`web_search url=<docs_url>` returning "
-                "substantial content)"
+                "READ official docs (`web_search url=<docs_url>`) or ensure "
+                "your search returned substantial inline content (>500 chars)"
             )
-        state._research_gate_fired = True
         return ToolResult.fail(
             "Research incomplete — you must still: "
             + "; AND ".join(missing) + ". "
             "Do not surface this to the user.",
         )
+
+    @staticmethod
+    def _update_research_state(
+        state: SessionState,
+        tc_name: str,
+        tc_arguments: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        """Track research progress from web_search, search_docs, and manage_galaxy."""
+        if tc_name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
+            state._searched_since_exec_fail = True
+            is_url_read = bool(tc_arguments.get("url"))
+            output_len = len(result.output or "")
+
+            if is_url_read and output_len > 500:
+                state._has_read_docs = True
+            elif output_len > 500:
+                state._has_read_docs = True
+                state._has_searched = True
+            else:
+                state._has_searched = True
+
+            if state._has_searched and state._has_read_docs:
+                state._has_researched = True
+
+        if (
+            tc_name == "manage_galaxy"
+            and tc_arguments.get("action") == "search"
+            and result.status != ToolStatus.ERROR
+        ):
+            state._has_searched = True
+            if state._has_searched and state._has_read_docs:
+                state._has_researched = True
+
+        if state._has_researched and not state._prereq_directive_injected:
+            state._prereq_directive_injected = True
+            state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
+            state.memory.add_user(_RESEARCH_SUMMARY_DIRECTIVE)
+            state._research_summary_injected = True
 
     @staticmethod
     def _build_exec_fail_directive(
@@ -1469,28 +1527,7 @@ class Orchestrator:
                             await infra_tracker.update_infrastructure(
                                 tc.name, result, state.session_id,
                             )
-                        if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
-                            state._searched_since_exec_fail = True
-                            is_url_read = bool(tc.arguments.get("url"))
-                            if is_url_read and len(result.output or "") > 500:
-                                state._has_read_docs = True
-                            else:
-                                state._has_searched = True
-                            if state._has_searched and state._has_read_docs:
-                                state._has_researched = True
-                        if (
-                            tc.name == "manage_galaxy"
-                            and tc.arguments.get("action") == "search"
-                            and result.status != ToolStatus.ERROR
-                        ):
-                            state._has_searched = True
-                            if state._has_searched and state._has_read_docs:
-                                state._has_researched = True
-                        if state._has_researched and not state._prereq_directive_injected:
-                            state._prereq_directive_injected = True
-                            state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
-                            state.memory.add_user(_RESEARCH_SUMMARY_DIRECTIVE)
-                            state._research_summary_injected = True
+                        self._update_research_state(state, tc.name, tc.arguments, result)
                         if tc.name in ("execute_playbook", "terraform_exec"):
                             state._generated_artifacts.add(tc.name)
                         if result.status != ToolStatus.ERROR:
@@ -1505,7 +1542,6 @@ class Orchestrator:
                                     state._generated_artifacts.add("write_file:playbook")
 
                         if result.status == ToolStatus.ERROR:
-                            # Auto-remediation: detect missing Python SDK and install it
                             if tc.name in self._EXECUTION_TOOLS:
                                 from ansible_forge.dep_manager import (
                                     ensure_packages,
@@ -2293,28 +2329,7 @@ class Orchestrator:
                             early_return = True
                             break
 
-                    if tc.name in ("web_search", "search_docs") and result.status != ToolStatus.ERROR:
-                        state._searched_since_exec_fail = True
-                        is_url_read = bool(tc.arguments.get("url"))
-                        if is_url_read and len(result.output or "") > 500:
-                            state._has_read_docs = True
-                        else:
-                            state._has_searched = True
-                        if state._has_searched and state._has_read_docs:
-                            state._has_researched = True
-                    if (
-                        tc.name == "manage_galaxy"
-                        and tc.arguments.get("action") == "search"
-                        and result.status != ToolStatus.ERROR
-                    ):
-                        state._has_searched = True
-                        if state._has_searched and state._has_read_docs:
-                            state._has_researched = True
-                    if state._has_researched and not state._prereq_directive_injected:
-                        state._prereq_directive_injected = True
-                        state.memory.add_user(_PREREQ_EXTRACTION_DIRECTIVE)
-                        state.memory.add_user(_RESEARCH_SUMMARY_DIRECTIVE)
-                        state._research_summary_injected = True
+                    self._update_research_state(state, tc.name, tc.arguments, result)
                     if tc.name in ("execute_playbook", "terraform_exec"):
                         state._generated_artifacts.add(tc.name)
                     if result.status != ToolStatus.ERROR:
@@ -2329,7 +2344,6 @@ class Orchestrator:
                                 state._generated_artifacts.add("write_file:playbook")
 
                     if result.status == ToolStatus.ERROR:
-                        # Auto-remediation: detect missing Python SDK and install it
                         _auto_fixed = False
                         if tc.name in self._EXECUTION_TOOLS:
                             from ansible_forge.dep_manager import (
@@ -3095,7 +3109,7 @@ class Orchestrator:
         state._has_researched = False
         state._has_searched = False
         state._has_read_docs = False
-        state._research_gate_fired = False
+        state._research_gate_block_count = 0
         state._prereq_directive_injected = False
         state._total_prompt_tokens = 0
         state._total_completion_tokens = 0
