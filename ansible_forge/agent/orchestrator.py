@@ -161,15 +161,20 @@ _RESEARCH_GATED_TOOLS = frozenset({
 
 _PREREQ_EXTRACTION_DIRECTIVE = (
     "RESEARCH CHECKPOINT — you have completed initial research. "
-    "Before generating ANY code or calling ANY execution tool, you MUST "
-    "list all deployment prerequisites and dependencies you discovered. "
-    "Format as a numbered dependency chain: what must be installed or "
-    "configured BEFORE the main target, and in what order. "
-    "Example: '1. Install NFD (required by GPU Operator for node labeling) "
-    "→ 2. Install GPU Operator (requires NFD) → 3. Create ClusterPolicy'. "
-    "Include this list in your next response to the user. "
+    "Before generating ANY code, you MUST present prerequisites in this "
+    "EXACT structured format for EACH component:\n\n"
+    "**Component: [name]**\n"
+    "  - Depends on: [what must be installed BEFORE this]\n"
+    "  - Needed by: [what depends on THIS component]\n"
+    "  - Source: [confirmed in docs at URL / inferred from experience]\n"
+    "  - Install method: [OLM subscription / Helm chart / Ansible module / etc.]\n\n"
+    "CRITICAL — for every dependency you list, ask yourself: 'Does THIS "
+    "dependency have its OWN prerequisites that I haven't searched for?' "
+    "If yes, you MUST search for those prerequisites NOW before proceeding. "
+    "Example: GPU Operator requires NFD Operator — did you search for NFD's "
+    "own prerequisites? This recursive walk is mandatory.\n\n"
     "If you found no prerequisites, state 'No prerequisites identified.' "
-    "This list is CRITICAL — skipping a prerequisite causes deployment failure."
+    "Skipping a prerequisite causes deployment failure and wastes the user's money."
 )
 
 _ARTIFACT_GENERATING_TOOLS = frozenset({
@@ -207,19 +212,23 @@ _SEARCH_SPIRAL_DIRECTIVE = (
 )
 
 _RESEARCH_SUMMARY_DIRECTIVE = (
-    "RESEARCH SUMMARY REQUIRED — Before generating ANY plan or code, "
-    "present your research findings in this EXACT format:\n"
-    "**Target**: [what the user wants deployed/configured]\n"
+    "RESEARCH SUMMARY REQUIRED — Present findings in this EXACT format:\n\n"
+    "**Target**: [what the user wants]\n"
+    "**Version requested vs. docs read**: [flag any mismatch]\n"
     "**Official docs read**: [URLs you fetched and read]\n"
-    "**Prerequisites** (numbered dependency chain):\n"
-    "  1. [prerequisite] — required by [what depends on it]\n"
-    "  2. ...\n"
-    "**Operators/CRDs/versions required**: [list]\n"
-    "**Installation order**: [full dependency chain]\n\n"
-    "If you did NOT read the official documentation for the target product, "
-    "STOP and use `web_search url=<docs_url>` to read it now. "
-    "Proceeding without reading official docs leads to missed prerequisites "
-    "and wasted steps."
+    "**Prerequisite dependency graph** (ordered — install bottom-up):\n"
+    "  1. [prerequisite A] — required by B — confirmed at [URL or 'inferred']\n"
+    "  2. [prerequisite B] — required by C — confirmed at [URL or 'inferred']\n"
+    "  3. [target component C]\n"
+    "**Infrastructure prerequisites**: [node labels, storage classes, CRDs, "
+    "quotas, DNS zones, etc.]\n"
+    "**Version constraints**: [which components must match versions]\n"
+    "**Gaps**: [what you could NOT verify — docs unreachable, version mismatch]\n\n"
+    "SELF-CHECK before presenting:\n"
+    "- Did you search for EACH prerequisite's own dependencies?\n"
+    "- Does the version in the docs match what the user asked for?\n"
+    "- For every operator, is its catalog source and channel specified?\n"
+    "If any answer is 'no', research more before presenting."
 )
 
 _ANSIBLE_TOOLS = frozenset({
@@ -2627,13 +2636,21 @@ class Orchestrator:
         "You are a deployment prerequisites reviewer. Given the user's request "
         "and a proposed execution plan, identify any MISSING prerequisites, "
         "dependencies, or ordering issues.\n\n"
-        "Rules:\n"
-        "- Every operator/service that depends on another must have its "
-        "dependency deployed FIRST in the plan.\n"
-        "- Infrastructure prerequisites (networking, storage, node pools, "
-        "feature discovery, CRDs) must precede the services that need them.\n"
-        "- If the plan is complete, respond: {\"missing\": [], \"ok\": true}\n"
-        "- If something is missing, respond with JSON:\n"
+        "CHECK EACH OF THESE:\n"
+        "1. For every operator/service in the plan, is its prerequisite also "
+        "in the plan AND ordered BEFORE it?\n"
+        "2. For every component that needs a CRD, node label, or storage class, "
+        "is the provider of that resource installed first?\n"
+        "3. For GPU workloads: is Node Feature Discovery (NFD) installed before "
+        "the GPU Operator? Is the GPU Operator before any AI/ML platform?\n"
+        "4. For Kubernetes platforms: are required operators (Serverless, "
+        "Service Mesh, Pipelines) installed before the platform that needs them?\n"
+        "5. Are infrastructure prerequisites (DNS zones, IAM roles, quotas, "
+        "VPCs) created before the services that depend on them?\n"
+        "6. Are version constraints respected? (e.g. operator X requires "
+        "platform version >= Y)\n\n"
+        "If the plan is complete, respond: {\"missing\": [], \"ok\": true}\n"
+        "If something is missing, respond with JSON:\n"
         '  {"missing": [{"step": N, "action": "description", "tool": "tool_name"}], "ok": false}\n'
         "Respond ONLY with the JSON object. No extra text."
     )
@@ -2680,9 +2697,9 @@ class Orchestrator:
                         {"role": "user", "content": "\n\n".join(review_input_parts)},
                     ],
                     tools=None,
-                    max_tokens=800,
+                    max_tokens=2000,
                 ),
-                timeout=20,
+                timeout=40,
             )
             if not response.content:
                 return plan

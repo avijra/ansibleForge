@@ -302,6 +302,41 @@ def materialize_ssh_keys(keys_dir: Path, merged_vars: dict[str, Any]) -> list[Pa
     return files
 
 
+def _inject_python_interpreter(
+    ws: Path, playbook: str, merged_vars: dict[str, Any],
+) -> None:
+    """Inject ansible_python_interpreter into extravars when targeting localhost.
+
+    Extravars have the highest precedence in Ansible (higher than ansible.cfg,
+    inventory host_vars, and environment variables), so this prevents any
+    ansible.cfg `interpreter_python` setting from overriding the standalone
+    Python path that AnsibleForge ships.
+    """
+    if "ansible_python_interpreter" in merged_vars:
+        return
+
+    interp = _resolve_python_interpreter()
+    if not interp or interp == "auto_silent":
+        return
+
+    playbook_path = ws / playbook
+    if not playbook_path.exists():
+        return
+
+    try:
+        content = playbook_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    targets_localhost = any(
+        marker in content
+        for marker in ("localhost", "127.0.0.1", "connection: local", "hosts: all")
+    )
+    if targets_localhost:
+        merged_vars["ansible_python_interpreter"] = interp
+        logger.info("injected_python_interpreter_extravar", interpreter=interp)
+
+
 class Executor(BaseTool):
     @property
     def name(self) -> str:
@@ -476,6 +511,8 @@ class Executor(BaseTool):
             merged_vars.update(vault.get_all())
         if extra_vars:
             merged_vars.update(extra_vars)
+
+        _inject_python_interpreter(ws, playbook, merged_vars)
 
         ensure_ansible_cfg(ws)
         (ws / ".tuyere").mkdir(parents=True, exist_ok=True)

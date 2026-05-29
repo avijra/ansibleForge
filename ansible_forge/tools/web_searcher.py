@@ -33,6 +33,7 @@ _DOCS_DOMAINS = frozenset({
     "helm.sh", "artifacthub.io",
     "docs.docker.com", "docs.github.com",
     "grafana.com", "prometheus.io",
+    "docs.nvidia.com",
 })
 
 _DEEP_CONTENT_LIMIT = 12000
@@ -44,11 +45,21 @@ _JINA_SEARCH_URL = "https://s.jina.ai/"
 _JINA_TIMEOUT = 45
 _JINA_CONTENT_LIMIT = 15000
 
+_TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+_TAVILY_TIMEOUT = 30
+_TAVILY_MIN_SCORE = 0.3
+
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
+
+_SCOPE_DOMAINS: dict[str, list[str]] = {
+    "ansible_docs": ["docs.ansible.com"],
+    "stackoverflow": ["stackoverflow.com"],
+    "galaxy": ["galaxy.ansible.com"],
+}
 
 
 def _is_docs_domain(url: str) -> bool:
@@ -60,7 +71,6 @@ def _is_docs_domain(url: str) -> bool:
 
 
 def _is_boilerplate(text: str) -> bool:
-    """Detect content that is mostly navigation/boilerplate, not actual docs."""
     if len(text) < _MIN_USEFUL_CONTENT:
         return True
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -76,31 +86,41 @@ def _is_boilerplate(text: str) -> bool:
     return len(lines) > 3 and nav_markers / len(lines) > 0.3
 
 
+_cached_tavily_key: str | None = None
 _cached_jina_key: str | None = None
 
 
-def _resolve_jina_key() -> str:
-    """Resolve JINA_API_KEY from env or ~/.ansibleforge/.env."""
-    global _cached_jina_key
-    if _cached_jina_key is not None:
-        return _cached_jina_key
-
-    key = os.environ.get("JINA_API_KEY", "").strip()
+def _resolve_env_key(var_name: str) -> str:
+    key = os.environ.get(var_name, "").strip()
     if not key:
         from pathlib import Path
         env_file = Path.home() / ".ansibleforge" / ".env"
         if env_file.is_file():
             for line in env_file.read_text().splitlines():
                 line = line.strip()
-                if line.startswith("JINA_API_KEY=") and not line.startswith("#"):
+                if line.startswith(f"{var_name}=") and not line.startswith("#"):
                     key = line.split("=", 1)[1].strip()
                     break
-    _cached_jina_key = key
     return key
 
 
+def _resolve_tavily_key() -> str:
+    global _cached_tavily_key
+    if _cached_tavily_key is not None:
+        return _cached_tavily_key
+    _cached_tavily_key = _resolve_env_key("TAVILY_API_KEY")
+    return _cached_tavily_key
+
+
+def _resolve_jina_key() -> str:
+    global _cached_jina_key
+    if _cached_jina_key is not None:
+        return _cached_jina_key
+    _cached_jina_key = _resolve_env_key("JINA_API_KEY")
+    return _cached_jina_key
+
+
 def _jina_base_headers() -> dict[str, str]:
-    """Minimal Jina headers: auth + JSON accept (required by all Jina APIs)."""
     headers: dict[str, str] = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -112,7 +132,6 @@ def _jina_base_headers() -> dict[str, str]:
 
 
 def _jina_reader_headers(is_docs: bool = False) -> dict[str, str]:
-    """Headers for Jina Reader API (r.jina.ai)."""
     headers = _jina_base_headers()
     headers["X-Engine"] = "browser"
     headers["X-Retain-Images"] = "none"
@@ -124,7 +143,6 @@ def _jina_reader_headers(is_docs: bool = False) -> dict[str, str]:
 
 
 def _jina_search_headers() -> dict[str, str]:
-    """Headers for Jina Search API (s.jina.ai)."""
     headers = _jina_base_headers()
     headers["X-Retain-Images"] = "none"
     return headers
@@ -143,8 +161,8 @@ class WebSearcher(BaseTool):
         return (
             "Search the web or read a specific URL. Two modes:\n"
             "1. SEARCH mode (default): provide `query` to search the web. "
-            "Returns result titles, URLs, and full content from top results. "
-            "Content is fetched and rendered including JavaScript-heavy pages.\n"
+            "Returns result titles, URLs, relevance scores, and full content "
+            "from top results. Uses AI-powered search with relevance ranking.\n"
             "2. READ mode: provide `url` to fetch and read a specific page. "
             "Use this to read official documentation, prerequisites pages, "
             "or any URL found in previous search results. Handles JS-rendered "
@@ -180,9 +198,9 @@ class WebSearcher(BaseTool):
                     "type": "string",
                     "enum": ["ansible_docs", "general", "galaxy", "stackoverflow"],
                     "description": (
-                        "Search scope: 'ansible_docs' adds site:docs.ansible.com, "
-                        "'stackoverflow' adds site:stackoverflow.com, "
-                        "'galaxy' adds site:galaxy.ansible.com, "
+                        "Search scope: 'ansible_docs' limits to docs.ansible.com, "
+                        "'stackoverflow' limits to stackoverflow.com, "
+                        "'galaxy' limits to galaxy.ansible.com, "
                         "'general' searches everywhere (default)"
                     ),
                 },
@@ -211,7 +229,7 @@ class WebSearcher(BaseTool):
             return ToolResult.fail("Provide either `query` (to search) or `url` (to read a page)")
 
         max_results = min(max_results, 10)
-        results, source = await self._search_with_fallback(query, scope, max_results)
+        results, source, answer = await self._search_with_fallback(query, scope, max_results)
 
         if not results:
             return ToolResult.ok(
@@ -220,7 +238,14 @@ class WebSearcher(BaseTool):
             )
 
         fetched_contents: list[tuple[str, str]] = []
-        if source == "jina":
+        if source == "tavily":
+            for r in results[:5]:
+                content = r.get("content", "")
+                if content and not _is_boilerplate(content):
+                    limit = _DEEP_CONTENT_LIMIT if _is_docs_domain(r["url"]) else _DEFAULT_CONTENT_LIMIT
+                    fetched_contents.append((r["url"], content[:limit]))
+                    self._url_cache[r["url"]] = content[:_JINA_CONTENT_LIMIT]
+        elif source == "jina":
             for r in results[:3]:
                 content = r.get("content", "")
                 if content and not _is_boilerplate(content):
@@ -233,7 +258,7 @@ class WebSearcher(BaseTool):
                 if content and not _is_boilerplate(content):
                     fetched_contents.append((r["url"], content[:_DEFAULT_CONTENT_LIMIT]))
 
-        formatted = self._format_results(results, fetched_contents)
+        formatted = self._format_results(results, fetched_contents, answer)
         return ToolResult.ok(
             output=formatted,
             results=results,
@@ -242,14 +267,26 @@ class WebSearcher(BaseTool):
 
     async def _search_with_fallback(
         self, query: str, scope: str, max_results: int,
-    ) -> tuple[list[dict[str, str]], str]:
-        """Try Jina Search first (returns content), fall back to DuckDuckGo."""
+    ) -> tuple[list[dict[str, str]], str, str]:
+        """Tavily first, then Jina Search, then DuckDuckGo."""
+        tavily_key = _resolve_tavily_key()
+        if tavily_key:
+            try:
+                results, answer = await self._search_tavily(
+                    query, scope, max_results, tavily_key,
+                )
+                if results:
+                    logger.info("search_via_tavily", query=query, count=len(results))
+                    return results, "tavily", answer
+            except Exception as exc:
+                logger.info("tavily_search_fallback", error=str(exc)[:200])
+
         if _resolve_jina_key():
             try:
                 results = await self._search_jina(query, scope, max_results)
                 if results:
                     logger.info("search_via_jina", query=query, count=len(results))
-                    return results, "jina"
+                    return results, "jina", ""
             except Exception as exc:
                 logger.info("jina_search_fallback", error=str(exc)[:200])
 
@@ -257,10 +294,70 @@ class WebSearcher(BaseTool):
         try:
             results = await self._search_duckduckgo(ddg_query, max_results)
             logger.info("search_via_duckduckgo", query=ddg_query, count=len(results))
-            return results, "duckduckgo"
+            return results, "duckduckgo", ""
         except Exception as exc:
             logger.warning("all_search_failed", error=str(exc))
-            return [], "none"
+            return [], "none", ""
+
+    @staticmethod
+    async def _search_tavily(
+        query: str, scope: str, max_results: int, api_key: str,
+    ) -> tuple[list[dict[str, str]], str]:
+        body: dict[str, Any] = {
+            "query": query,
+            "search_depth": "advanced",
+            "max_results": max_results,
+            "include_answer": True,
+            "include_raw_content": "markdown",
+        }
+
+        domains = _SCOPE_DOMAINS.get(scope)
+        if domains:
+            body["include_domains"] = domains
+
+        async with httpx.AsyncClient(
+            timeout=_TAVILY_TIMEOUT,
+            follow_redirects=True,
+        ) as client:
+            resp = await client.post(
+                _TAVILY_SEARCH_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json=body,
+            )
+            resp.raise_for_status()
+
+        data = resp.json()
+        answer = data.get("answer", "") or ""
+
+        results: list[dict[str, str]] = []
+        for item in data.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url", "").strip()
+            title = item.get("title", "").strip()
+            score = item.get("score", 0.0)
+            if not url or not title or score < _TAVILY_MIN_SCORE:
+                continue
+
+            raw_content = item.get("raw_content", "") or ""
+            snippet = item.get("content", "") or ""
+
+            content = raw_content if raw_content else snippet
+            if content:
+                content = _clean_tavily_content(content)
+
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet[:500],
+                "content": content,
+                "score": f"{score:.2f}",
+            })
+
+        return results, answer
 
     async def _fetch_url_direct(self, url: str) -> ToolResult:
         cached = self._url_cache.get(url)
@@ -317,7 +414,6 @@ class WebSearcher(BaseTool):
     async def _fetch_url_with_fallback(
         self, url: str, deep: bool = False,
     ) -> str:
-        """Fetch URL content: try httpx first, fall back to Jina Reader for JS pages."""
         content = ""
         with contextlib.suppress(Exception):
             content = await self._fetch_page_content(url, deep=deep)
@@ -337,11 +433,6 @@ class WebSearcher(BaseTool):
 
     @staticmethod
     async def _fetch_via_jina_reader(url: str) -> str:
-        """Fetch URL content via Jina Reader API POST endpoint.
-
-        Uses X-Engine: browser for JS-heavy sites and X-Remove-Selector to
-        strip nav/header/footer boilerplate server-side.
-        """
         is_docs = _is_docs_domain(url)
         headers = _jina_reader_headers(is_docs=is_docs)
 
@@ -371,11 +462,6 @@ class WebSearcher(BaseTool):
 
     @staticmethod
     async def _search_jina(query: str, scope: str, max_results: int) -> list[dict[str, str]]:
-        """Search via Jina Search API POST endpoint.
-
-        Returns results with full page content rendered as markdown.
-        Uses X-Site header for domain-scoped searches.
-        """
         headers = _jina_search_headers()
 
         site_map = {
@@ -477,13 +563,23 @@ class WebSearcher(BaseTool):
     def _format_results(
         results: list[dict[str, str]],
         fetched_contents: list[tuple[str, str]],
+        answer: str = "",
     ) -> str:
-        lines = [f"Found {len(results)} result(s):\n"]
+        lines: list[str] = []
+
+        if answer:
+            lines.append("**AI Summary:**")
+            lines.append(answer[:2000])
+            lines.append("")
+
+        lines.append(f"Found {len(results)} result(s):\n")
         for i, r in enumerate(results, 1):
-            lines.append(f"{i}. **{r['title']}**")
+            score = r.get("score", "")
+            score_tag = f" [relevance: {score}]" if score else ""
+            lines.append(f"{i}. **{r['title']}**{score_tag}")
             lines.append(f"   URL: {r['url']}")
             if r.get("snippet"):
-                lines.append(f"   {r['snippet']}")
+                lines.append(f"   {r['snippet'][:300]}")
             lines.append("")
 
         for fetch_url, content in fetched_contents:
@@ -496,7 +592,6 @@ class WebSearcher(BaseTool):
 
 
 def _parent_url(url: str) -> str | None:
-    """Return the parent path of a URL, or None if already at root."""
     parsed = urlparse(url)
     path = parsed.path.rstrip("/")
     if not path or "/" not in path:
@@ -508,12 +603,16 @@ def _parent_url(url: str) -> str | None:
 
 
 def _clean_jina_markdown(text: str) -> str:
-    """Clean up Jina Reader markdown output headers and excess whitespace."""
     text = re.sub(r"^Title:.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^URL Source:.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^Published Time:.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^Markdown Content:\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^Warning:.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _clean_tavily_content(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -566,7 +665,6 @@ def _strip_html(text: str) -> str:
 
 
 def _html_to_text(html_content: str) -> str:
-    """Extract readable text from HTML, prioritizing main content areas."""
     main_content = _extract_main_content(html_content)
     if main_content:
         html_content = main_content
@@ -581,7 +679,6 @@ def _html_to_text(html_content: str) -> str:
 
 
 def _extract_main_content(html_content: str) -> str:
-    """Try to extract the main content area from HTML."""
     for pattern in [
         re.compile(r"<main[^>]*>(.*?)</main>", re.DOTALL | re.IGNORECASE),
         re.compile(r'<article[^>]*>(.*?)</article>', re.DOTALL | re.IGNORECASE),

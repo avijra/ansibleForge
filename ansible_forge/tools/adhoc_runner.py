@@ -351,6 +351,11 @@ class AdhocRunner(BaseTool):
                 },
             )
 
+        if host_pattern in local_targets and "ansible_python_interpreter" not in merged_vars:
+            interp = _resolve_python_interpreter()
+            if interp and interp != "auto_silent":
+                merged_vars["ansible_python_interpreter"] = interp
+
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
         with isolated_runner_dir(ws) as run_dir:
