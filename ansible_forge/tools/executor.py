@@ -337,6 +337,51 @@ def _inject_python_interpreter(
         logger.info("injected_python_interpreter_extravar", interpreter=interp)
 
 
+def _extract_extra_log_dirs(
+    ws: Path, merged_vars: dict[str, Any], playbook: str,
+) -> list[Path]:
+    """Extract directories outside the workspace that might contain logs.
+
+    Scans extravars for values that look like existing absolute directory
+    paths, and parses the playbook YAML for ``chdir`` arguments.
+    """
+    dirs: list[Path] = []
+    ws_str = str(ws.resolve())
+    for value in merged_vars.values():
+        if not isinstance(value, str):
+            continue
+        if not os.path.isabs(value):
+            continue
+        p = Path(value)
+        if p.is_dir() and not str(p.resolve()).startswith(ws_str + os.sep):
+            dirs.append(p)
+        elif p.parent.is_dir() and not str(p.parent.resolve()).startswith(ws_str + os.sep):
+            dirs.append(p.parent)
+
+    pb_path = ws / playbook
+    if pb_path.exists():
+        try:
+            text = pb_path.read_text(encoding="utf-8", errors="replace")
+            import re
+            for m in re.finditer(r'chdir:\s*["\']?([^\s"\'#]+)', text):
+                chdir_val = m.group(1)
+                if os.path.isabs(chdir_val):
+                    d = Path(chdir_val)
+                    if d.is_dir() and not str(d.resolve()).startswith(ws_str + os.sep):
+                        dirs.append(d)
+        except OSError:
+            pass
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for d in dirs:
+        key = str(d.resolve())
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+    return unique
+
+
 class Executor(BaseTool):
     @property
     def name(self) -> str:
@@ -505,10 +550,13 @@ class Executor(BaseTool):
             cmdline_args.append("--become")
 
         merged_vars: dict[str, Any] = {}
+        vault_keys: set[str] = set()
         session_id = kwargs.get("_session_id")
         if session_id:
             vault = SecretVault.get_instance().for_session(session_id)
-            merged_vars.update(vault.get_all())
+            vault_secrets = vault.get_all()
+            merged_vars.update(vault_secrets)
+            vault_keys = set(vault_secrets.keys())
         if extra_vars:
             merged_vars.update(extra_vars)
 
@@ -526,6 +574,10 @@ class Executor(BaseTool):
             for key, value in merged_vars.items():
                 if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
                     envvars[key] = str(value)
+            for key in vault_keys:
+                upper = key.upper()
+                if upper != key and upper not in envvars:
+                    envvars[upper] = str(merged_vars[key])
 
             return await self._run_playbook(
                 ws, run_dir, playbook, verbosity, envvars, live_queue,
@@ -594,7 +646,8 @@ class Executor(BaseTool):
             _MAX_PLAYBOOK_TIMEOUT,
         )
 
-        log_snapshot = _snapshot_log_files(ws)
+        extra_log_dirs = _extract_extra_log_dirs(ws, merged_vars, playbook)
+        log_snapshot = _snapshot_log_files(ws, extra_dirs=extra_log_dirs)
 
         loop = asyncio.get_running_loop()
         thread, runner = await loop.run_in_executor(
@@ -605,7 +658,7 @@ class Executor(BaseTool):
         log_watcher: asyncio.Task[None] | None = None
         if live_queue is not None:
             log_watcher = asyncio.create_task(
-                _tail_new_logs(ws, log_snapshot, live_queue)
+                _tail_new_logs(ws, log_snapshot, live_queue, extra_dirs=extra_log_dirs)
             )
 
         try:
@@ -661,7 +714,7 @@ class Executor(BaseTool):
             "event_count": len(events),
         }
 
-        detected_logs = _detect_new_log_files(ws, log_snapshot)
+        detected_logs = _detect_new_log_files(ws, log_snapshot, extra_dirs=extra_log_dirs)
 
         result_data = {
             "summary": summary,

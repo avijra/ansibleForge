@@ -21,9 +21,13 @@ _COMPACTION_PROMPT = (
     "1. Key DECISIONS made and WHY (e.g. 'chose us-east-1 because existing VPC is there')\n"
     "2. Infrastructure STATE changes (resources created/modified/destroyed with IDs/IPs)\n"
     "3. Errors encountered and HOW they were resolved\n"
-    "4. Credentials collected (names only, never values)\n"
-    "5. Current deployment phase and what remains\n\n"
-    "Format as a bullet list. Be extremely concise — max 30 bullets. "
+    "4. Credentials/secrets COLLECTED — list EVERY secret name that was stored "
+    "(the agent must NOT re-request these)\n"
+    "5. Current deployment phase and what remains\n"
+    "6. Research findings — key version numbers, prerequisites discovered, "
+    "dependency chains, and compatibility constraints\n"
+    "7. Playbooks/roles/files generated (filenames and purpose)\n\n"
+    "Format as a bullet list. Be extremely concise — max 40 bullets. "
     "Omit tool call IDs, reasoning tokens, and verbose output. "
     "Preserve all hostnames, IPs, resource IDs, file paths, and config values."
 )
@@ -63,7 +67,7 @@ class Memory:
     """
 
     _JOURNAL_MAX_ENTRIES = 200
-    _JOURNAL_ENTRY_MAX_CHARS = 120
+    _JOURNAL_ENTRY_MAX_CHARS = 200
     _COMPACTION_THRESHOLD_TOKENS = 32000
     _COMPACTION_KEEP_RECENT = 30
 
@@ -330,12 +334,20 @@ class Memory:
                     lines.append(f"ASSISTANT: [called {tools}]")
                 content = m.get("content", "")
                 if content:
-                    lines.append(f"ASSISTANT: {content[:300]}")
+                    lines.append(f"ASSISTANT: {content[:500]}")
             elif role == "tool":
-                content = m.get("content", "")[:200]
-                lines.append(f"TOOL_RESULT: {content}")
+                raw = m.get("content", "")
+                tool_name = m.get("name", "")
+                try:
+                    parsed = json.loads(raw)
+                    status = parsed.get("status", "?")
+                    output = parsed.get("output", "")[:350]
+                    label = f"TOOL_RESULT({tool_name})" if tool_name else "TOOL_RESULT"
+                    lines.append(f"{label}: {status} — {output}")
+                except (json.JSONDecodeError, AttributeError):
+                    lines.append(f"TOOL_RESULT: {raw[:400]}")
             elif role == "user":
-                content = m.get("content", "")[:300]
+                content = m.get("content", "")[:400]
                 lines.append(f"USER: {content}")
         return "\n".join(lines)
 
@@ -368,24 +380,48 @@ class Memory:
         if budget > 0:
             self._prune_by_tokens(budget)
 
+    _CRITICAL_TOOL_ARG_KEYS: dict[str, tuple[str, ...]] = {
+        "request_secret": ("name",),
+        "web_search": ("query",),
+        "search_docs": ("query",),
+        "manage_galaxy": ("action", "collection_name"),
+        "execute_playbook": ("playbook", "mode"),
+        "generate_playbook": ("filename",),
+    }
+
     def _journal_from_message(self, msg: dict[str, Any]) -> None:
         """Extract a compact progress entry from a message about to be pruned."""
         if msg.get("role") == "assistant" and "tool_calls" in msg:
             tools = []
+            extras: list[str] = []
             for tc in msg["tool_calls"]:
                 fn = tc.get("function", {})
-                tools.append(fn.get("name", "?"))
+                name = fn.get("name", "?")
+                tools.append(name)
+                arg_keys = self._CRITICAL_TOOL_ARG_KEYS.get(name)
+                if arg_keys:
+                    try:
+                        args = fn.get("arguments", {})
+                        if isinstance(args, str):
+                            args = json.loads(args)
+                        vals = [f"{k}={args[k]}" for k in arg_keys if k in args]
+                        if vals:
+                            extras.append(f"{name}({', '.join(vals)})")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
             entry = f"called {', '.join(tools)}"
+            if extras:
+                entry += f" [{'; '.join(extras)}]"
             content = msg.get("content", "")
             if content and len(content) > 5:
-                snippet = content[:80].replace("\n", " ").strip()
+                snippet = content[:120].replace("\n", " ").strip()
                 entry += f" — {snippet}"
             self._append_journal(entry)
         elif msg.get("role") == "tool":
             try:
                 parsed = json.loads(msg.get("content", "{}"))
                 status = parsed.get("status", "?")
-                output = parsed.get("output", "")[:60].replace("\n", " ")
+                output = parsed.get("output", "")[:150].replace("\n", " ")
                 self._append_journal(f"  → {status}: {output}")
             except (json.JSONDecodeError, AttributeError):
                 pass

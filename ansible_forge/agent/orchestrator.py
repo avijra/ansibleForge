@@ -1094,6 +1094,16 @@ class Orchestrator:
                                 session_id=state.session_id,
                                 step=state.step_count,
                             )
+                            sv = self._secret_vault.for_session(state.session_id)
+                            secret_names = sv.list_names()
+                            if secret_names:
+                                names_csv = ", ".join(
+                                    s["name"] for s in secret_names
+                                )
+                                state.memory.add_user(
+                                    f"[VAULT REMINDER] Secrets already collected: "
+                                    f"{names_csv}. Do NOT re-request these."
+                                )
                     except Exception:
                         logger.warning(
                             "compaction_failed",
@@ -1527,7 +1537,7 @@ class Orchestrator:
                             "tool": tc.name,
                             "tool_call_id": tc.id,
                             "status": result.status.value,
-                            "output": result.output[:2000],
+                            "output": result.output[:4000],
                         }
                         if result.data:
                             tool_result_payload["data"] = result.data
@@ -2197,7 +2207,7 @@ class Orchestrator:
                         "tool": tc.name,
                         "tool_call_id": tc.id,
                         "status": result.status.value,
-                        "output": result.output[:2000],
+                        "output": result.output[:4000],
                     }
                     if result.data:
                         tool_result_payload["data"] = result.data
@@ -2317,7 +2327,7 @@ class Orchestrator:
                         else:
                             state.status = SessionStatus.REJECTED
                             feedback = approval.feedback or "User rejected the operation."
-                            state._rejected_output = result.output[:2000]
+                            state._rejected_output = result.output[:4000]
                             state._rejected_feedback = feedback
                             state._rejected_tool = tc.name
                             state.memory.add_tool_result(
@@ -2858,9 +2868,11 @@ class Orchestrator:
 
     _READONLY_MODULE_SUFFIXES = ("_info", "_facts")
     _READONLY_MODULES = frozenset({
-        "setup", "ping", "debug", "assert", "ansible.builtin.setup",
-        "ansible.builtin.ping", "ansible.builtin.debug", "ansible.builtin.assert",
-        "ansible.builtin.gather_facts",
+        "setup", "ping", "debug", "assert", "stat", "find", "uri",
+        "ansible.builtin.setup", "ansible.builtin.ping",
+        "ansible.builtin.debug", "ansible.builtin.assert",
+        "ansible.builtin.gather_facts", "ansible.builtin.stat",
+        "ansible.builtin.find", "ansible.builtin.uri",
     })
 
     @staticmethod

@@ -318,10 +318,13 @@ class AdhocRunner(BaseTool):
                 return ToolResult.fail(f"Inventory not found: {inv_path}")
 
         merged_vars: dict[str, Any] = {}
+        vault_keys: set[str] = set()
         session_id = kwargs.get("_session_id")
         if session_id:
             vault = SecretVault.get_instance().for_session(session_id)
-            merged_vars.update(vault.get_all())
+            vault_secrets = vault.get_all()
+            merged_vars.update(vault_secrets)
+            vault_keys = set(vault_secrets.keys())
         if extra_vars:
             merged_vars.update(extra_vars)
         ensure_ansible_cfg(ws)
@@ -365,6 +368,10 @@ class AdhocRunner(BaseTool):
             for key, value in merged_vars.items():
                 if key.isupper() or key.startswith(("AWS_", "ARM_", "GOOGLE_", "TF_", "DIGITALOCEAN_", "HCLOUD_", "DO_")):
                     envvars[key] = str(value)
+            for key in vault_keys:
+                upper = key.upper()
+                if upper != key and upper not in envvars:
+                    envvars[upper] = str(merged_vars[key])
             runner_kwargs: dict[str, Any] = {
                 "private_data_dir": str(run_dir),
                 "project_dir": str(ws),

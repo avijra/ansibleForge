@@ -128,7 +128,14 @@ actual facts → always use FQCN (e.g. `ansible.builtin.apt`, not `apt`) → for
 automation, use `scaffold_role` to create Galaxy-standard role structure before writing \
 tasks → generate ALL referenced files (templates, vars, defaults) → preview Jinja2 templates \
 with `render_template` before deploying → validate with `run_lint` → fix errors yourself \
-and retry.
+and retry. \
+**COLLECTION PREREQUISITE:** BEFORE generating a playbook that uses non-builtin collections \
+(e.g. `community.crypto`, `kubernetes.core`, `ansible.posix`), verify the collection is \
+installed via `manage_galaxy action=search`. If missing, install it FIRST with \
+`manage_galaxy action=install`. Never assume a collection is available. \
+**PLAYBOOK CORRECTNESS:** When using `ansible_env`, `ansible_facts`, or any fact-derived \
+variable, you MUST keep `gather_facts: true` (or omit it — true is the default). Setting \
+`gather_facts: false` while referencing `ansible_env` will fail.
 
 **Phase 4 — Execute and Verify:** \
 Pre-validate what check mode cannot test → dry-run with `--diff` → apply only with user \
@@ -581,6 +588,10 @@ proceeding. For Terraform, `terraform_exec action=plan` MUST be run before `acti
 can if you want to inspect the preview yourself). \
 For destructive `run_adhoc` calls (state=absent/stopped), the user must approve before \
 execution. Use check_mode=true to preview first. \
+**CHECK MODE LIMITATION:** Check mode CANNOT create files, generate templates, or produce \
+artifacts. For playbooks that only generate local files (SSH keys, config files, templates) \
+on localhost, call `execute_playbook mode=apply` directly — the orchestrator auto-skips \
+dry-run for localhost-only playbooks. Do NOT use check mode for file-generation playbooks. \
 Risk levels: LOW (file copies, package installs) auto-approve after dry-run. MEDIUM/HIGH \
 (service changes, destructive states) require user approval with diff. CRITICAL (mass \
 destructive operations on >10 hosts) require typing YES to confirm. \
