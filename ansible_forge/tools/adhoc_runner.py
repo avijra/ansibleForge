@@ -162,6 +162,19 @@ def _is_destructive_adhoc(module: str, module_args: str) -> bool:
 _SSH_KEY_HEADERS = ("-----BEGIN", "PRIVATE KEY")
 _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "private_key")
 
+def _first_host_failure(host_results: dict[str, Any]) -> str:
+    """Extract the first failed/unreachable host's error message."""
+    for host, info in host_results.items():
+        if info.get("status") not in ("failed", "unreachable"):
+            continue
+        msg = info.get("msg") or info.get("stderr") or info.get("module_stderr") or ""
+        if isinstance(msg, str) and len(msg) > 300:
+            msg = msg[:300] + "…"
+        if msg:
+            return f" {host}: {msg}"
+    return ""
+
+
 _BLOCKED_ADHOC_MODULES = frozenset({
     "shell", "command", "raw", "script",
     "ansible.builtin.shell", "ansible.builtin.command",
@@ -521,8 +534,10 @@ class AdhocRunner(BaseTool):
                     parts.append(f"{unreachable} unreachable")
                 if ok:
                     parts.append(f"{ok} succeeded")
+                diag = _first_host_failure(host_results)
                 return ToolResult.fail(
-                    f"Command finished on {total} host(s) with issues: {', '.join(parts)}.",
+                    f"Command finished on {total} host(s) with issues: "
+                    f"{', '.join(parts)}.{diag}",
                     host_results=host_results,
                     module=module,
                     module_args=module_args,

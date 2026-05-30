@@ -692,6 +692,12 @@ class Orchestrator:
 
         error_summary = (error[:300] if error else "Unknown error").replace('"', "'")
 
+        read_first = (
+            "IMPORTANT: Do NOT regenerate the playbook from scratch. Use `read_file` "
+            "to read the failing playbook, identify the broken task, and surgically "
+            "fix only that task. Full regeneration wastes steps and introduces new bugs."
+        )
+
         if fail_count >= 3 and not searched:
             return (
                 f'HALT. "{tool_name}" has failed {fail_count} times and you have '
@@ -699,8 +705,9 @@ class Orchestrator:
                 "You MUST do ONE of the following — no other action is allowed:\n"
                 "A) Call `web_search` with the core error message right now, OR\n"
                 "B) Report to the user that you are stuck and ask for guidance.\n\n"
-                "Do NOT generate another playbook. Do NOT call "
-                f"`{tool_name}` again until you have search results or user input."
+                f"{read_first}\n"
+                f"Do NOT call `{tool_name}` again until you have search results "
+                "or user input."
             )
 
         if fail_count >= 3 and searched:
@@ -711,21 +718,22 @@ class Orchestrator:
                 "1. Tell the user exactly what you tried and what failed\n"
                 "2. Share the relevant error and search results\n"
                 "3. Ask the user for guidance on how to proceed\n\n"
-                "Do NOT generate another playbook without user input."
+                "Do NOT retry without user input."
             )
 
         if fail_count == 2 and not searched:
             return (
                 f'WARNING: "{tool_name}" has failed twice without a web search.\n\n'
+                f"{read_first}\n\n"
                 "Your next action MUST be `web_search` with this error:\n"
                 f'"{error_summary}"\n\n'
-                "Do NOT generate another playbook until you have search results."
+                "Then `read_file` the failing playbook and fix surgically."
             )
 
         return (
-            f'"{tool_name}" failed. Before retrying, use `web_search` to look up '
-            f'the error: "{error_summary}"\n'
-            "Read the results, then fix based on what you find."
+            f'"{tool_name}" failed. {read_first}\n\n'
+            f'Use `web_search` to look up the error: "{error_summary}"\n'
+            "Read the results, then fix the specific broken task."
         )
 
     _MAX_USER_RULES_CHARS = 2000
@@ -1104,6 +1112,21 @@ class Orchestrator:
                                     f"[VAULT REMINDER] Secrets already collected: "
                                     f"{names_csv}. Do NOT re-request these."
                                 )
+                            ws_id = (
+                                str(state.workspace.path)
+                                .replace("/", "_").replace("\\", "_").strip("_")
+                                or "default"
+                            )
+                            try:
+                                from ansible_forge.knowledge.workspace_memory import WorkspaceMemory
+                                ws_mem = WorkspaceMemory(ws_id).read().strip()
+                                if ws_mem:
+                                    state.memory.add_user(
+                                        f"[WORKSPACE MEMORY REMINDER — "
+                                        f"facts you stored earlier]\n{ws_mem}"
+                                    )
+                            except Exception:
+                                pass
                     except Exception:
                         logger.warning(
                             "compaction_failed",

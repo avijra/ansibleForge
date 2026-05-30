@@ -735,8 +735,9 @@ class Executor(BaseTool):
                     output=f"Preview completed — {len(events)} step(s) would run. No changes were made.",
                     data=result_data,
                 )
+            diag = _first_failure_diagnosis(events)
             return ToolResult.fail(
-                "Preview failed — check the execution log below for details.",
+                f"Preview failed ({playbook}). {diag}",
                 **result_data,
             )
 
@@ -745,8 +746,9 @@ class Executor(BaseTool):
                 output=f"Deployment completed successfully ({len(events)} steps ran).",
                 **result_data,
             )
+        diag = _first_failure_diagnosis(events)
         return ToolResult.fail(
-            "Deployment failed — check the execution log below for details.",
+            f"Deployment failed ({playbook}). {diag}",
             **result_data,
         )
 
@@ -790,6 +792,22 @@ class Executor(BaseTool):
             facts_path.parent.mkdir(parents=True, exist_ok=True)
             facts_path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
             logger.info("host_facts_cached", path=str(facts_path), hosts=len(existing))
+
+
+def _first_failure_diagnosis(events: list[dict[str, Any]]) -> str:
+    """Extract the first failed/unreachable task into a one-line diagnosis."""
+    for ev in events:
+        if ev.get("event") not in ("runner_on_failed", "runner_on_unreachable"):
+            continue
+        task = ev.get("task", "unknown task")
+        host = ev.get("host", "unknown host")
+        res = ev.get("result", {})
+        msg = res.get("msg") or res.get("stderr") or res.get("module_stderr") or ""
+        if isinstance(msg, str) and len(msg) > 300:
+            msg = msg[:300] + "…"
+        label = "UNREACHABLE" if ev["event"] == "runner_on_unreachable" else "FAILED"
+        return f'{label} task "{task}" on {host}: {msg}'
+    return "Check the execution log below for details."
 
 
 _RESULT_KEYS = (
