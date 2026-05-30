@@ -75,6 +75,11 @@ def _runner_envvars() -> dict[str, str]:
 
     return envvars
 
+_CAPTURE_EVENT_TYPES = frozenset({
+    "runner_on_ok", "runner_on_failed", "runner_on_skipped",
+    "runner_on_changed", "runner_on_unreachable",
+})
+
 _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
     "playbook_on_task_start",
@@ -607,6 +612,8 @@ class Executor(BaseTool):
             "envvars": envvars,
         }
 
+        collected_events: list[dict[str, Any]] = []
+
         if live_queue is not None:
             import contextlib as _ctxlib
 
@@ -614,6 +621,8 @@ class Executor(BaseTool):
 
             def _on_event(event: dict[str, Any]) -> bool:
                 ev_type = event.get("event", "")
+                if ev_type in _CAPTURE_EVENT_TYPES:
+                    collected_events.append(event)
                 if ev_type in _LIVE_EVENT_TYPES:
                     formatted = _format_live_event(event)
                     if formatted:
@@ -629,10 +638,21 @@ class Executor(BaseTool):
         if inventory:
             inv_path = self._resolve_inventory(ws, inventory)
             if not inv_path.exists():
-                return ToolResult.fail(
-                    f"Inventory not found: {inv_path}. "
-                    f"Use manage_inventory to create it first."
-                )
+                _local_names = {"localhost", "localhost.yml", "localhost.yaml",
+                                "local", "local.yml", "local.yaml"}
+                if inventory.rsplit("/", 1)[-1] in _local_names:
+                    inv_path.parent.mkdir(parents=True, exist_ok=True)
+                    interp = _resolve_python_interpreter()
+                    inv_line = "localhost ansible_connection=local"
+                    if interp and interp != "auto_silent":
+                        inv_line += f" ansible_python_interpreter={interp}"
+                    inv_path.write_text(f"[local]\n{inv_line}\n")
+                    logger.info("auto_created_localhost_inventory", path=str(inv_path))
+                else:
+                    return ToolResult.fail(
+                        f"Inventory not found: {inv_path}. "
+                        f"Use manage_inventory to create it first."
+                    )
             runner_kwargs["inventory"] = str(inv_path)
             missing = find_missing_secrets(inv_path, merged_vars)
             if missing:
@@ -690,15 +710,13 @@ class Executor(BaseTool):
                     await log_watcher
         result = runner
 
-        captured_events = (
-            "runner_on_ok", "runner_on_failed", "runner_on_skipped",
-            "runner_on_changed", "runner_on_unreachable",
-        )
+        event_source = collected_events if collected_events else result.events
         events = []
-        for event in result.events:
-            if event.get("event") in captured_events:
+        for event in event_source:
+            ev_type = event.get("event", "")
+            if ev_type in _CAPTURE_EVENT_TYPES:
                 events.append({
-                    "event": event["event"],
+                    "event": ev_type,
                     "host": event.get("event_data", {}).get("host", ""),
                     "task": event.get("event_data", {}).get("task", ""),
                     "result": _summarize_event_result(event.get("event_data", {}).get("res", {})),

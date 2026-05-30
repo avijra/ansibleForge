@@ -18,10 +18,12 @@ then lint, then dry-run. Do NOT execute without user approval.
 
 PLAYBOOK_CONTEXT = """\
 Current workspace: {workspace_path}
-Available inventory: {inventory_files}
-Existing playbooks: {playbook_files}
-Existing roles: {role_names}
-"""
+Project files:
+  inventory/: {inventory_files}
+  playbooks/: {playbook_files}
+  roles/: {role_names}
+  terraform/: {terraform_files}
+{extra_files}"""
 
 LINT_FIX_PROMPT = """\
 The following ansible-lint violations were found:

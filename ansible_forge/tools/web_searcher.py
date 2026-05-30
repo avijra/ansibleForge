@@ -46,7 +46,9 @@ _JINA_TIMEOUT = 45
 _JINA_CONTENT_LIMIT = 15000
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+_TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 _TAVILY_TIMEOUT = 30
+_TAVILY_EXTRACT_TIMEOUT = 60
 _TAVILY_MIN_SCORE = 0.3
 
 _BROWSER_UA = (
@@ -62,12 +64,37 @@ _SCOPE_DOMAINS: dict[str, list[str]] = {
 }
 
 
+_DOCS_TARGET_SELECTORS: dict[str, str] = {
+    "docs.redhat.com": ".pf-v5-c-content,.pf-c-content,.rh-docs--content,main",
+    "access.redhat.com": ".field--name-body,.rh-docs--content,article,main",
+    "docs.openshift.com": ".pf-v5-c-content,.pf-c-content,main",
+    "docs.ansible.com": ".wy-nav-content,main,article",
+    "docs.aws.amazon.com": "#main-content,main,article",
+    "learn.microsoft.com": ".content,main,article",
+    "cloud.google.com": "article,.devsite-article-body,main",
+    "kubernetes.io": "#content,main,article",
+    "registry.terraform.io": ".provider-docs,main,article",
+    "docs.nvidia.com": ".document,main,article",
+}
+
+
 def _is_docs_domain(url: str) -> bool:
     try:
         host = urlparse(url).hostname or ""
         return any(host == d or host.endswith(f".{d}") for d in _DOCS_DOMAINS)
     except Exception:
         return False
+
+
+def _get_target_selector(url: str) -> str:
+    try:
+        host = urlparse(url).hostname or ""
+        for domain, selector in _DOCS_TARGET_SELECTORS.items():
+            if host == domain or host.endswith(f".{domain}"):
+                return selector
+    except Exception:
+        pass
+    return ""
 
 
 def _is_boilerplate(text: str) -> bool:
@@ -414,6 +441,27 @@ class WebSearcher(BaseTool):
     async def _fetch_url_with_fallback(
         self, url: str, deep: bool = False,
     ) -> str:
+        is_docs = _is_docs_domain(url)
+
+        if is_docs:
+            tavily_key = _resolve_tavily_key()
+            if tavily_key:
+                try:
+                    tavily_content = await self._extract_via_tavily(url, tavily_key)
+                    if tavily_content and not _is_boilerplate(tavily_content):
+                        logger.info("tavily_extract_success", url=url, length=len(tavily_content))
+                        return tavily_content
+                except Exception as exc:
+                    logger.info("tavily_extract_failed", url=url, error=str(exc)[:200])
+
+            try:
+                jina_content = await self._fetch_via_jina_reader(url)
+                if jina_content and not _is_boilerplate(jina_content):
+                    logger.info("jina_reader_success", url=url, length=len(jina_content))
+                    return jina_content
+            except Exception as exc:
+                logger.info("jina_reader_failed", url=url, error=str(exc)[:200])
+
         content = ""
         with contextlib.suppress(Exception):
             content = await self._fetch_page_content(url, deep=deep)
@@ -421,20 +469,58 @@ class WebSearcher(BaseTool):
         if content and not _is_boilerplate(content):
             return content
 
-        logger.info("httpx_content_weak_trying_jina", url=url, httpx_len=len(content or ""))
-        try:
-            jina_content = await self._fetch_via_jina_reader(url)
-            if jina_content and len(jina_content) > len(content or ""):
-                return jina_content
-        except Exception as exc:
-            logger.info("jina_reader_fallback_failed", url=url, error=str(exc)[:200])
+        if not is_docs:
+            logger.info("httpx_content_weak_trying_jina", url=url, httpx_len=len(content or ""))
+            try:
+                jina_content = await self._fetch_via_jina_reader(url)
+                if jina_content and len(jina_content) > len(content or ""):
+                    return jina_content
+            except Exception as exc:
+                logger.info("jina_reader_fallback_failed", url=url, error=str(exc)[:200])
 
         return content
+
+    @staticmethod
+    async def _extract_via_tavily(url: str, api_key: str) -> str:
+        async with httpx.AsyncClient(
+            timeout=_TAVILY_EXTRACT_TIMEOUT,
+            follow_redirects=True,
+        ) as client:
+            resp = await client.post(
+                _TAVILY_EXTRACT_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "urls": [url],
+                    "extract_depth": "advanced",
+                    "format": "markdown",
+                },
+            )
+            resp.raise_for_status()
+
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            failed = data.get("failed_results", [])
+            if failed:
+                logger.info("tavily_extract_url_failed", url=url, reason=str(failed[0])[:200])
+            return ""
+
+        content = results[0].get("raw_content", "")
+        if not content:
+            return ""
+        return _clean_tavily_content(content)[:_JINA_CONTENT_LIMIT]
 
     @staticmethod
     async def _fetch_via_jina_reader(url: str) -> str:
         is_docs = _is_docs_domain(url)
         headers = _jina_reader_headers(is_docs=is_docs)
+
+        target_selector = _get_target_selector(url)
+        if target_selector:
+            headers["X-Target-Selector"] = target_selector
 
         async with httpx.AsyncClient(
             timeout=_JINA_TIMEOUT,

@@ -1127,6 +1127,17 @@ class Orchestrator:
                                     )
                             except Exception:
                                 pass
+                            try:
+                                _loop = asyncio.get_running_loop()
+                                ws_ctx = await _loop.run_in_executor(
+                                    None, build_context, state.workspace
+                                )
+                                if ws_ctx and ws_ctx.strip():
+                                    state.memory.add_user(
+                                        f"[WORKSPACE FILE MAP — current project state]\n{ws_ctx}"
+                                    )
+                            except Exception:
+                                pass
                     except Exception:
                         logger.warning(
                             "compaction_failed",

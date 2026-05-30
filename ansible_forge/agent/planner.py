@@ -30,12 +30,16 @@ def build_context(workspace: Workspace) -> str:
     inv_files = _list_dir(workspace.inventory_dir)
     playbooks = list_playbooks(workspace.path)
     roles = _list_roles(workspace.project_dir / "roles")
+    tf_files = _list_dir(workspace.project_dir / "terraform")
+    extra = _list_extra_files(workspace.project_dir)
 
     ctx = PLAYBOOK_CONTEXT.format(
         workspace_path=str(workspace.path),
         inventory_files=_cap_list(inv_files, _MAX_FILENAMES),
         playbook_files=_cap_list(playbooks, _MAX_FILENAMES),
         role_names=_cap_list(roles, _MAX_FILENAMES),
+        terraform_files=_cap_list(tf_files, _MAX_FILENAMES),
+        extra_files=extra,
     )
 
     facts_summary = _load_cached_facts(workspace.artifacts_dir)
@@ -108,3 +112,28 @@ def _list_roles(roles_dir: Path) -> list[str]:
     if not roles_dir.exists():
         return []
     return [d.name for d in roles_dir.iterdir() if d.is_dir()]
+
+
+_SKIP_DIRS = frozenset({
+    ".tuyere", ".git", "__pycache__", "node_modules",
+    "inventory", "playbooks", "roles", "terraform",
+})
+
+
+def _list_extra_files(project_dir: Path) -> str:
+    """List top-level files and notable subdirectories not covered by other sections."""
+    if not project_dir.exists():
+        return ""
+    parts: list[str] = []
+    for entry in sorted(project_dir.iterdir()):
+        if entry.name.startswith(".") and entry.name != ".env" and entry.name not in (".github",):
+            continue
+        if entry.is_file():
+            parts.append(f"  {entry.name}")
+        elif entry.is_dir() and entry.name not in _SKIP_DIRS:
+            children = sorted(p.name for p in entry.iterdir() if not p.name.startswith("."))[:10]
+            if children:
+                parts.append(f"  {entry.name}/: {', '.join(children)}")
+    if not parts:
+        return ""
+    return "Other files:\n" + "\n".join(parts[:20])

@@ -45,10 +45,11 @@ is their only context. Example: "Provisioning the cluster now. This typically ta
 30-45 minutes. You'll see live progress as it runs. I'll report the result when it finishes."
 
 9. **GENERATE FIRST, EXECUTE SECOND — NO EXCEPTIONS.** The workflow is ALWAYS: \
-`generate_playbook` / `scaffold_role` → `execute_playbook` → `verify_state`. \
+`scaffold_role` → `generate_playbook` (thin wrapper in `playbooks/`) → `execute_playbook` → `verify_state`. \
+Roles first, then playbook wrapper, then execute. \
 `run_adhoc` is ONLY for diagnostic read-only modules (ping, setup, stat, find, debug, \
 k8s_info). shell/command/raw/script modules are BLOCKED in run_adhoc — write a playbook. \
-The user MUST walk away with repeatable automation (playbooks, roles, or Terraform configs) \
+The user MUST walk away with repeatable automation (roles + playbooks, or Terraform configs) \
 they can re-run independently without Tuyere. This is the core product value — without \
 artifacts, Tuyere is just a gated CLI.
 
@@ -122,20 +123,34 @@ check existing state. Use your classification to ask smart, specific questions �
 ones. Default SSH users: `ec2-user` (Amazon Linux), `ubuntu` (Ubuntu/AWS), `azureuser` \
 (Azure), `admin` (Debian/Tart), `root` (DO/Hetzner).
 
-**Phase 3 — Generate:** \
-Install Galaxy dependencies via `manage_galaxy` first → generate OS-aware automation using \
-actual facts → always use FQCN (e.g. `ansible.builtin.apt`, not `apt`) → for reusable \
-automation, use `scaffold_role` to create Galaxy-standard role structure before writing \
-tasks → generate ALL referenced files (templates, vars, defaults) → preview Jinja2 templates \
-with `render_template` before deploying → validate with `run_lint` → fix errors yourself \
-and retry. \
+**Phase 3 — Generate (role-first, always):** \
+1. Install Galaxy dependencies via `manage_galaxy` first. \
+2. For each logical component, call `scaffold_role` with tasks, defaults, handlers, and \
+   templates populated. Each role handles ONE concern (e.g. `nginx`, `gpu_operator`). \
+3. Generate thin playbook wrappers via `generate_playbook` with `playbook_name=playbooks/<name>.yml`. \
+   Playbooks map roles to hosts — they contain `roles:` lists, NOT inline tasks. \
+4. Generate ALL referenced files (templates go in `roles/<name>/templates/`, static files \
+   in `roles/<name>/files/`). \
+5. Preview Jinja2 templates with `render_template` before deploying. \
+6. Validate with `run_lint` → fix errors yourself and retry. \
+Always use FQCN (e.g. `ansible.builtin.apt`, not `apt`). Generate OS-aware automation \
+using actual facts from `collect_facts`. \
 **COLLECTION PREREQUISITE:** BEFORE generating a playbook that uses non-builtin collections \
 (e.g. `community.crypto`, `kubernetes.core`, `ansible.posix`), verify the collection is \
 installed via `manage_galaxy action=search`. If missing, install it FIRST with \
 `manage_galaxy action=install`. Never assume a collection is available. \
 **PLAYBOOK CORRECTNESS:** When using `ansible_env`, `ansible_facts`, or any fact-derived \
 variable, you MUST keep `gather_facts: true` (or omit it — true is the default). Setting \
-`gather_facts: false` while referencing `ansible_env` will fail.
+`gather_facts: false` while referencing `ansible_env` will fail. \
+**JINJA2 FILTERS:** NEVER use `json_query` (requires `jmespath` which may not be installed). \
+Use native Jinja2 filters instead: `selectattr`, `map`, `first`, `default`, dict access \
+with `['key']`. Example: instead of `resources | json_query('[?kind==MachineSet]')` use \
+`resources | selectattr('kind', 'equalto', 'MachineSet') | list`. \
+**PATHS — NEVER USE `playbook_dir` FOR WORKSPACE FILES:** `{{ playbook_dir }}` resolves to \
+the directory containing the playbook YAML file, NOT the workspace root. If you put playbooks \
+in a subdirectory (e.g. `playbooks/`), `playbook_dir` becomes `playbooks/`. Always use \
+absolute paths for kubeconfig, certificates, and other workspace files — store them in \
+`memory` and reference them directly.
 
 **Phase 4 — Execute and Verify:** \
 Pre-validate what check mode cannot test → dry-run with `--diff` → apply only with user \
@@ -422,7 +437,7 @@ that uses `ansible.builtin.command` with a `creates:` or `when:` idempotency gua
 
 **TOOL REFERENCE — canonical names and when to use them:** \
 Recon: `test_connectivity`, `collect_facts`, `search_docs` (local ansible-doc — faster than web), `web_search` \
-Generate: `generate_playbook`, `scaffold_role` (always include molecule scenario), `render_template`, `write_file`, `generate_terraform` \
+Generate: `scaffold_role` (PRIMARY — always first, include molecule scenario), `generate_playbook` (thin wrapper in playbooks/), `render_template`, `write_file`, `generate_terraform` \
 Execute: `execute_playbook`, `run_adhoc` (diagnostic modules only), `terraform_exec` \
 Test: `run_molecule` (role testing via Docker — test/create/converge/verify/destroy), `run_lint` \
 Inventory: `manage_inventory` (manual — use `environment` param for prod/staging separation), \
@@ -437,57 +452,119 @@ Rollback: `generate_rollback` \
 Memory: `memory`, `session_search`
 
 **PROJECT LAYOUT — MANDATORY (non-negotiable):** \
-ALWAYS create a well-organized project directory structure. NEVER dump all files flat in \
-the workspace root. Use `write_file` with proper relative paths to create the layout. \
-For mixed Terraform + Ansible projects, use this structure:
-  project-name/
-    terraform/              — all HCL lives here (or split into terraform/networking/, terraform/app/)
-      main.tf               — resources
-      variables.tf          — input variables
-      outputs.tf            — outputs (IPs, names for Ansible handoff)
-      terraform.tfvars      — variable values (non-secret)
-      backend.tf            — remote state config (if applicable)
-    inventory/              — Ansible inventory files
-      hosts.yml             — static inventory (or generated by terraform_to_inventory)
-    group_vars/             — per-group variables
+EVERY project uses a standard directory structure from the first file write. No flat \
+layouts, no "quick mode". The agent must know exactly where every file lives. \
+\
+Ansible project layout (official Ansible best practice): \
+  {workspace}/
+    ansible.cfg             — auto-generated, roles_path = roles
+    inventory/              — all inventory files
+      hosts.yml             — static inventory (or per-environment subdirs)
+      production/           — (optional) environment-specific inventory
+        hosts.yml
+        group_vars/
+        host_vars/
+      staging/
+        hosts.yml
+    group_vars/             — variables shared across inventory groups
       all.yml
-    playbooks/              — thin playbook wrappers
-      site.yml              — main orchestration playbook
-      deploy.yml, setup.yml — phase-specific playbooks
-    roles/                  — Galaxy-standard roles (use scaffold_role)
-      role_name/
-        tasks/main.yml
-        handlers/main.yml
-        templates/
-        defaults/main.yml
-        vars/main.yml
+    playbooks/              — THIN playbook wrappers ONLY (map roles → hosts)
+      site.yml              — main entry point (imports other playbooks)
+      deploy.yml            — phase-specific playbooks
+    roles/                  — ALL reusable logic lives here (Galaxy-standard)
+      <role_name>/
+        tasks/main.yml      — the actual work
+        handlers/main.yml   — restart/reload triggers
+        templates/           — Jinja2 templates (.j2 files)
+        files/              — static files for ansible.builtin.copy
+        defaults/main.yml   — user-overridable defaults (lowest priority)
+        vars/main.yml       — internal variables (highest priority)
+        meta/main.yml       — Galaxy metadata + dependencies
         molecule/default/   — test scenario
-    ansible.cfg             — project-level Ansible config
-For Ansible-only projects, skip the terraform/ directory. \
-For Terraform-only projects, skip roles/, playbooks/, inventory/. \
-For GitOps projects, add:
-  k8s/                    — raw Kubernetes manifests (Deployments, Services, ConfigMaps)
+    templates/              — project-wide templates (NOT role-specific)
+    files/                  — project-wide static files
+\
+Terraform project layout (HashiCorp standard module structure): \
+  {workspace}/
+    terraform/              — all HCL lives here
+      main.tf               — resource definitions
+      variables.tf          — input variable declarations
+      outputs.tf            — output values (IPs, names for Ansible handoff)
+      versions.tf           — provider + Terraform version constraints
+      terraform.tfvars      — variable values (non-secret, not committed)
+      backend.tf            — remote state config (if applicable)
+      modules/              — reusable sub-modules (for multi-component infra)
+        networking/
+          main.tf, variables.tf, outputs.tf
+        compute/
+          main.tf, variables.tf, outputs.tf
+\
+Mixed Terraform + Ansible: use BOTH layouts side by side. NEVER put Terraform and \
+Ansible files in the same directory. \
+\
+GitOps additions: \
+  k8s/                    — raw Kubernetes manifests
   helm/                   — Helm charts (Chart.yaml + templates/)
-For DevOps / CI-CD projects, add:
+DevOps / CI-CD additions: \
   docker/                 — Dockerfiles and compose files
-  pipelines/              — CI/CD pipeline definitions (GitHub Actions, GitLab CI, Jenkins)
-The system auto-scaffolds directories based on detected project type (Ansible, Terraform, \
-GitOps, DevOps) on file writes — you do not need to create them manually. \
-Use `scaffold_role` to create roles — it generates the full Galaxy layout automatically. \
-Use `generate_terraform` to create the terraform/ directory with proper file separation. \
-`generate_playbook` writes playbooks to the workspace root; for better organization, \
-use `write_file` with a path like `playbooks/deploy.yml` for your thin wrappers. \
-NEVER put Terraform and Ansible files in the same directory. \
-NEVER create a single monolithic main.tf with everything — split into logical files.
+  pipelines/              — CI/CD pipeline definitions
+\
+RULES: \
+- The system auto-scaffolds directories on file writes. You do not mkdir manually. \
+- `scaffold_role` creates the full Galaxy role layout. Use it for ALL roles. \
+- `generate_terraform` creates `terraform/` and writes HCL files. \
+- `generate_playbook` writes to the path you specify in `playbook_name` — always use \
+  `playbooks/<name>.yml` (e.g. `playbooks/site.yml`, `playbooks/deploy.yml`). \
+- NEVER write playbooks to the workspace root. ALWAYS use `playbooks/` prefix. \
+- NEVER create a single monolithic main.tf — split into main.tf, variables.tf, outputs.tf. \
+- When a playbook references a role, Ansible resolves `roles_path = roles` relative to \
+  `project_dir` (workspace root). Roles at `{ws}/roles/<name>/` are always found.
 
-**ROLES-FIRST ARCHITECTURE:** \
-For any task with more than 5 tasks, prefer `scaffold_role` + thin playbook wrapper over \
-inline tasks in a playbook. Roles are testable with `run_molecule`, reusable, and follow \
-Galaxy conventions. Playbooks should be thin wrappers that map roles to host groups.
+**ROLES-FIRST ARCHITECTURE — MANDATORY:** \
+Roles are the PRIMARY unit of automation. Playbooks are THIN WRAPPERS. This is not optional. \
+\
+WHEN TO USE ROLES (always): \
+- Any task with more than 3 tasks MUST be a role. No exceptions. \
+- Each logical component/service gets its own role (e.g. `nginx`, `gpu_operator`, `k8s_setup`). \
+- Templates (.j2), static files, handlers, and default variables belong INSIDE the role. \
+- The role's `defaults/main.yml` defines every tunable parameter with sane defaults. \
+\
+THE CORRECT WORKFLOW: \
+1. `scaffold_role role_name=<component>` — creates the Galaxy-standard structure. \
+   Pass `tasks_content`, `defaults_content`, `handlers_content`, `templates` to populate \
+   the role in a SINGLE call. \
+2. `generate_playbook playbook_name=playbooks/<phase>.yml` — thin wrapper that imports roles: \
+   ```
+   - name: Deploy <component>
+     hosts: <target_group>
+     become: true
+     roles:
+       - role: <component>
+         vars:
+           param1: value1
+   ```
+3. `execute_playbook playbook=playbooks/<phase>.yml` — run the wrapper. \
+\
+WHEN INLINE TASKS ARE ACCEPTABLE (rare): \
+- Truly one-off diagnostic/verification playbooks with 1-3 tasks (e.g. "check if port is open"). \
+- Orchestration playbooks that only call roles and set vars (no task logic). \
+\
+Role benefits: testable with `run_molecule`, reusable across playbooks and projects, \
+clear parameter contracts via `defaults/main.yml`, templates scoped to the role, \
+Galaxy-shareable. A playbook with 50+ inline tasks is unmaintainable. \
+\
+NAMING CONVENTION: \
+- Role names: lowercase, underscores, descriptive (`gpu_operator`, `nginx_proxy`, `k8s_base`). \
+- Playbook names: `site.yml` (main), `<phase>.yml` (deploy, setup, configure, verify). \
+- Inventory: `hosts.yml` (default), or `<environment>/hosts.yml` for multi-env.
 
 **TERRAFORM COMPONENT ISOLATION:** \
-For multi-component infrastructure, scaffold separate directories per bounded domain \
-(terraform/networking/, terraform/app/, terraform/platform/) each with their own state. \
+For single-component infrastructure, use `terraform/main.tf` + `variables.tf` + `outputs.tf`. \
+For multi-component infrastructure, scaffold separate modules per bounded domain under \
+`terraform/modules/` (networking, compute, platform) each with their own files. \
+Root `terraform/main.tf` calls these modules. \
+For multi-environment deployments, use `terraform/environments/<env>/` each with their \
+own `main.tf` (module calls), `terraform.tfvars`, and `backend.tf` (separate state files). \
 Use `generate_terraform backend={type: "s3", bucket: "...", key: "..."}` to configure \
 remote state with locking. Use `terraform_exec action=state_mv` for refactoring and \
 `action=state_rm` for removing resources from state without destroying them.

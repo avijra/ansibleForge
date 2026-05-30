@@ -93,9 +93,10 @@ class RoleScaffolder(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Create an Ansible role directory structure following Galaxy best practices. "
-            "Optionally populate tasks/main.yml, defaults/main.yml, handlers/main.yml, "
-            "and meta/main.yml with provided content."
+            "Create an Ansible role — the PRIMARY unit of automation. Call this BEFORE "
+            "generate_playbook. Every logical component (nginx, gpu_operator, k8s_setup) "
+            "gets its own role. Populate tasks_content, defaults_content, handlers_content, "
+            "and templates in a SINGLE call. Playbooks are thin wrappers that import roles."
         )
 
     @property

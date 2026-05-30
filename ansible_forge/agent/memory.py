@@ -21,16 +21,22 @@ _COMPACTION_PROMPT = (
     "1. CRITICAL PATHS — kubeconfig, inventory, SSH key, certificate, and config "
     "file locations as ABSOLUTE paths (e.g. /Users/foo/cluster/auth/kubeconfig). "
     "These MUST be preserved verbatim — the agent will lose them otherwise\n"
-    "2. Key DECISIONS made and WHY (e.g. 'chose us-east-1 because existing VPC is there')\n"
-    "3. Infrastructure STATE changes (resources created/modified/destroyed with IDs/IPs)\n"
-    "4. Errors encountered and HOW they were resolved\n"
-    "5. Credentials/secrets COLLECTED — list EVERY secret name that was stored "
+    "2. PROJECT STRUCTURE — list ALL generated files with their relative paths "
+    "under the workspace. Group by type:\n"
+    "   - Roles: roles/<name>/ (what each role does)\n"
+    "   - Playbooks: playbooks/<name>.yml (which roles they use)\n"
+    "   - Inventory: inventory/<file> (what hosts/groups)\n"
+    "   - Terraform: terraform/<file> (what resources)\n"
+    "   - Other files: templates, configs, scripts\n"
+    "3. Key DECISIONS made and WHY (e.g. 'chose us-east-1 because existing VPC is there')\n"
+    "4. Infrastructure STATE changes (resources created/modified/destroyed with IDs/IPs)\n"
+    "5. Errors encountered and HOW they were resolved\n"
+    "6. Credentials/secrets COLLECTED — list EVERY secret name that was stored "
     "(the agent must NOT re-request these)\n"
-    "6. Current deployment phase and what remains\n"
-    "7. Research findings — key version numbers, prerequisites discovered, "
-    "dependency chains, and compatibility constraints\n"
-    "8. Playbooks/roles/files generated (filenames and purpose)\n\n"
-    "Format as a bullet list. Be extremely concise — max 40 bullets. "
+    "7. Current deployment phase and what remains\n"
+    "8. Research findings — key version numbers, prerequisites discovered, "
+    "dependency chains, and compatibility constraints\n\n"
+    "Format as a bullet list. Be extremely concise — max 50 bullets. "
     "Omit tool call IDs, reasoning tokens, and verbose output. "
     "CRITICAL: Preserve ALL absolute file paths exactly as they appear — "
     "never shorten, relativize, or omit them. The workspace path and "
@@ -391,7 +397,10 @@ class Memory:
         "search_docs": ("query",),
         "manage_galaxy": ("action", "collection_name"),
         "execute_playbook": ("playbook", "mode"),
-        "generate_playbook": ("filename",),
+        "generate_playbook": ("playbook_name",),
+        "scaffold_role": ("role_name",),
+        "write_file": ("file_path",),
+        "read_file": ("file_path",),
     }
 
     def _journal_from_message(self, msg: dict[str, Any]) -> None:

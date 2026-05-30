@@ -37,7 +37,7 @@ class PlaybookGenerator(BaseTool):
             "properties": {
                 "playbook_name": {
                     "type": "string",
-                    "description": "Filename for the playbook (e.g. 'deploy_nginx.yml')",
+                    "description": "Relative path for the playbook within the workspace. Always use the playbooks/ prefix (e.g. 'playbooks/deploy_nginx.yml', 'playbooks/site.yml')",
                 },
                 "content": {
                     "type": "string",

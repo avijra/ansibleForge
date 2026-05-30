@@ -22,10 +22,12 @@ class FileReader(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Read the contents of a file from the workspace or the local filesystem. "
-            "Use this to inspect playbooks, templates, configuration files, inventory, "
-            "variable files, or any text file you need to review before making changes. "
-            "For reading files on remote hosts, use run_adhoc with the shell module instead."
+            "Read a file or list a directory from the workspace or host filesystem. "
+            "Pass a FILE path to read its contents. Pass a DIRECTORY path (e.g. "
+            "'roles/', 'playbooks/', 'inventory/', or the workspace root) to list "
+            "all entries — use this to discover what files exist before acting. "
+            "Use this to inspect playbooks, roles, templates, inventory, configs, "
+            "or any text file. For remote hosts, use run_adhoc instead."
         )
 
     @property

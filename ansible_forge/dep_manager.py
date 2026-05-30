@@ -185,6 +185,8 @@ _MISSING_MODULE_PATTERNS = [
     re.compile(r"Failed to import the required Python library \(([^)]+)\)"),
     re.compile(r"missing required library[:\s]+['\"]?(\w[\w.-]*)['\"]?", re.IGNORECASE),
     re.compile(r"requires the ([^\s]+) Python (?:library|module|package)"),
+    re.compile(r'You need to install ["\']([^"\']+)["\'] prior to running'),
+    re.compile(r"ansible\.errors\.AnsibleFilterError:.*install [\"']([^\"']+)[\"']"),
 ]
 
 
