@@ -518,6 +518,11 @@ class Executor(BaseTool):
         await resolve_or_install_python_async()
 
         ws = Path(workspace_path)
+        pb_path = ws / playbook
+        if pb_path.exists():
+            from ansible_forge.dep_manager import ensure_deps_for_playbook
+
+            await ensure_deps_for_playbook(pb_path)
         if not (ws / playbook).exists():
             existing = sorted(
                 str(p.relative_to(ws))

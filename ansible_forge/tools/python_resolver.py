@@ -125,6 +125,7 @@ def install_standalone_python() -> str:
         )
 
     _validate_interpreter(python_path)
+    _install_base_packages(uv, python_path)
 
     _VERSION_MARKER.write_text(f"{_PYTHON_VERSION}\n{python_path}\n")
     logger.info("standalone_python_installed", path=python_path)
@@ -134,6 +135,40 @@ def install_standalone_python() -> str:
 async def install_standalone_python_async() -> str:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, install_standalone_python)
+
+
+_BASE_PACKAGES = [
+    "packaging",
+    "jmespath",
+    "setuptools",
+]
+
+
+def _install_base_packages(uv: str, python_path: str) -> None:
+    """Install packages that Ansible modules commonly expect to be available.
+
+    Uses ``uv pip install --python`` which bypasses PEP 668's
+    externally-managed check.
+    """
+    env = _sanitized_env()
+    try:
+        result = subprocess.run(
+            [uv, "pip", "install", "--python", python_path, *_BASE_PACKAGES],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            logger.info("base_packages_installed", packages=_BASE_PACKAGES)
+        else:
+            logger.warning(
+                "base_packages_install_partial",
+                rc=result.returncode,
+                stderr=result.stderr[:300],
+            )
+    except Exception as exc:
+        logger.warning("base_packages_install_failed", error=str(exc)[:200])
 
 
 def _validate_interpreter(python_path: str) -> None:

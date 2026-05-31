@@ -478,6 +478,55 @@ def _installer_env() -> dict[str, str]:
     return env
 
 
+async def ensure_deps_for_playbook(playbook_path: Path) -> None:
+    """Scan a playbook (and its roles) for collection module usage and
+    proactively install the required Python packages.
+
+    This runs before execution so the user never sees a missing-package
+    error for a known collection.
+    """
+    collections_used: set[str] = set()
+    try:
+        _scan_yaml_for_collections(playbook_path, collections_used)
+        ws = playbook_path.parent
+        if ws.name == "playbooks":
+            ws = ws.parent
+        roles_dir = ws / "roles"
+        if roles_dir.is_dir():
+            for task_file in roles_dir.rglob("tasks/*.yml"):
+                _scan_yaml_for_collections(task_file, collections_used)
+            for task_file in roles_dir.rglob("tasks/*.yaml"):
+                _scan_yaml_for_collections(task_file, collections_used)
+    except Exception as exc:
+        logger.debug("playbook_dep_scan_error", error=str(exc)[:200])
+        return
+
+    all_deps: list[str] = []
+    for collection in collections_used:
+        deps = COLLECTION_DEPS.get(collection, [])
+        all_deps.extend(deps)
+
+    if all_deps:
+        seen: set[str] = set()
+        unique = [d for d in all_deps if d not in seen and not seen.add(d)]  # type: ignore[func-returns-value]
+        ok, msg = await ensure_packages(unique, reason=f"collections: {', '.join(collections_used)}")
+        if ok and unique:
+            logger.info("proactive_deps_installed", packages=unique, collections=list(collections_used))
+
+
+def _scan_yaml_for_collections(path: Path, out: set[str]) -> None:
+    """Read a YAML file and extract collection namespace prefixes from
+    module names (e.g. ``amazon.aws.ec2_instance`` → ``amazon.aws``)."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    for match in re.finditer(r"(\w+\.\w+)\.\w+", content):
+        candidate = match.group(1)
+        if candidate in COLLECTION_DEPS:
+            out.add(candidate)
+
+
 async def ensure_collection_deps(collection_name: str) -> tuple[bool, str]:
     """Install Python dependencies required by an Ansible collection.
 
@@ -501,17 +550,37 @@ async def ensure_collection_deps(collection_name: str) -> tuple[bool, str]:
 
 
 def parse_missing_module(error_text: str) -> str | None:
-    """Extract the missing Python module name from Ansible error output."""
+    """Extract the missing Python module name from Ansible error output.
+
+    Returns the first detected module name (root package only).
+    For multi-package errors like ``(botocore and boto3)``, use
+    ``parse_missing_modules`` which returns all of them.
+    """
+    modules = parse_missing_modules(error_text)
+    return modules[0] if modules else None
+
+
+def parse_missing_modules(error_text: str) -> list[str]:
+    """Extract all missing Python module names from Ansible error output.
+
+    Handles single modules, ``X and Y``, and ``X, Y, and Z`` formats
+    commonly produced by Ansible's module-level import error messages.
+    """
     if not error_text:
-        return None
+        return []
 
     for pattern in _MISSING_MODULE_PATTERNS:
         match = pattern.search(error_text)
         if match:
-            module = match.group(1).strip()
-            # Take root package only (e.g. "boto3.session" -> "boto3")
-            return module.split(".")[0]
-    return None
+            raw = match.group(1).strip()
+            parts = re.split(r"\s+and\s+|,\s*", raw)
+            modules = []
+            for part in parts:
+                cleaned = part.strip().strip("'\"")
+                if cleaned:
+                    modules.append(cleaned.split(".")[0])
+            return [m for m in modules if m]
+    return []
 
 
 def guess_pip_package(module_name: str) -> str:
@@ -519,3 +588,15 @@ def guess_pip_package(module_name: str) -> str:
     if module_name in _MODULE_TO_PIP:
         return _MODULE_TO_PIP[module_name]
     return module_name
+
+
+def guess_pip_packages(module_names: list[str]) -> list[str]:
+    """Map a list of module import names to pip package names (deduplicated)."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for name in module_names:
+        pkg = guess_pip_package(name)
+        if pkg not in seen:
+            seen.add(pkg)
+            result.append(pkg)
+    return result

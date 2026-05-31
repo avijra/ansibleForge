@@ -1598,30 +1598,31 @@ class Orchestrator:
                             if tc.name in self._EXECUTION_TOOLS:
                                 from ansible_forge.dep_manager import (
                                     ensure_packages,
-                                    guess_pip_package,
-                                    parse_missing_module,
+                                    guess_pip_packages,
+                                    parse_missing_modules,
                                 )
 
-                                _missing = parse_missing_module(result.error or "")
+                                _missing = parse_missing_modules(result.error or "")
                                 if not _missing and result.data:
-                                    _missing = parse_missing_module(
+                                    _missing = parse_missing_modules(
                                         str(result.data.get("raw_stdout", ""))
                                     )
                                 if _missing:
-                                    _pkg = guess_pip_package(_missing)
+                                    _pkgs = guess_pip_packages(_missing)
                                     _ok, _msg = await ensure_packages(
-                                        [_pkg], reason=f"auto-fix for {tc.name}"
+                                        _pkgs, reason=f"auto-fix for {tc.name}"
                                     )
                                     if state._generation != my_generation:
                                         return
                                     if _ok:
+                                        _pkg_list = ", ".join(_pkgs)
                                         deferred_user_msgs_p.append(
-                                            f"Missing Python package '{_pkg}' was auto-installed. "
+                                            f"Missing Python packages ({_pkg_list}) were auto-installed. "
                                             f"Retry the same action now."
                                         )
                                         deferred_events_p.append(AgentEvent("progress", {
                                             "tool": "dep_manager",
-                                            "message": f"Auto-installed {_pkg}",
+                                            "message": f"Auto-installed {_pkg_list}",
                                         }))
                                         continue
 
@@ -2401,30 +2402,31 @@ class Orchestrator:
                         if tc.name in self._EXECUTION_TOOLS:
                             from ansible_forge.dep_manager import (
                                 ensure_packages,
-                                guess_pip_package,
-                                parse_missing_module,
+                                guess_pip_packages,
+                                parse_missing_modules,
                             )
 
-                            _missing = parse_missing_module(result.error or "")
+                            _missing = parse_missing_modules(result.error or "")
                             if not _missing and result.data:
-                                _missing = parse_missing_module(
+                                _missing = parse_missing_modules(
                                     str(result.data.get("raw_stdout", ""))
                                 )
                             if _missing:
-                                _pkg = guess_pip_package(_missing)
+                                _pkgs = guess_pip_packages(_missing)
                                 _ok, _msg = await ensure_packages(
-                                    [_pkg], reason=f"auto-fix for {tc.name}"
+                                    _pkgs, reason=f"auto-fix for {tc.name}"
                                 )
                                 if state._generation != my_generation:
                                     return
                                 if _ok:
+                                    _pkg_list = ", ".join(_pkgs)
                                     deferred_user_msgs.append(
-                                        f"Missing Python package '{_pkg}' was auto-installed. "
+                                        f"Missing Python packages ({_pkg_list}) were auto-installed. "
                                         f"Retry the same action now."
                                     )
                                     deferred_events.append(AgentEvent("progress", {
                                         "tool": "dep_manager",
-                                        "message": f"Auto-installed {_pkg}",
+                                        "message": f"Auto-installed {_pkg_list}",
                                     }))
                                     _auto_fixed = True
 

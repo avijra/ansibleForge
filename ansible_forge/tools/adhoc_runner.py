@@ -313,7 +313,15 @@ class AdhocRunner(BaseTool):
 
         await resolve_or_install_python_async()
 
-        if module.strip() in _BLOCKED_ADHOC_MODULES:
+        _mod = module.strip()
+        _parts = _mod.rsplit(".", 1)
+        if len(_parts) == 2 or _mod.count(".") >= 2:
+            _collection = ".".join(_mod.split(".")[:2])
+            from ansible_forge.dep_manager import ensure_collection_deps
+
+            await ensure_collection_deps(_collection)
+
+        if _mod in _BLOCKED_ADHOC_MODULES:
             return ToolResult.fail(
                 f"Ad-hoc '{module}' is not allowed. Write a playbook instead.\n\n"
                 "run_adhoc is for diagnostic Ansible modules only (ping, setup, stat, "
