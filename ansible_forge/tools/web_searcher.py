@@ -133,18 +133,22 @@ def _resolve_env_key(var_name: str) -> str:
 
 def _resolve_tavily_key() -> str:
     global _cached_tavily_key
-    if _cached_tavily_key is not None:
+    if _cached_tavily_key:
         return _cached_tavily_key
-    _cached_tavily_key = _resolve_env_key("TAVILY_API_KEY")
-    return _cached_tavily_key
+    key = _resolve_env_key("TAVILY_API_KEY")
+    if key:
+        _cached_tavily_key = key
+    return key
 
 
 def _resolve_jina_key() -> str:
     global _cached_jina_key
-    if _cached_jina_key is not None:
+    if _cached_jina_key:
         return _cached_jina_key
-    _cached_jina_key = _resolve_env_key("JINA_API_KEY")
-    return _cached_jina_key
+    key = _resolve_env_key("JINA_API_KEY")
+    if key:
+        _cached_jina_key = key
+    return key
 
 
 def _jina_base_headers() -> dict[str, str]:
@@ -387,6 +391,24 @@ class WebSearcher(BaseTool):
         return results, answer
 
     async def _fetch_url_direct(self, url: str) -> ToolResult:
+        if url.lower().endswith(".pdf"):
+            tavily_key = _resolve_tavily_key()
+            if tavily_key:
+                try:
+                    content = await self._extract_via_tavily(url, tavily_key)
+                    if content and not _is_boilerplate(content):
+                        self._url_cache[url] = content
+                        return ToolResult.ok(
+                            output=f"**Page content from {url}:**\n\n{content}",
+                            url=url,
+                        )
+                except Exception as exc:
+                    logger.info("tavily_pdf_extract_failed", url=url, error=str(exc)[:200])
+            return ToolResult.fail(
+                f"Cannot extract content from PDF: {url}\n"
+                "Try the HTML version of this documentation instead."
+            )
+
         cached = self._url_cache.get(url)
         if cached:
             logger.info("url_cache_hit", url=url)
