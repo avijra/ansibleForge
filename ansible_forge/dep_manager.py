@@ -311,7 +311,7 @@ def _resolve_installer() -> tuple[str, list[str]]:
 
     if standalone_python:
         uv = _resolve_uv_binary()
-        return uv, ["pip", "install", "--python", standalone_python]
+        return uv, ["pip", "install", "--python", standalone_python, "--break-system-packages"]
 
     binary_name = "uv.exe" if platform.system().lower() == "windows" else "uv"
     cached_uv = _BIN_DIR / binary_name

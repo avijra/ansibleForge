@@ -153,7 +153,7 @@ def _install_base_packages(uv: str, python_path: str) -> None:
     env = _sanitized_env()
     try:
         result = subprocess.run(
-            [uv, "pip", "install", "--python", python_path, *_BASE_PACKAGES],
+            [uv, "pip", "install", "--python", python_path, "--break-system-packages", *_BASE_PACKAGES],
             capture_output=True,
             text=True,
             env=env,
