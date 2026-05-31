@@ -114,6 +114,24 @@ async def _startup_self_check() -> None:
             logger.warning("startup_self_check_warnings", warnings=non_critical)
 
 
+async def _ensure_standalone_python() -> None:
+    """Ensure standalone Python for Ansible module execution is available.
+
+    Awaited during startup so module execution never falls back to the
+    system Python (which may be missing or incompatible).
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+    try:
+        path = await resolve_or_install_python_async()
+        logger.info("standalone_python_ready", path=path)
+    except Exception as exc:
+        logger.error("standalone_python_startup_failed", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -126,6 +144,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     watchdog_task = asyncio.create_task(_parent_watchdog())
+
+    try:
+        await asyncio.wait_for(_ensure_standalone_python(), timeout=120)
+    except TimeoutError:
+        logger.error("standalone_python_install_timeout")
+
     self_check_task = asyncio.create_task(_startup_self_check())
     try:
         yield

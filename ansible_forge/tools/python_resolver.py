@@ -30,6 +30,8 @@ _PYTHON_DIR = _ANSIBLEFORGE_DIR / "python"
 _PYTHON_VERSION = "3.12"
 _VERSION_MARKER = _PYTHON_DIR / ".python_version"
 
+_cached_interpreter: str | None = None
+
 
 def _find_standalone_python() -> str | None:
     """Return the path to the standalone Python binary, or None if not installed."""
@@ -171,31 +173,64 @@ def resolve_python_for_localhost() -> str:
     """Return the best Python interpreter for localhost Ansible execution.
 
     Priority:
-    1. Standalone Python (real CPython, handles AnsiballZ)
-    2. System Python (dev mode only, from venv)
-    3. 'auto_silent' (let Ansible discover)
+    1. Cached result from a previous resolution
+    2. Standalone Python (real CPython, handles AnsiballZ)
+    3. System Python (dev mode only, from venv)
+    4. 'auto_silent' (let Ansible discover — last resort)
     """
+    global _cached_interpreter
+    if _cached_interpreter:
+        return _cached_interpreter
+
     standalone = resolve_standalone_python()
     if standalone:
+        _cached_interpreter = standalone
         return standalone
 
     if not getattr(sys, "frozen", False):
+        _cached_interpreter = sys.executable
         return sys.executable
 
     return "auto_silent"
 
 
 def resolve_or_install_python_for_localhost() -> str:
-    """Like resolve_python_for_localhost but installs if needed (frozen mode)."""
+    """Like resolve_python_for_localhost but installs if missing (frozen mode).
+
+    This is the function all execution paths should use. It ensures the
+    standalone Python is available before returning, downloading it via
+    uv if necessary. The result is cached module-wide so subsequent calls
+    are free.
+    """
+    global _cached_interpreter
+    if _cached_interpreter:
+        return _cached_interpreter
+
     standalone = resolve_standalone_python()
     if standalone:
+        _cached_interpreter = standalone
         return standalone
 
     if not getattr(sys, "frozen", False):
+        _cached_interpreter = sys.executable
         return sys.executable
 
     try:
-        return install_standalone_python()
+        path = install_standalone_python()
+        _cached_interpreter = path
+        return path
     except Exception as exc:
-        logger.warning("standalone_python_install_failed_fallback", error=str(exc))
+        logger.error("standalone_python_install_failed", error=str(exc))
         return "auto_silent"
+
+
+async def resolve_or_install_python_async() -> str:
+    """Async variant — runs installation in a thread pool to avoid blocking
+    the event loop.  Safe to call from any async context; the first call
+    may take a few seconds if uv needs to download Python."""
+    global _cached_interpreter
+    if _cached_interpreter:
+        return _cached_interpreter
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, resolve_or_install_python_for_localhost)

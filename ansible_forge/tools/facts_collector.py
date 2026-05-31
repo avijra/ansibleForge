@@ -105,6 +105,10 @@ class FactsCollector(BaseTool):
         if not workspace_path or not inventory:
             return ToolResult.fail("workspace_path and inventory are required")
 
+        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+        await resolve_or_install_python_async()
+
         ws = Path(workspace_path)
         inv_path = self._resolve_inventory(ws, inventory)
         if not inv_path.exists():

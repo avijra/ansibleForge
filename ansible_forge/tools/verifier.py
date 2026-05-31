@@ -13,6 +13,7 @@ from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
+    _runner_envvars,
     isolated_runner_dir,
     kill_stale_runner_procs,
     materialize_ssh_keys,
@@ -239,6 +240,10 @@ class Verifier(BaseTool):
         verify_pb = ws / pb_name
         verify_pb.write_text(playbook_content, encoding="utf-8")
 
+        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+        await resolve_or_install_python_async()
+
         extravars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")
         if session_id:
@@ -253,6 +258,7 @@ class Verifier(BaseTool):
                 "project_dir": str(ws),
                 "playbook": pb_name,
                 "inventory": str(inv_path),
+                "envvars": _runner_envvars(),
             }
             if extravars:
                 runner_kwargs["extravars"] = extravars

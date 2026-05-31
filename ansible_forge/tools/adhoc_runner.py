@@ -309,6 +309,10 @@ class AdhocRunner(BaseTool):
         if not workspace_path or not module or not inventory:
             return ToolResult.fail("workspace_path, module, and inventory are required")
 
+        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+        await resolve_or_install_python_async()
+
         if module.strip() in _BLOCKED_ADHOC_MODULES:
             return ToolResult.fail(
                 f"Ad-hoc '{module}' is not allowed. Write a playbook instead.\n\n"

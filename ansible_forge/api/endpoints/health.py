@@ -20,6 +20,7 @@ from ansible_forge.config import (
 )
 from ansible_forge.logging import get_logger
 from ansible_forge.tools.binary_resolver import resolve_terraform
+from ansible_forge.tools.python_resolver import resolve_standalone_python
 from ansible_forge.tools.registry import create_default_registry
 
 logger = get_logger(__name__)
@@ -89,6 +90,9 @@ class ReadinessResponse(BaseModel):
 
 def _check_external_tools() -> dict[str, str]:
     tools: dict[str, str] = {}
+
+    standalone_py = resolve_standalone_python()
+    tools["ansible_python"] = standalone_py if standalone_py else "not installed (required for module execution)"
 
     tf = resolve_terraform()
     tools["terraform"] = tf if tf else "not installed (auto-downloads on first use)"

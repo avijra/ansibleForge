@@ -39,16 +39,13 @@ _MAX_PLAYBOOK_TIMEOUT = 86400
 def _resolve_python_interpreter() -> str:
     """Return a Python interpreter path suitable for ANSIBLE_PYTHON_INTERPRETER.
 
-    In a packaged app, uses a standalone (non-frozen) CPython downloaded via
-    uv on first use. This real interpreter handles AnsiballZ module execution
-    correctly, unlike the PyInstaller-frozen ``ansible-python`` wrapper.
-
-    Falls back to ``auto_silent`` if standalone Python is unavailable.
-    In dev mode we use sys.executable (the venv Python) which has all deps.
+    Uses resolve_or_install which downloads a standalone CPython 3.12 via uv
+    if not already present.  The result is cached module-wide so only the
+    first call can be slow.
     """
-    from ansible_forge.tools.python_resolver import resolve_python_for_localhost
+    from ansible_forge.tools.python_resolver import resolve_or_install_python_for_localhost
 
-    return resolve_python_for_localhost()
+    return resolve_or_install_python_for_localhost()
 
 
 def _runner_envvars() -> dict[str, str]:
@@ -515,6 +512,10 @@ class Executor(BaseTool):
     ) -> ToolResult:
         if not workspace_path or not playbook:
             return ToolResult.fail("workspace_path and playbook are required")
+
+        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+        await resolve_or_install_python_async()
 
         ws = Path(workspace_path)
         if not (ws / playbook).exists():

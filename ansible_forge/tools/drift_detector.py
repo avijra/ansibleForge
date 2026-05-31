@@ -14,6 +14,7 @@ from ansible_forge.persistence.infrastructure_store import InfrastructureStore
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
+    _runner_envvars,
     isolated_runner_dir,
     kill_stale_runner_procs,
     materialize_ssh_keys,
@@ -96,6 +97,10 @@ class DriftDetector(BaseTool):
         if not inv_path.exists():
             return ToolResult.fail(f"Inventory not found: {inv_path}")
 
+        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+        await resolve_or_install_python_async()
+
         extravars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")
         if session_id:
@@ -113,6 +118,7 @@ class DriftDetector(BaseTool):
                 "playbook": playbook,
                 "inventory": str(inv_path),
                 "cmdline": "--check --diff",
+                "envvars": _runner_envvars(),
             }
             if limit:
                 runner_kwargs["cmdline"] += f" --limit {limit}"
