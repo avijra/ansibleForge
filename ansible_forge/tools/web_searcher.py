@@ -97,6 +97,53 @@ def _get_target_selector(url: str) -> str:
     return ""
 
 
+def _urls_same_origin(requested: str, returned: str) -> bool:
+    try:
+        req_host = urlparse(requested).hostname or ""
+        ret_host = urlparse(returned).hostname or ""
+        req_root = ".".join(req_host.rsplit(".", 2)[-2:])
+        ret_root = ".".join(ret_host.rsplit(".", 2)[-2:])
+        return req_root == ret_root
+    except Exception:
+        return True
+
+
+def _content_matches_url(url: str, content: str) -> bool:
+    """Check that fetched content is topically relevant to the requested URL.
+
+    Extracts the most specific path segment (typically the page slug) and
+    checks whether it appears in the content.  Returns True when unsure
+    (short path, parse failure) so we only reject obvious mismatches.
+    """
+    try:
+        path = urlparse(url).path.lower().strip("/")
+    except Exception:
+        return True
+    if not path:
+        return True
+
+    noise = frozenset({
+        "html", "index", "latest", "en", "docs", "documentation",
+        "stable", "main", "current", "v1", "v2", "v3",
+    })
+    raw_segments = [s for s in path.split("/") if s and s not in noise]
+    if not raw_segments:
+        return True
+
+    slug = raw_segments[-1].removesuffix(".html").removesuffix(".htm")
+    keywords = [
+        kw for kw in slug.replace("-", " ").replace("_", " ").split()
+        if len(kw) > 2 and kw not in noise
+    ]
+    if not keywords:
+        return True
+
+    content_lower = content[:5000].lower()
+    matches = sum(1 for kw in keywords if kw in content_lower)
+    threshold = max(1, (len(keywords) + 1) // 2)
+    return matches >= threshold
+
+
 def _is_boilerplate(text: str) -> bool:
     if len(text) < _MIN_USEFUL_CONTENT:
         return True
@@ -454,6 +501,16 @@ class WebSearcher(BaseTool):
                 "Try searching for an alternative source."
             )
 
+        if not _content_matches_url(url, content):
+            logger.warning("url_content_mismatch", url=url, content_start=content[:120])
+            return ToolResult.fail(
+                f"Content fetched from {url} does not appear to match the "
+                "requested page (possible redirect or extraction error). "
+                "Try fetching the page directly with a different URL, or "
+                "search for the correct documentation URL with "
+                "`web_search query=\"<topic> official documentation\"`."
+            )
+
         self._url_cache[url] = content
         return ToolResult.ok(
             output=f"**Page content from {url}:**\n\n{content}",
@@ -530,10 +587,25 @@ class WebSearcher(BaseTool):
                 logger.info("tavily_extract_url_failed", url=url, reason=str(failed[0])[:200])
             return ""
 
+        result_url = results[0].get("url", "")
+        if result_url and not _urls_same_origin(url, result_url):
+            logger.warning(
+                "tavily_extract_url_mismatch",
+                requested=url,
+                returned=result_url,
+            )
+            return ""
+
         content = results[0].get("raw_content", "")
         if not content:
             return ""
-        return _clean_tavily_content(content)[:_JINA_CONTENT_LIMIT]
+
+        cleaned = _clean_tavily_content(content)[:_JINA_CONTENT_LIMIT]
+        if not _content_matches_url(url, cleaned):
+            logger.warning("tavily_extract_content_irrelevant", url=url)
+            return ""
+
+        return cleaned
 
     @staticmethod
     async def _fetch_via_jina_reader(url: str) -> str:

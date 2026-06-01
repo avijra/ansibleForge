@@ -88,6 +88,17 @@ PREREQUISITE COMPLETENESS — for EACH component, answer: \
 - Does any dependency need separate installation (not bundled)? \
 - Are there version constraints between components? \
 - Are there infrastructure prerequisites (node labels, storage classes, DNS)? \
+\
+ARTIFACT EXTRACTION (CRITICAL) — installing software is NEVER the last step. \
+Most platforms require post-install configuration: creating instances, applying \
+configs, running init commands, creating resources/objects. When reading docs, \
+extract the COMPLETE procedure — not just "install X" but "install X, then \
+create Y, then configure Z." If the docs say "create an instance," "apply a \
+resource," "initialize," or "configure" — that is a mandatory step, not optional. \
+If you skip it, the software is installed but inert. Trust what the docs say \
+over what you remember — if the fetched docs contradict your training data, \
+the docs win. If a fetched page returned irrelevant content (wrong topic, \
+different product), retry with a corrected URL or a new search query. \
 If you cannot answer all four, you have not researched enough. \
 \
 CRITICAL RULES: \
