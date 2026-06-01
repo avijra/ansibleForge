@@ -887,12 +887,17 @@ class Orchestrator:
             )
         )
 
-        state_snapshots = [
-            e for e in all_events
-            if e.get("event_type") == "session_state_snapshot"
-        ]
-        if state_snapshots:
-            self._restore_state_snapshot(state, state_snapshots[-1].get("data", {}))
+        try:
+            state_snapshots = [
+                e for e in all_events
+                if e.get("event_type") == "session_state_snapshot"
+            ]
+            if state_snapshots:
+                snapshot_data = state_snapshots[-1].get("data")
+                if isinstance(snapshot_data, dict):
+                    self._restore_state_snapshot(state, snapshot_data)
+        except Exception:
+            logger.debug("state_snapshot_restore_failed", exc_info=True)
 
         self._sessions[session_id] = state
         logger.info(
@@ -920,21 +925,26 @@ class Orchestrator:
 
     @staticmethod
     def _restore_state_snapshot(state: SessionState, data: dict[str, Any]) -> None:
-        if data.get("plan"):
-            state.plan = data["plan"]
-        if data.get("pending_verifications"):
-            state._pending_verifications = set(data["pending_verifications"])
-        state._verify_gate_blocks = data.get("verify_gate_blocks", 0)
-        state._false_completion_rejects = data.get("false_completion_rejects", 0)
-        state._consecutive_errors = data.get("consecutive_errors", 0)
-        state._exec_fail_count = data.get("exec_fail_count", 0)
-        state.step_count = data.get("step_count", 0)
-        if data.get("approved_playbooks"):
-            state._approved_playbooks = set(data["approved_playbooks"])
-        if data.get("tf_plan_ran"):
-            state._tf_plan_ran = set(data["tf_plan_ran"])
-        if data.get("generated_artifacts"):
-            state._generated_artifacts = set(data["generated_artifacts"])
+        plan = data.get("plan")
+        if isinstance(plan, dict):
+            state.plan = plan
+        pv = data.get("pending_verifications")
+        if isinstance(pv, list):
+            state._pending_verifications = set(pv)
+        state._verify_gate_blocks = int(data.get("verify_gate_blocks") or 0)
+        state._false_completion_rejects = int(data.get("false_completion_rejects") or 0)
+        state._consecutive_errors = int(data.get("consecutive_errors") or 0)
+        state._exec_fail_count = int(data.get("exec_fail_count") or 0)
+        state.step_count = int(data.get("step_count") or 0)
+        ap = data.get("approved_playbooks")
+        if isinstance(ap, list):
+            state._approved_playbooks = set(ap)
+        tp = data.get("tf_plan_ran")
+        if isinstance(tp, list):
+            state._tf_plan_ran = set(tp)
+        ga = data.get("generated_artifacts")
+        if isinstance(ga, list):
+            state._generated_artifacts = set(ga)
 
     async def _save_state_snapshot(self, state: SessionState) -> None:
         try:
@@ -1036,13 +1046,13 @@ class Orchestrator:
         if state._generation != my_gen:
             return
 
-        topic_expansion = ""
         try:
             from ansible_forge.agent.prompts.topics import build_topic_expansion
             topic_expansion = build_topic_expansion(user_message)
-            if topic_expansion:
-                state.memory.add_system(
-                    f"\n--- TOPIC-SPECIFIC INSTRUCTIONS ---\n{topic_expansion}"
+            if topic_expansion and state.memory._messages and state.memory._messages[0].get("role") == "system":
+                base = state.memory._messages[0]["content"]
+                state.memory._messages[0]["content"] = (
+                    f"{base}\n\n--- TOPIC-SPECIFIC INSTRUCTIONS ---\n{topic_expansion}"
                 )
         except Exception:
             logger.debug("topic_expansion_failed", exc_info=True)
@@ -1050,7 +1060,8 @@ class Orchestrator:
         learning_context = ""
         try:
             from ansible_forge.knowledge.learning_store import LearningStore
-            keywords = [w for w in user_message.lower().split() if len(w) > 3][:10]
+            words = re.sub(r"[^\w\s]", " ", user_message.lower()).split()
+            keywords = [w for w in words if len(w) >= 2][:15]
             if keywords:
                 learning_context = await loop.run_in_executor(
                     None, LearningStore.get_instance().format_context, keywords
@@ -1084,10 +1095,11 @@ class Orchestrator:
                 return
             yield AgentEvent("plan", plan)
 
-        async for event in self._react_loop(state):
-            yield event
-
-        await self._save_state_snapshot(state)
+        try:
+            async for event in self._react_loop(state):
+                yield event
+        finally:
+            await self._save_state_snapshot(state)
 
     async def _react_loop(self, state: SessionState) -> AsyncIterator[AgentEvent]:
         """Core ReAct loop: Reason → Act → Observe, repeat."""
@@ -2953,9 +2965,13 @@ class Orchestrator:
                     existing_steps = plan.get("steps", [])
                     for i, step in enumerate(missing):
                         step.setdefault("step", i + 1)
+                        step.setdefault("status", "pending")
                     for s in existing_steps:
                         s["step"] = s.get("step", 0) + len(missing)
-                    plan["steps"] = missing + existing_steps
+                    combined = missing + existing_steps
+                    if combined and all(s.get("status") != "in_progress" for s in combined):
+                        combined[0]["status"] = "in_progress"
+                    plan["steps"] = combined
                     state.plan = plan
 
                     prereq_summary = "; ".join(
@@ -2992,7 +3008,7 @@ class Orchestrator:
             if isinstance(override, dict):
                 arguments.update(override)
         except Exception:
-            pass
+            logger.debug("before_tool_hook_failed", tool=tool_name, exc_info=True)
 
         tool_props = tool.parameters.get("properties", {})
         if "workspace_path" in tool_props:
@@ -3049,7 +3065,7 @@ class Orchestrator:
                         data=result.data,
                     )
         except Exception:
-            pass
+            logger.debug("after_tool_hook_failed", tool=tool_name, exc_info=True)
 
         return result
 
@@ -3386,7 +3402,6 @@ class Orchestrator:
         if len(plan["steps"]) < 3:
             return None
 
-        state._evaluator_fired = True
         user_msgs = [
             m.get("content", "")
             for m in (state.memory._messages if hasattr(state.memory, "_messages") else [])
@@ -3396,6 +3411,7 @@ class Orchestrator:
         if not original_request:
             return None
 
+        state._evaluator_fired = True
         plan_summary = json.dumps(plan["steps"][:10], default=str)[:800]
         try:
             response = await asyncio.wait_for(
@@ -3491,17 +3507,24 @@ class Orchestrator:
 
     @staticmethod
     def _record_learning(tool_name: str, error: str, fix_output: str) -> None:
+        def _write() -> None:
+            try:
+                from ansible_forge.knowledge.learning_store import LearningStore
+                store = LearningStore.get_instance()
+                fix_desc = fix_output[:400] if fix_output else "Retry with corrected parameters"
+                store.record_bug_fix(
+                    error_pattern=error[:400],
+                    fix_description=fix_desc,
+                    tool_name=tool_name,
+                )
+            except Exception:
+                logger.debug("learning_record_failed", exc_info=True)
+
         try:
-            from ansible_forge.knowledge.learning_store import LearningStore
-            store = LearningStore.get_instance()
-            fix_desc = fix_output[:400] if fix_output else "Retry with corrected parameters"
-            store.record_bug_fix(
-                error_pattern=error[:400],
-                fix_description=fix_desc,
-                tool_name=tool_name,
-            )
-        except Exception:
-            logger.debug("learning_record_failed", exc_info=True)
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _write)
+        except RuntimeError:
+            _write()
 
     @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:

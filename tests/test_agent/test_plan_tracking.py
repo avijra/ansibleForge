@@ -96,3 +96,19 @@ class TestStateSnapshot:
         assert "deploy.yml" in new_state._pending_verifications
         assert new_state.step_count == 5
         assert "site.yml" in new_state._approved_playbooks
+
+    def test_restore_handles_empty_data(self, state: SessionState):
+        Orchestrator._restore_state_snapshot(state, {})
+        assert state.plan is None
+        assert state.step_count == 0
+
+    def test_restore_handles_bad_types(self, state: SessionState):
+        Orchestrator._restore_state_snapshot(state, {
+            "plan": "not a dict",
+            "pending_verifications": "not a list",
+            "step_count": None,
+            "approved_playbooks": 42,
+        })
+        assert state.plan is None
+        assert len(state._pending_verifications) == 0
+        assert state.step_count == 0
