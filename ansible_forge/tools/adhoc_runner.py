@@ -19,6 +19,7 @@ from ansible_forge.tools.executor import (
     _format_live_event,
     _resolve_python_interpreter,
     _sigkill_after_delay,
+    get_runner_events,
     isolated_runner_dir,
     materialize_ssh_keys,
 )
@@ -51,6 +52,7 @@ def _adhoc_envvars() -> dict[str, str]:
 
     envvars: dict[str, str] = {
         "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
+        "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
@@ -498,7 +500,7 @@ class AdhocRunner(BaseTool):
 
             host_results: dict[str, Any] = {}
             runner_errors: list[str] = []
-            for event in result.events:
+            for event in get_runner_events(result):
                 ev_type = event.get("event", "")
                 event_data = event.get("event_data", {})
                 if ev_type in ("runner_on_ok", "runner_on_changed", "runner_on_failed",

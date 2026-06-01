@@ -275,8 +275,10 @@ class Verifier(BaseTool):
                 kill_stale_runner_procs(run_dir)
                 return ToolResult.fail("Verification timed out after 2 minutes.")
 
+            from ansible_forge.tools.executor import get_runner_events
+
             results: list[dict[str, Any]] = []
-            for event in result.events:
+            for event in get_runner_events(result):
                 etype = event.get("event", "")
                 edata = event.get("event_data", {})
                 task_name = edata.get("task", "")

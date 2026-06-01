@@ -52,12 +52,13 @@ def _update_infrastructure_sync(
                 store.save_facts(host_id, facts)
 
         elif tool_name == "test_connectivity" and result.status == ToolStatus.SUCCESS:
-            events = result.data.get("events", [])
-            for event in events:
-                host = event.get("host", "")
+            for host in result.data.get("passed", []):
                 if host:
-                    status = "reachable" if event.get("event") == "runner_on_ok" else "unreachable"
-                    store.upsert_host(hostname=host, status=status)
+                    store.upsert_host(hostname=host, status="reachable")
+            for entry in result.data.get("failed", []):
+                host = entry.get("host", "") if isinstance(entry, dict) else str(entry)
+                if host:
+                    store.upsert_host(hostname=host, status="unreachable")
 
         elif tool_name == "execute_playbook":
             data = result.data

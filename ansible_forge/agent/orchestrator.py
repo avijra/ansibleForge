@@ -455,6 +455,7 @@ class SessionState:
         self._research_summary_injected = False
         self._pending_verifications: set[str] = set()
         self._verify_gate_blocks = 0
+        self._verify_state_zero_results = 0
         self._false_completion_rejects = 0
         self._evaluator_fired = False
 
@@ -1849,11 +1850,24 @@ class Orchestrator:
                                 if total_checks > 0:
                                     state._pending_verifications.clear()
                                     state._verify_gate_blocks = 0
+                                    state._verify_state_zero_results = 0
                                 else:
-                                    logger.warning(
-                                        "verify_state_0_0_keeping_gate",
-                                        session_id=state.session_id,
-                                    )
+                                    state._verify_state_zero_results += 1
+                                    if state._verify_state_zero_results >= 3:
+                                        logger.warning(
+                                            "verify_state_0_0_safety_valve",
+                                            session_id=state.session_id,
+                                            consecutive=state._verify_state_zero_results,
+                                        )
+                                        state._pending_verifications.clear()
+                                        state._verify_gate_blocks = 0
+                                        state._verify_state_zero_results = 0
+                                    else:
+                                        logger.warning(
+                                            "verify_state_0_0_keeping_gate",
+                                            session_id=state.session_id,
+                                            consecutive=state._verify_state_zero_results,
+                                        )
                         self._advance_plan_step(
                             state, tc.name, result.status != ToolStatus.ERROR,
                         )

@@ -262,6 +262,10 @@ class InventoryDiscoveryTool(BaseTool):
             config_path = Path(f.name)
 
         env = os.environ.copy()
+        import sys
+        if getattr(sys, "frozen", False):
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
         if secret_env:
             env.update(secret_env)
 

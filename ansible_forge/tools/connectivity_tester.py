@@ -14,6 +14,7 @@ from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
     _resolve_python_interpreter,
+    get_runner_events,
     isolated_runner_dir,
     kill_stale_runner_procs,
     materialize_ssh_keys,
@@ -27,12 +28,19 @@ _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "priva
 
 
 def _connectivity_envvars() -> dict[str, str]:
-    return {
+    import sys
+
+    envvars: dict[str, str] = {
         "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
+        "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
     }
+    if getattr(sys, "frozen", False):
+        envvars["PYTHONHOME"] = ""
+        envvars["PYTHONPATH"] = ""
+    return envvars
 
 
 class ConnectivityTester(BaseTool):
@@ -153,7 +161,7 @@ class ConnectivityTester(BaseTool):
 
             passed: list[str] = []
             failed: list[dict[str, str]] = []
-            for event in result.events:
+            for event in get_runner_events(result):
                 event_type = event.get("event", "")
                 host = event.get("event_data", {}).get("host", "")
                 if not host:

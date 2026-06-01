@@ -15,6 +15,7 @@ from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools.base import BaseTool, ToolResult
 from ansible_forge.tools.executor import (
     _runner_envvars,
+    get_runner_events,
     isolated_runner_dir,
     kill_stale_runner_procs,
     materialize_ssh_keys,
@@ -137,7 +138,9 @@ class DriftDetector(BaseTool):
                 kill_stale_runner_procs(run_dir)
                 return ToolResult.fail("Drift detection timed out after 5 minutes.")
 
-            for event in result.events:
+            all_events = get_runner_events(result)
+
+            for event in all_events:
                 ev_type = event.get("event", "")
                 if ev_type not in ("runner_on_changed", "runner_on_failed"):
                     continue
@@ -180,8 +183,8 @@ class DriftDetector(BaseTool):
                     "msg": res.get("msg", ""),
                 })
 
-            skipped = sum(1 for e in result.events if e.get("event") == "runner_on_skipped")
-            ok = sum(1 for e in result.events if e.get("event") == "runner_on_ok")
+            skipped = sum(1 for e in all_events if e.get("event") == "runner_on_skipped")
+            ok = sum(1 for e in all_events if e.get("event") == "runner_on_ok")
 
         if not drift_items:
             return ToolResult.ok(

@@ -77,6 +77,112 @@ _CAPTURE_EVENT_TYPES = frozenset({
     "runner_on_changed", "runner_on_unreachable",
 })
 
+
+def parse_json_stdout_events(runner_result: Any) -> list[dict[str, Any]]:
+    """Extract ansible-runner-style events from the JSON stdout callback output.
+
+    ansible-runner's ``awx_display`` callback frequently fails to write
+    ``runner_on_ok/failed`` event files (observed across versions and in
+    PyInstaller builds).  The JSON stdout callback
+    (``ANSIBLE_STDOUT_CALLBACK=json``) always produces a structured blob we
+    can parse to reconstruct events reliably.
+
+    The raw stdout may contain Ansible warning lines and ANSI escape sequences
+    from ``awx_display``; both are stripped before JSON extraction.
+    """
+    import json as _json
+    import re as _re
+
+    raw = (
+        runner_result.stdout.read()
+        if hasattr(runner_result.stdout, "read")
+        else str(runner_result.stdout or "")
+    )
+    if hasattr(runner_result.stdout, "seek"):
+        runner_result.stdout.seek(0)
+    if not raw or not raw.strip():
+        return []
+
+    cleaned = _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)
+
+    try:
+        data = _json.loads(cleaned)
+    except (ValueError, TypeError):
+        idx = cleaned.find("\n{")
+        if idx < 0:
+            return []
+        try:
+            data = _json.loads(cleaned[idx + 1:])
+        except (ValueError, TypeError):
+            return []
+
+    if not isinstance(data, dict) or "plays" not in data:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for play in data.get("plays", []):
+        for task_entry in play.get("tasks", []):
+            task_info = task_entry.get("task", {})
+            task_name = task_info.get("name", "")
+            hosts = task_entry.get("hosts", {})
+            for host, res in hosts.items():
+                if not isinstance(res, dict):
+                    continue
+                if res.get("unreachable"):
+                    etype = "runner_on_unreachable"
+                elif res.get("failed"):
+                    etype = "runner_on_failed"
+                elif res.get("skipped"):
+                    etype = "runner_on_skipped"
+                elif res.get("changed"):
+                    etype = "runner_on_changed"
+                else:
+                    etype = "runner_on_ok"
+
+                events.append({
+                    "event": etype,
+                    "event_data": {
+                        "host": host,
+                        "task": task_name,
+                        "res": res,
+                    },
+                })
+
+    if not events:
+        stats = data.get("stats", {})
+        for host, counts in stats.items():
+            if not isinstance(counts, dict):
+                continue
+            if counts.get("unreachable", 0) > 0:
+                etype = "runner_on_unreachable"
+            elif counts.get("failures", 0) > 0:
+                etype = "runner_on_failed"
+            elif counts.get("ok", 0) > 0 or counts.get("changed", 0) > 0:
+                etype = "runner_on_ok"
+            else:
+                continue
+            events.append({
+                "event": etype,
+                "event_data": {"host": host, "task": "", "res": {}},
+            })
+
+    return events
+
+
+def get_runner_events(runner_result: Any) -> list[dict[str, Any]]:
+    """Return runner events, preferring JSON stdout parsing.
+
+    ansible-runner's ``awx_display`` callback reliably writes ``runner_on_start``
+    events but often omits ``runner_on_ok/failed/changed`` events in modern
+    Ansible versions.  The JSON stdout callback always produces complete data,
+    so we prefer it and only fall back to ``result.events`` when stdout parsing
+    yields nothing.
+    """
+    parsed = parse_json_stdout_events(runner_result)
+    if parsed:
+        return parsed
+    return list(runner_result.events or [])
+
 _LIVE_EVENT_TYPES = frozenset({
     "playbook_on_play_start",
     "playbook_on_task_start",
@@ -716,9 +822,10 @@ class Executor(BaseTool):
                     await log_watcher
         result = runner
 
-        event_source = collected_events if collected_events else result.events
+        raw_events = collected_events or get_runner_events(result)
+
         events = []
-        for event in event_source:
+        for event in raw_events:
             ev_type = event.get("event", "")
             if ev_type in _CAPTURE_EVENT_TYPES:
                 events.append({
@@ -729,6 +836,8 @@ class Executor(BaseTool):
                 })
 
         _raw = result.stdout.read() if hasattr(result.stdout, "read") else str(result.stdout)
+        if hasattr(result.stdout, "seek"):
+            result.stdout.seek(0)
         raw_stdout = _raw[-8000:] if len(_raw) > 8000 else _raw
 
         summary = {
@@ -788,7 +897,7 @@ class Executor(BaseTool):
                 existing = _json.loads(facts_path.read_text(encoding="utf-8"))
 
         updated = False
-        for event in runner.events:
+        for event in get_runner_events(runner):
             if event.get("event") not in ("runner_on_ok", "runner_on_changed"):
                 continue
             ev_data = event.get("event_data", {})
