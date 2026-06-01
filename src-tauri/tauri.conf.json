@@ -1,6 +1,6 @@
 {
   "productName": "Tuyere",
-  "version": "7.3.3",
+  "version": "8.0.0",
   "identifier": "ai.tuyere.desktop",
   "build": {
     "frontendDist": "../ui/dist",

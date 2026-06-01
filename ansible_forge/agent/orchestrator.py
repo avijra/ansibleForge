@@ -453,6 +453,9 @@ class SessionState:
         self._consecutive_search_count = 0
         self._search_spiral_injected = False
         self._research_summary_injected = False
+        self._pending_verifications: set[str] = set()
+        self._verify_gate_blocks = 0
+        self._false_completion_rejects = 0
 
     def track_task(self, task: asyncio.Task[Any]) -> None:
         self._active_tasks.add(task)
@@ -1450,6 +1453,26 @@ class Orchestrator:
                         })
                         continue
                     state._empty_response_retries = 0
+
+                    rejection = self._check_false_completion(state)
+                    if rejection:
+                        state.memory.add_assistant(
+                            content=response.content,
+                            reasoning_content=response.reasoning_content,
+                            raw_message=response.raw_message,
+                        )
+                        state.memory.add_user(rejection)
+                        logger.info(
+                            "false_completion_rejected",
+                            session_id=state.session_id,
+                            rejects=state._false_completion_rejects,
+                        )
+                        yield AgentEvent("progress", {
+                            "tool": "completion_guard",
+                            "message": "Completion rejected — outstanding work remains.",
+                        })
+                        continue
+
                     state.memory.add_assistant(
                         content=response.content,
                         reasoning_content=response.reasoning_content,
@@ -1688,6 +1711,9 @@ class Orchestrator:
                             if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                                 state._exec_fail_count = 0
                                 state._searched_since_exec_fail = False
+                            if tc.name == "verify_state":
+                                state._pending_verifications.clear()
+                                state._verify_gate_blocks = 0
 
                     for msg in deferred_user_msgs_p:
                         state.memory.add_user(msg)
@@ -1812,6 +1838,27 @@ class Orchestrator:
                             "tool_call_id": tc.id,
                             "status": pbf_block.status.value,
                             "output": pbf_block.output or pbf_block.error or "",
+                        }))
+                        continue
+
+                    verify_block = self._check_post_apply_verification_gate(
+                        state, tc.name,
+                    )
+                    if verify_block:
+                        logger.warning(
+                            "verify_gate_blocked",
+                            session_id=state.session_id,
+                            tool=tc.name,
+                            pending=list(state._pending_verifications),
+                        )
+                        state.memory.add_tool_result(
+                            tc.id, verify_block.model_dump_json(),
+                        )
+                        yield AgentEvent("tool_result", session_vault.redact_dict({
+                            "tool": tc.name,
+                            "tool_call_id": tc.id,
+                            "status": verify_block.status.value,
+                            "output": verify_block.output or "",
                         }))
                         continue
 
@@ -2499,12 +2546,28 @@ class Orchestrator:
                         and result.status == ToolStatus.SUCCESS
                         and result.data.get("mode") == "apply"
                     ):
+                        pb_name = tc.arguments.get("playbook", "playbook")
+                        state._pending_verifications.add(pb_name)
+                        state._verify_gate_blocks = 0
                         deferred_user_msgs.append(
-                            "The playbook was applied successfully. Now VERIFY the changes "
-                            "actually took effect. Use the `verify_state` tool to check that "
-                            "services are running, ports are listening, or endpoints are reachable. "
-                            "Do NOT just report success — prove it with evidence."
+                            f"The playbook '{pb_name}' was applied successfully. "
+                            "You MUST now call `verify_state` to confirm the changes "
+                            "took effect before proceeding. The next non-verify tool "
+                            "call will be BLOCKED until verification runs."
                         )
+
+                    if (
+                        tc.name == "terraform_exec"
+                        and result.status == ToolStatus.SUCCESS
+                        and tc.arguments.get("action") == "apply"
+                    ):
+                        ws_key = tc.arguments.get("workspace_path", "terraform")
+                        state._pending_verifications.add(f"terraform:{ws_key}")
+                        state._verify_gate_blocks = 0
+
+                    if tc.name == "verify_state":
+                        state._pending_verifications.clear()
+                        state._verify_gate_blocks = 0
 
                     if tc.name == "verify_state" and result.status == ToolStatus.ERROR:
                         failed_checks = result.data.get("failed", 0)
@@ -3112,6 +3175,88 @@ class Orchestrator:
             ),
         )
 
+    _FALSE_COMPLETION_MAX_REJECTS = 2
+
+    @staticmethod
+    def _check_false_completion(state: SessionState) -> str | None:
+        if state._false_completion_rejects >= Orchestrator._FALSE_COMPLETION_MAX_REJECTS:
+            return None
+
+        issues: list[str] = []
+
+        if state._pending_verifications:
+            artifacts = ", ".join(sorted(state._pending_verifications))
+            issues.append(
+                f"You applied changes ({artifacts}) but have not run "
+                f"`verify_state` to confirm they took effect."
+            )
+
+        plan = state.plan
+        if plan and isinstance(plan.get("steps"), list):
+            steps = plan["steps"]
+            total = len(steps)
+            if total >= 3 and state.step_count < total:
+                executed_tools = {
+                    c.split(":", 1)[0] for c in state._recent_tool_calls
+                }
+                plan_tools = {
+                    s.get("tool", "") for s in steps if s.get("tool")
+                }
+                missing_tools = plan_tools - executed_tools - {""}
+                if missing_tools and len(missing_tools) > total // 3:
+                    issues.append(
+                        f"Your plan has {total} steps but these tools "
+                        f"were never called: {', '.join(sorted(missing_tools))}. "
+                        f"Verify you completed the FULL scope."
+                    )
+
+        if not issues:
+            return None
+
+        state._false_completion_rejects += 1
+        return (
+            "COMPLETION REJECTED — outstanding work remains:\n"
+            + "\n".join(f"- {issue}" for issue in issues)
+            + "\n\nAddress these items before providing your final answer. "
+            "If you genuinely cannot proceed, explain why explicitly."
+        )
+
+    _VERIFY_EXEMPT_TOOLS = frozenset({
+        "verify_state", "read_file", "web_search", "search_docs",
+        "manage_galaxy", "memory", "request_secret", "request_config",
+    })
+    _VERIFY_GATE_MAX_BLOCKS = 2
+
+    @staticmethod
+    def _check_post_apply_verification_gate(
+        state: SessionState, tool_name: str,
+    ) -> ToolResult | None:
+        if not state._pending_verifications:
+            return None
+        if tool_name in Orchestrator._VERIFY_EXEMPT_TOOLS:
+            return None
+        state._verify_gate_blocks += 1
+        if state._verify_gate_blocks > Orchestrator._VERIFY_GATE_MAX_BLOCKS:
+            artifacts = ", ".join(sorted(state._pending_verifications))
+            state._pending_verifications.clear()
+            state._verify_gate_blocks = 0
+            logger.info(
+                "verify_gate_auto_released",
+                skipped_artifacts=artifacts,
+            )
+            return None
+        artifacts = ", ".join(sorted(state._pending_verifications))
+        return ToolResult(
+            status=ToolStatus.ERROR,
+            output=(
+                f"BLOCKED: You applied changes ({artifacts}) but have not "
+                f"verified they took effect. Call `verify_state` to confirm "
+                f"the changes are working before proceeding to the next task. "
+                f"The artifacts-first workflow is: generate → execute → VERIFY. "
+                f"Do not skip verification."
+            ),
+        )
+
     @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
         """Return a block message if terraform apply/destroy is called without prior plan."""
@@ -3201,6 +3346,9 @@ class Orchestrator:
         state._consecutive_search_count = 0
         state._search_spiral_injected = False
         state._research_summary_injected = False
+        state._pending_verifications.clear()
+        state._verify_gate_blocks = 0
+        state._false_completion_rejects = 0
         state._generation += 1
         state.cancel_active_work()
         state._consec_fails_by_tool.clear()
