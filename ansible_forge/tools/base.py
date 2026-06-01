@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import abc
+import json as _json
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+_MAX_LLM_CONTEXT_CHARS = 6000
 
 
 class ToolStatus(StrEnum):
@@ -35,6 +38,23 @@ class ToolResult(BaseModel):
     @classmethod
     def approval_required(cls, output: str = "", **data: Any) -> ToolResult:
         return cls(status=ToolStatus.NEEDS_APPROVAL, output=output, data=data)
+
+    def to_llm_context(self) -> str:
+        """Compact JSON for LLM memory — drops ``data`` and ``artifacts``, caps output.
+
+        The full ``model_dump_json()`` is still used for UI events and persistence.
+        This method produces a smaller string suitable for the LLM conversation
+        context, keeping only ``status``, a capped ``output``, and ``error``.
+        """
+        d: dict[str, Any] = {"status": self.status.value}
+        if self.output:
+            out = self.output[:_MAX_LLM_CONTEXT_CHARS]
+            if len(self.output) > _MAX_LLM_CONTEXT_CHARS:
+                out += "...[truncated]"
+            d["output"] = out
+        if self.error:
+            d["error"] = self.error[:1000]
+        return _json.dumps(d)
 
 
 class BaseTool(abc.ABC):

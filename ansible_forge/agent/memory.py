@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ansible_forge.safety.secret_vault import SessionVault
 
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = 3
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,8 @@ class Memory:
                         f"[CONTEXT REMINDER — original user goal]\n{self._pinned_goal}"
                     )
                 if self._progress_journal:
-                    journal_text = "\n".join(self._progress_journal)
+                    recent_journal = self._progress_journal[-50:]
+                    journal_text = "\n".join(recent_journal)
                     parts.append(
                         f"[PROGRESS LOG — actions from earlier steps, "
                         f"oldest first]\n{journal_text}"
@@ -231,9 +232,8 @@ class Memory:
         """Truncate verbose tool results that are far from the conversation tail.
 
         Tool results older than *keep_recent* non-system messages keep only
-        the JSON ``status`` field and the first 200 characters of ``output``.
-        This preserves the conversation flow (what was called, pass/fail) while
-        dramatically reducing token cost of stale context.
+        ``status``, a short ``output`` prefix, and ``error`` — everything else
+        (``data``, ``artifacts``, verbose output tails) is stripped.
 
         Returns the number of messages compressed.
         """
@@ -253,10 +253,15 @@ class Memory:
                 continue
             try:
                 parsed = json.loads(content)
-                status = parsed.get("status", "unknown")
-                output = parsed.get("output", "")
-                summary = output[:200] + "..." if len(output) > 200 else output
-                msg["content"] = json.dumps({"status": status, "output": summary})
+                compact: dict[str, Any] = {
+                    "status": parsed.get("status", "unknown"),
+                }
+                output = parsed.get("output", "") or ""
+                compact["output"] = output[:200] + "..." if len(output) > 200 else output
+                error = parsed.get("error")
+                if error:
+                    compact["error"] = str(error)[:200]
+                msg["content"] = json.dumps(compact)
                 compressed += 1
             except (json.JSONDecodeError, AttributeError):
                 if len(content) > 300:
@@ -264,7 +269,12 @@ class Memory:
                     compressed += 1
         return compressed
 
-    async def compact_with_llm(self, llm_client: Any) -> bool:
+    async def compact_with_llm(
+        self,
+        llm_client: Any,
+        *,
+        compaction_model: str | None = None,
+    ) -> bool:
         """Summarize old conversation turns using an LLM call.
 
         When total estimated tokens exceed ``_COMPACTION_THRESHOLD_TOKENS``,
@@ -272,6 +282,10 @@ class Memory:
         recent ``_COMPACTION_KEEP_RECENT`` messages) is sent to the LLM for
         summarization.  The old messages are then replaced with a single
         compact digest message.
+
+        If *compaction_model* is provided it overrides the client's default
+        model for this call.  Falls back to ``compact_deterministic`` on
+        any LLM failure.
 
         Returns True if compaction was performed.
         """
@@ -299,6 +313,10 @@ class Memory:
 
         serialized = self._serialize_for_summary(old_block)
 
+        extra_kwargs: dict[str, Any] = {}
+        if compaction_model:
+            extra_kwargs["model"] = compaction_model
+
         try:
             response = await llm_client.complete(
                 messages=[
@@ -308,14 +326,15 @@ class Memory:
                 tools=None,
                 max_tokens=1500,
                 temperature=0.0,
+                **extra_kwargs,
             )
             summary = response.content or ""
         except Exception:
-            logger.warning("compaction_llm_failed", exc_info=True)
-            return False
+            logger.warning("compaction_llm_failed_falling_back_to_deterministic", exc_info=True)
+            return self.compact_deterministic(keep_recent=self._COMPACTION_KEEP_RECENT)
 
         if not summary.strip():
-            return False
+            return self.compact_deterministic(keep_recent=self._COMPACTION_KEEP_RECENT)
 
         digest_msg = {
             "role": "user",
@@ -332,6 +351,55 @@ class Memory:
         self._messages = system_msgs + [digest_msg, ack_msg] + recent_block
         logger.info(  # type: ignore[call-arg]
             "conversation_compacted",
+            old_tokens=old_tokens,
+            new_tokens=_estimate_message_tokens(digest_msg),
+            remaining_messages=len(self._messages),
+        )
+        return True
+
+    def compact_deterministic(self, keep_recent: int = 30) -> bool:
+        """Rule-based fallback compaction — no LLM required.
+
+        Splits messages at *keep_recent*, journals everything older, then
+        replaces old messages with a brief deterministic summary built from
+        the progress journal.  Returns True if any messages were removed.
+        """
+        system_msgs = [m for m in self._messages if m.get("role") == "system"]
+        other_msgs = [m for m in self._messages if m.get("role") != "system"]
+
+        if len(other_msgs) <= keep_recent:
+            return False
+
+        raw_split = len(other_msgs) - keep_recent
+        split = self._align_cut_to_tool_boundary(other_msgs, raw_split)
+        old_block = other_msgs[:split]
+        recent_block = other_msgs[split:]
+
+        if not old_block:
+            return False
+
+        for m in old_block:
+            self._journal_from_message(m)
+
+        recent_entries = self._progress_journal[-80:]
+        journal_text = "\n".join(recent_entries) if recent_entries else "(no entries)"
+        digest_msg = {
+            "role": "user",
+            "content": (
+                "[SESSION HISTORY — deterministic summary of earlier steps]\n"
+                f"Steps compacted: {len(old_block)} messages.\n\n"
+                f"Progress log:\n{journal_text}"
+            ),
+        }
+        ack_msg = {
+            "role": "assistant",
+            "content": "Understood — I have the compacted session history in context.",
+        }
+
+        old_tokens = sum(_estimate_message_tokens(m) for m in old_block)
+        self._messages = system_msgs + [digest_msg, ack_msg] + recent_block
+        logger.info(  # type: ignore[call-arg]
+            "deterministic_compaction",
             old_tokens=old_tokens,
             new_tokens=_estimate_message_tokens(digest_msg),
             remaining_messages=len(self._messages),
@@ -386,6 +454,14 @@ class Memory:
     def estimated_tokens(self) -> int:
         """Return the estimated total token count across all messages."""
         return sum(_estimate_message_tokens(m) for m in self._messages)
+
+    def estimated_journal_tokens(self) -> int:
+        """Estimate tokens consumed by the progress journal injected in ``messages``."""
+        if not self._progress_journal:
+            return 0
+        recent = self._progress_journal[-50:]
+        text_len = sum(len(e) for e in recent) + len(recent)
+        return text_len // _CHARS_PER_TOKEN + 20
 
     def _prune(self) -> None:
         """Keep system message + last N messages, preserving tool_call/result pairs.

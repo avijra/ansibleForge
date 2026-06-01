@@ -163,6 +163,39 @@ class InventoryDiscoveryTool(BaseTool):
             if inv_path:
                 inv_file_msg = f" Inventory file written: {inv_path.name}"
 
+        if not hostnames:
+            env_present = sorted(
+                k for k in secret_env if k == k.upper()
+            )[:10]
+            diag_parts = [
+                f"Discovered 0 hosts from {source_name}.",
+                f"Plugin: {plugin_type}.",
+                f"Env vars injected: {', '.join(env_present) or 'none'}.",
+            ]
+            raw_inv = result.get("inventory", {})
+            raw_groups = [g for g in raw_inv if g not in ("_meta", "all", "ungrouped")]
+            if raw_groups:
+                diag_parts.append(f"Groups present (but empty): {', '.join(raw_groups[:10])}.")
+            diag_parts.append(
+                "Possible causes: instances not running, region/zone mismatch, "
+                "missing tags/filters, insufficient IAM/RBAC permissions, "
+                "or incorrect plugin configuration."
+            )
+            logger.warning(
+                "discover_inventory_zero_hosts",
+                source=source_name,
+                plugin=plugin_type,
+                env_vars=env_present,
+            )
+            return ToolResult.ok(
+                output=" ".join(diag_parts),
+                discovered=0,
+                new=0,
+                removed=removed,
+                groups=groups,
+                source_id=source_id,
+            )
+
         return ToolResult.ok(
             output=(
                 f"Discovered {len(hostnames)} host(s) from {source_name}. "

@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 _GLOBAL_PACKS_DIR = Path.home() / ".tuyere" / "knowledge"
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _MAX_CONTEXT_TOKENS = 8000
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = 3
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:

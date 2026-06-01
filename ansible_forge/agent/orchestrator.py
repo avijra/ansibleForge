@@ -1111,7 +1111,7 @@ class Orchestrator:
         nudge_interval = max(soft_limit // 4, 10)
         llm_timeout = 600
         consecutive_llm_timeouts = 0
-        max_consecutive_llm_timeouts = 3
+        max_consecutive_llm_timeouts = 5
         my_generation = state._generation
         yielded_terminal = False
         session_start_mono = _time.monotonic()
@@ -1202,7 +1202,10 @@ class Orchestrator:
                 # ── LLM compaction: summarize old turns when context is large ──
                 if state.step_count > 0 and state.step_count % 10 == 0:
                     try:
-                        compacted = await state.memory.compact_with_llm(self._llm)
+                        compacted = await state.memory.compact_with_llm(
+                            self._llm,
+                            compaction_model=self._settings.llm_compaction_model or None,
+                        )
                         if compacted:
                             logger.info(
                                 "conversation_compacted_by_llm",
@@ -1307,15 +1310,16 @@ class Orchestrator:
                 active_tools = self._select_tools(state)
                 tools_json = self._registry.to_openai_tools_subset(active_tools)
                 tool_tokens = sum(
-                    len(json.dumps(t)) // 4 + 4 for t in tools_json
+                    len(json.dumps(t)) // 3 + 4 for t in tools_json
                 )
                 system_tokens = sum(
                     _estimate_message_tokens(m)
                     for m in state.memory._messages
                     if m.get("role") == "system"
                 )
+                journal_tokens = state.memory.estimated_journal_tokens()
                 completion_reserve = self._settings.llm_max_tokens
-                fixed_overhead = system_tokens + tool_tokens + completion_reserve
+                fixed_overhead = system_tokens + tool_tokens + journal_tokens + completion_reserve
                 context_window = self._settings.llm_model_context_window
                 history_budget = max(context_window - fixed_overhead, 4000)
                 state.memory.set_history_budget(history_budget)
@@ -1331,6 +1335,15 @@ class Orchestrator:
 
                 response: LLMResponse | None = None
                 streamed = False
+                estimated_prompt = state.memory.estimated_tokens()
+                if estimated_prompt > 60_000:
+                    adaptive_dead_ticks = 24
+                elif estimated_prompt > 30_000:
+                    adaptive_dead_ticks = 18
+                elif estimated_prompt > 15_000:
+                    adaptive_dead_ticks = 12
+                else:
+                    adaptive_dead_ticks = _CHUNK_DEAD_TICKS
                 try:
                     llm_progress_tick = 0
                     empty_ticks = 0
@@ -1358,7 +1371,7 @@ class Orchestrator:
                                     return
                                 llm_progress_tick += 1
                                 empty_ticks += 1
-                                if empty_ticks >= _CHUNK_DEAD_TICKS:
+                                if empty_ticks >= adaptive_dead_ticks:
                                     logger.error(
                                         "llm_stream_dead",
                                         session_id=state.session_id,
@@ -1402,6 +1415,16 @@ class Orchestrator:
                         step=state.step_count,
                         consecutive=consecutive_llm_timeouts,
                     )
+                    if consecutive_llm_timeouts >= 2:
+                        compressed = state.memory.compress_old_tool_results(keep_recent=10)
+                        compacted = state.memory.compact_deterministic(keep_recent=15)
+                        logger.info(
+                            "emergency_compaction",
+                            session_id=state.session_id,
+                            compressed=compressed,
+                            compacted=compacted,
+                            remaining_tokens=state.memory.estimated_tokens(),
+                        )
                     if consecutive_llm_timeouts >= max_consecutive_llm_timeouts:
                         state.memory.add_assistant(
                             content=(
@@ -1706,7 +1729,7 @@ class Orchestrator:
                         last_activity_mono = _time.monotonic()
                         _stall_warned = False
                         try:
-                            state.memory.add_tool_result(tc.id, result.model_dump_json())
+                            state.memory.add_tool_result(tc.id, result.to_llm_context())
                         except Exception:
                             state.memory.add_tool_result(
                                 tc.id,
@@ -1822,8 +1845,15 @@ class Orchestrator:
                                 state._exec_fail_count = 0
                                 state._searched_since_exec_fail = False
                             if tc.name == "verify_state":
-                                state._pending_verifications.clear()
-                                state._verify_gate_blocks = 0
+                                total_checks = result.data.get("passed", 0) + result.data.get("failed", 0)
+                                if total_checks > 0:
+                                    state._pending_verifications.clear()
+                                    state._verify_gate_blocks = 0
+                                else:
+                                    logger.warning(
+                                        "verify_state_0_0_keeping_gate",
+                                        session_id=state.session_id,
+                                    )
                         self._advance_plan_step(
                             state, tc.name, result.status != ToolStatus.ERROR,
                         )
@@ -2408,7 +2438,7 @@ class Orchestrator:
                     _stall_warned = False
                     if result.status != ToolStatus.NEEDS_APPROVAL:
                         try:
-                            state.memory.add_tool_result(tc.id, result.model_dump_json())
+                            state.memory.add_tool_result(tc.id, result.to_llm_context())
                         except Exception:
                             state.memory.add_tool_result(
                                 tc.id,
@@ -2523,7 +2553,7 @@ class Orchestrator:
                                     memory_handled = True
                             if not memory_handled:
                                 try:
-                                    state.memory.add_tool_result(tc.id, result.model_dump_json())
+                                    state.memory.add_tool_result(tc.id, result.to_llm_context())
                                 except Exception:
                                     state.memory.add_tool_result(
                                         tc.id,
@@ -2687,8 +2717,15 @@ class Orchestrator:
                         state._verify_gate_blocks = 0
 
                     if tc.name == "verify_state":
-                        state._pending_verifications.clear()
-                        state._verify_gate_blocks = 0
+                        total_checks = result.data.get("passed", 0) + result.data.get("failed", 0)
+                        if total_checks > 0:
+                            state._pending_verifications.clear()
+                            state._verify_gate_blocks = 0
+                        else:
+                            logger.warning(
+                                "verify_state_0_0_keeping_gate",
+                                session_id=state.session_id,
+                            )
 
                     if tc.name == "verify_state" and result.status == ToolStatus.ERROR:
                         failed_checks = result.data.get("failed", 0)

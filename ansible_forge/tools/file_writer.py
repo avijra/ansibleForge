@@ -75,6 +75,22 @@ class FileWriter(BaseTool):
             return ToolResult.fail(
                 f"Path escapes workspace: {file_path!r} resolves outside project directory"
             )
+
+        protected_suffixes = {".tfvars", ".tfvars.json"}
+        protected_names = {"terraform.tfvars", "variables.tf"}
+        if target.exists() and (
+            target.suffix in protected_suffixes
+            or target.name in protected_names
+        ):
+            return ToolResult.approval_required(
+                output=(
+                    f"Overwriting user config file '{file_path}' requires approval. "
+                    f"This file may contain user-provided values that should not be "
+                    f"silently replaced."
+                ),
+                file_path=str(target),
+            )
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 

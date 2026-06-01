@@ -141,6 +141,35 @@ class TerraformExecutor(BaseTool):
                 env[name] = str(value)
         return env
 
+    _PEM_MARKERS = ("-----BEGIN", "-----BEGIN RSA", "-----BEGIN OPENSSH", "-----BEGIN EC")
+    _KEY_HINT_NAMES = ("private_key", "ssh_key", "pem", "tls_key", "key_pem")
+
+    @staticmethod
+    def _extract_keys_to_vault(
+        outputs: dict[str, Any], session_id: str,
+    ) -> int:
+        """Auto-store PEM-formatted keys from terraform outputs into the vault.
+
+        Returns the count of keys stored.
+        """
+        vault = SecretVault.get_instance().for_session(session_id)
+        stored = 0
+        for name, value in outputs.items():
+            if not isinstance(value, str):
+                continue
+            val = value.strip()
+            is_pem = any(val.startswith(m) for m in TerraformExecutor._PEM_MARKERS)
+            name_hint = any(h in name.lower() for h in TerraformExecutor._KEY_HINT_NAMES)
+            if not (is_pem or name_hint):
+                continue
+            if not val:
+                continue
+            vault_name = name.upper() if name == name.lower() else name
+            vault.store(vault_name, val, description=f"Auto-extracted from terraform output '{name}'")
+            stored += 1
+            logger.info("tf_key_auto_stored", output_name=name, vault_name=vault_name)
+        return stored
+
     async def _run_terraform(
         self,
         tf_binary: str,
@@ -261,7 +290,7 @@ class TerraformExecutor(BaseTool):
         if handler is None:
             return ToolResult.fail(f"Unknown action: {action}")
 
-        return await handler(
+        result = await handler(
             tf_binary, tf_dir, env,
             var_file=var_file,
             variables=variables,
@@ -273,6 +302,11 @@ class TerraformExecutor(BaseTool):
             workspace_name=workspace_name,
             _live_queue=live_queue,
         )
+
+        if action in ("output", "apply") and session_id and result.data.get("outputs"):
+            self._extract_keys_to_vault(result.data["outputs"], session_id)
+
+        return result
 
     async def _do_init(self, tf: str, tf_dir: Path, env: dict, timeout: int = 0, _live_queue: asyncio.Queue | None = None, **_: Any) -> ToolResult:
         rc, out, err = await self._run_terraform(tf, tf_dir, ["init", "-no-color"], env, timeout=_effective_timeout("init", timeout), live_queue=_live_queue)

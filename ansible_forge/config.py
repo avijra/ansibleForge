@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     @property
     def llm_fallback_models(self) -> list[str]:
         return _parse_model_list(self.llm_fallback_models_raw)
+    llm_compaction_model: str = "deepseek/deepseek-v4-flash"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 16384
     llm_max_context_tokens: int = 48000
