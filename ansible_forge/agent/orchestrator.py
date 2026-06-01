@@ -456,6 +456,7 @@ class SessionState:
         self._pending_verifications: set[str] = set()
         self._verify_gate_blocks = 0
         self._false_completion_rejects = 0
+        self._evaluator_fired = False
 
     def track_task(self, task: asyncio.Task[Any]) -> None:
         self._active_tasks.add(task)
@@ -886,6 +887,13 @@ class Orchestrator:
             )
         )
 
+        state_snapshots = [
+            e for e in all_events
+            if e.get("event_type") == "session_state_snapshot"
+        ]
+        if state_snapshots:
+            self._restore_state_snapshot(state, state_snapshots[-1].get("data", {}))
+
         self._sessions[session_id] = state
         logger.info(
             "session_restored",
@@ -894,6 +902,48 @@ class Orchestrator:
             workspace=str(workspace.path),
         )
         return state
+
+    @staticmethod
+    def _build_state_snapshot(state: SessionState) -> dict[str, Any]:
+        return {
+            "plan": state.plan,
+            "pending_verifications": list(state._pending_verifications),
+            "verify_gate_blocks": state._verify_gate_blocks,
+            "false_completion_rejects": state._false_completion_rejects,
+            "consecutive_errors": state._consecutive_errors,
+            "exec_fail_count": state._exec_fail_count,
+            "step_count": state.step_count,
+            "approved_playbooks": list(state._approved_playbooks),
+            "tf_plan_ran": list(state._tf_plan_ran),
+            "generated_artifacts": list(state._generated_artifacts),
+        }
+
+    @staticmethod
+    def _restore_state_snapshot(state: SessionState, data: dict[str, Any]) -> None:
+        if data.get("plan"):
+            state.plan = data["plan"]
+        if data.get("pending_verifications"):
+            state._pending_verifications = set(data["pending_verifications"])
+        state._verify_gate_blocks = data.get("verify_gate_blocks", 0)
+        state._false_completion_rejects = data.get("false_completion_rejects", 0)
+        state._consecutive_errors = data.get("consecutive_errors", 0)
+        state._exec_fail_count = data.get("exec_fail_count", 0)
+        state.step_count = data.get("step_count", 0)
+        if data.get("approved_playbooks"):
+            state._approved_playbooks = set(data["approved_playbooks"])
+        if data.get("tf_plan_ran"):
+            state._tf_plan_ran = set(data["tf_plan_ran"])
+        if data.get("generated_artifacts"):
+            state._generated_artifacts = set(data["generated_artifacts"])
+
+    async def _save_state_snapshot(self, state: SessionState) -> None:
+        try:
+            snapshot = self._build_state_snapshot(state)
+            await self._session_store.asave_event(
+                state.session_id, "session_state_snapshot", snapshot, seq=0
+            )
+        except Exception:
+            logger.debug("state_snapshot_save_failed", exc_info=True)
 
     @staticmethod
     def _build_workspace_summary(workspace: Workspace) -> str:
@@ -986,11 +1036,35 @@ class Orchestrator:
         if state._generation != my_gen:
             return
 
+        topic_expansion = ""
+        try:
+            from ansible_forge.agent.prompts.topics import build_topic_expansion
+            topic_expansion = build_topic_expansion(user_message)
+            if topic_expansion:
+                state.memory.add_system(
+                    f"\n--- TOPIC-SPECIFIC INSTRUCTIONS ---\n{topic_expansion}"
+                )
+        except Exception:
+            logger.debug("topic_expansion_failed", exc_info=True)
+
+        learning_context = ""
+        try:
+            from ansible_forge.knowledge.learning_store import LearningStore
+            keywords = [w for w in user_message.lower().split() if len(w) > 3][:10]
+            if keywords:
+                learning_context = await loop.run_in_executor(
+                    None, LearningStore.get_instance().format_context, keywords
+                )
+        except Exception:
+            logger.debug("learning_context_failed", exc_info=True)
+
         full_context = f"{user_message}\n\n---\nWorkspace context:\n{context}"
         if mention_context:
             full_context += f"\n{mention_context}"
         if ws_memory_context:
             full_context += f"\n{ws_memory_context}"
+        if learning_context:
+            full_context += f"\n{learning_context}"
         _max_ctx = 12000
         if len(full_context) > _max_ctx:
             user_len = len(user_message)
@@ -1012,6 +1086,8 @@ class Orchestrator:
 
         async for event in self._react_loop(state):
             yield event
+
+        await self._save_state_snapshot(state)
 
     async def _react_loop(self, state: SessionState) -> AsyncIterator[AgentEvent]:
         """Core ReAct loop: Reason → Act → Observe, repeat."""
@@ -1473,6 +1549,24 @@ class Orchestrator:
                         })
                         continue
 
+                    eval_rejection = await self._evaluate_completion(state, response.content or "")
+                    if eval_rejection:
+                        state.memory.add_assistant(
+                            content=response.content,
+                            reasoning_content=response.reasoning_content,
+                            raw_message=response.raw_message,
+                        )
+                        state.memory.add_user(eval_rejection)
+                        logger.info(
+                            "evaluator_rejected_completion",
+                            session_id=state.session_id,
+                        )
+                        yield AgentEvent("progress", {
+                            "tool": "evaluator",
+                            "message": "Evaluator found gaps — continuing work.",
+                        })
+                        continue
+
                     state.memory.add_assistant(
                         content=response.content,
                         reasoning_content=response.reasoning_content,
@@ -1706,6 +1800,10 @@ class Orchestrator:
                                     "retries_remaining": remaining,
                                 }))
                         else:
+                            if state._consecutive_errors > 0 and state.last_error:
+                                self._record_learning(
+                                    tc.name, state.last_error, result.output or ""
+                                )
                             state._consecutive_errors = 0
                             state._consec_fails_by_tool.pop(tc.name, None)
                             if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
@@ -1714,6 +1812,9 @@ class Orchestrator:
                             if tc.name == "verify_state":
                                 state._pending_verifications.clear()
                                 state._verify_gate_blocks = 0
+                        self._advance_plan_step(
+                            state, tc.name, result.status != ToolStatus.ERROR,
+                        )
 
                     for msg in deferred_user_msgs_p:
                         state.memory.add_user(msg)
@@ -2535,11 +2636,19 @@ class Orchestrator:
                                     "retries_remaining": remaining,
                                 }))
                     else:
+                        if state._consecutive_errors > 0 and state.last_error:
+                            self._record_learning(
+                                tc.name, state.last_error, result.output or ""
+                            )
                         state._consecutive_errors = 0
                         state._consec_fails_by_tool.pop(tc.name, None)
                         if tc.name in self._EXECUTION_TOOLS and result.status == ToolStatus.SUCCESS:
                             state._exec_fail_count = 0
                             state._searched_since_exec_fail = False
+
+                    self._advance_plan_step(
+                        state, tc.name, result.status != ToolStatus.ERROR,
+                    )
 
                     if (
                         tc.name == "execute_playbook"
@@ -2745,6 +2854,11 @@ class Orchestrator:
                 plan_data = json.loads(text[start:end])
                 steps = plan_data.get("steps", [])
                 if steps:
+                    for i, step in enumerate(steps):
+                        step.setdefault("status", "pending")
+                        step.setdefault("step", i + 1)
+                    if steps:
+                        steps[0]["status"] = "in_progress"
                     logger.info(
                         "plan_generated",
                         session_id=state.session_id,
@@ -2870,6 +2984,16 @@ class Orchestrator:
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_name}")
 
+        try:
+            from ansible_forge.plugins.hooks import HookRegistry
+            override = HookRegistry.get_instance().fire(
+                "before_tool_call", tool_name=tool_name, arguments=arguments,
+            )
+            if isinstance(override, dict):
+                arguments.update(override)
+        except Exception:
+            pass
+
         tool_props = tool.parameters.get("properties", {})
         if "workspace_path" in tool_props:
             arguments["workspace_path"] = str(state.workspace.path)
@@ -2903,6 +3027,29 @@ class Orchestrator:
             report = self._diff_analyzer.analyze(result.data["events"])
             if report.has_changes:
                 result.data["diff_summary"] = report.to_dict()
+
+        try:
+            from ansible_forge.plugins.hooks import HookRegistry
+            hook_reg = HookRegistry.get_instance()
+            hook_reg.fire(
+                "after_tool_call",
+                tool_name=tool_name, arguments=arguments, result=result,
+            )
+            if result.status == ToolStatus.ERROR:
+                hint = hook_reg.fire(
+                    "on_error",
+                    tool_name=tool_name,
+                    error_message=result.error or "",
+                )
+                if isinstance(hint, str) and hint:
+                    result = ToolResult(
+                        status=result.status,
+                        output=(result.output or "") + f"\n[Plugin hint: {hint}]",
+                        error=result.error,
+                        data=result.data,
+                    )
+        except Exception:
+            pass
 
         return result
 
@@ -3195,20 +3342,17 @@ class Orchestrator:
         if plan and isinstance(plan.get("steps"), list):
             steps = plan["steps"]
             total = len(steps)
-            if total >= 3 and state.step_count < total:
-                executed_tools = {
-                    c.split(":", 1)[0] for c in state._recent_tool_calls
-                }
-                plan_tools = {
-                    s.get("tool", "") for s in steps if s.get("tool")
-                }
-                missing_tools = plan_tools - executed_tools - {""}
-                if missing_tools and len(missing_tools) > total // 3:
-                    issues.append(
-                        f"Your plan has {total} steps but these tools "
-                        f"were never called: {', '.join(sorted(missing_tools))}. "
-                        f"Verify you completed the FULL scope."
-                    )
+            incomplete = [
+                s for s in steps
+                if s.get("status") in ("pending", "in_progress")
+            ]
+            if incomplete and total >= 3:
+                descs = [s.get("action", s.get("tool", "?")) for s in incomplete[:5]]
+                issues.append(
+                    f"Your plan has {total} steps but {len(incomplete)} are not done: "
+                    f"{', '.join(descs)}. "
+                    f"Complete ALL steps before declaring done."
+                )
 
         if not issues:
             return None
@@ -3221,9 +3365,97 @@ class Orchestrator:
             "If you genuinely cannot proceed, explain why explicitly."
         )
 
+    _EVAL_PROMPT = (
+        "You are a completion evaluator. Given the user's original request "
+        "and the agent's final answer, check: "
+        "1) Did the agent address ALL parts of the request? "
+        "2) Were any steps skipped or left incomplete? "
+        "3) Was verification performed for infrastructure changes? "
+        "If complete, respond: {\"complete\": true} "
+        "If gaps exist, respond: {\"complete\": false, \"gaps\": [\"gap1\", \"gap2\"]} "
+        "Respond ONLY with JSON."
+    )
+    async def _evaluate_completion(
+        self, state: SessionState, final_answer: str,
+    ) -> str | None:
+        if state._evaluator_fired:
+            return None
+        plan = state.plan
+        if not plan or not isinstance(plan.get("steps"), list):
+            return None
+        if len(plan["steps"]) < 3:
+            return None
+
+        state._evaluator_fired = True
+        user_msgs = [
+            m.get("content", "")
+            for m in (state.memory._messages if hasattr(state.memory, "_messages") else [])
+            if m.get("role") == "user" and m.get("content")
+        ]
+        original_request = user_msgs[0][:500] if user_msgs else ""
+        if not original_request:
+            return None
+
+        plan_summary = json.dumps(plan["steps"][:10], default=str)[:800]
+        try:
+            response = await asyncio.wait_for(
+                self._llm.complete(
+                    messages=[
+                        {"role": "system", "content": self._EVAL_PROMPT},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Original request: {original_request}\n\n"
+                                f"Plan: {plan_summary}\n\n"
+                                f"Final answer (first 500 chars): {final_answer[:500]}"
+                            ),
+                        },
+                    ],
+                    tools=None,
+                    max_tokens=300,
+                ),
+                timeout=15,
+            )
+            if not response.content:
+                return None
+            text = response.content.strip()
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                result = json.loads(text[start:end])
+                if not result.get("complete", True):
+                    gaps = result.get("gaps", [])
+                    if gaps:
+                        return (
+                            "EVALUATOR CHECK — the following gaps were identified:\n"
+                            + "\n".join(f"- {g}" for g in gaps[:5])
+                            + "\n\nAddress these before completing."
+                        )
+        except (TimeoutError, json.JSONDecodeError, Exception):
+            logger.debug("evaluator_skipped", exc_info=True)
+        return None
+
+    @staticmethod
+    def _advance_plan_step(state: SessionState, tool_name: str, succeeded: bool) -> None:
+        plan = state.plan
+        if not plan or not isinstance(plan.get("steps"), list):
+            return
+        steps = plan["steps"]
+        for step in steps:
+            if step.get("tool") == tool_name and step.get("status") == "in_progress":
+                step["status"] = "done" if succeeded else "failed"
+                break
+        wip = sum(1 for s in steps if s.get("status") == "in_progress")
+        if wip == 0:
+            for step in steps:
+                if step.get("status") == "pending":
+                    step["status"] = "in_progress"
+                    break
+
     _VERIFY_EXEMPT_TOOLS = frozenset({
         "verify_state", "read_file", "web_search", "search_docs",
         "manage_galaxy", "memory", "request_secret", "request_config",
+        "search_knowledge",
     })
     _VERIFY_GATE_MAX_BLOCKS = 2
 
@@ -3256,6 +3488,20 @@ class Orchestrator:
                 f"Do not skip verification."
             ),
         )
+
+    @staticmethod
+    def _record_learning(tool_name: str, error: str, fix_output: str) -> None:
+        try:
+            from ansible_forge.knowledge.learning_store import LearningStore
+            store = LearningStore.get_instance()
+            fix_desc = fix_output[:400] if fix_output else "Retry with corrected parameters"
+            store.record_bug_fix(
+                error_pattern=error[:400],
+                fix_description=fix_desc,
+                tool_name=tool_name,
+            )
+        except Exception:
+            logger.debug("learning_record_failed", exc_info=True)
 
     @staticmethod
     def _tf_plan_nudge(tc: Any, state: SessionState) -> str | None:
@@ -3349,6 +3595,7 @@ class Orchestrator:
         state._pending_verifications.clear()
         state._verify_gate_blocks = 0
         state._false_completion_rejects = 0
+        state._evaluator_fired = False
         state._generation += 1
         state.cancel_active_work()
         state._consec_fails_by_tool.clear()
@@ -3362,6 +3609,30 @@ class Orchestrator:
         state.plan = None
         self._approval_gate.cleanup(session_id)
         logger.info("session_reset", session_id=session_id)
+
+    async def save_checkpoint(self, session_id: str, label: str) -> bool:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return False
+        snapshot = self._build_state_snapshot(state)
+        snapshot["label"] = label
+        await self._session_store.asave_checkpoint(session_id, label, snapshot)
+        logger.info("checkpoint_saved", session_id=session_id, label=label)
+        return True
+
+    async def restore_checkpoint(self, session_id: str, label: str) -> bool:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return False
+        data = await self._session_store.aload_checkpoint(session_id, label)
+        if data is None:
+            return False
+        self._restore_state_snapshot(state, data)
+        logger.info("checkpoint_restored", session_id=session_id, label=label)
+        return True
+
+    async def list_checkpoints(self, session_id: str) -> list[dict[str, Any]]:
+        return await self._session_store.alist_checkpoints(session_id)
 
     def destroy_session(self, session_id: str) -> None:
         state = self._sessions.get(session_id)

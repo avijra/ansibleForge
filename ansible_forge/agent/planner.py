@@ -50,10 +50,26 @@ def build_context(workspace: Workspace) -> str:
     if infra_ctx:
         ctx += f"\n{infra_ctx}"
 
+    knowledge_ctx = _load_knowledge_context(workspace)
+    if knowledge_ctx:
+        ctx += f"\n{knowledge_ctx}"
+
     if len(ctx) > _MAX_CONTEXT_CHARS:
         ctx = ctx[:_MAX_CONTEXT_CHARS] + "\n[workspace context truncated]"
 
     return ctx
+
+
+def _load_knowledge_context(workspace: Workspace) -> str:
+    try:
+        from ansible_forge.knowledge.packs import PackRegistry
+        registry = PackRegistry(workspace.path)
+        if not registry.pack_names:
+            return ""
+        return f"Available knowledge packs: {', '.join(registry.pack_names)} ({registry.total_pages} total pages)"
+    except Exception:
+        logger.debug("knowledge_context_unavailable", exc_info=True)
+        return ""
 
 
 def _load_infrastructure_context() -> str:

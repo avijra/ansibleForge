@@ -110,6 +110,13 @@ def load_plugins(
             for tool in tools:
                 registry.register(tool)
 
+            hook_count = 0
+            try:
+                from ansible_forge.plugins.hooks import load_hooks_from_directory
+                hook_count = load_hooks_from_directory(plugin_dir / "hooks")
+            except Exception:
+                logger.debug("plugin_hooks_load_error", plugin=plugin_name, exc_info=True)
+
             plugin_info = {
                 "name": plugin_name,
                 "version": plugin_version,
@@ -118,6 +125,7 @@ def load_plugins(
                 "path": str(plugin_dir),
                 "tools": [t.name for t in tools],
                 "tool_count": len(tools),
+                "hook_count": hook_count,
             }
             loaded.append(plugin_info)
 

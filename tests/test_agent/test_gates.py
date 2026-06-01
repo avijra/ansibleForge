@@ -102,13 +102,13 @@ class TestFalseCompletionGuard:
         assert "deploy.yml" in result
         assert state._false_completion_rejects == 1
 
-    def test_rejects_when_plan_tools_not_executed(self, state: SessionState):
+    def test_rejects_when_plan_steps_incomplete(self, state: SessionState):
         state.plan = {
             "steps": [
-                {"step": 1, "action": "research", "tool": "web_search"},
-                {"step": 2, "action": "generate", "tool": "generate_playbook"},
-                {"step": 3, "action": "execute", "tool": "execute_playbook"},
-                {"step": 4, "action": "verify", "tool": "verify_state"},
+                {"step": 1, "action": "research", "tool": "web_search", "status": "done"},
+                {"step": 2, "action": "generate", "tool": "generate_playbook", "status": "pending"},
+                {"step": 3, "action": "execute", "tool": "execute_playbook", "status": "pending"},
+                {"step": 4, "action": "verify", "tool": "verify_state", "status": "pending"},
             ],
             "status": "planned",
         }
@@ -146,12 +146,12 @@ class TestFalseCompletionGuard:
         result = Orchestrator._check_false_completion(state)
         assert result is None
 
-    def test_no_false_positive_when_all_tools_called(self, state: SessionState):
+    def test_no_false_positive_when_all_steps_done(self, state: SessionState):
         state.plan = {
             "steps": [
-                {"step": 1, "tool": "web_search"},
-                {"step": 2, "tool": "generate_playbook"},
-                {"step": 3, "tool": "execute_playbook"},
+                {"step": 1, "tool": "web_search", "status": "done"},
+                {"step": 2, "tool": "generate_playbook", "status": "done"},
+                {"step": 3, "tool": "execute_playbook", "status": "done"},
             ],
             "status": "planned",
         }

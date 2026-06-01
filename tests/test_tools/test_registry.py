@@ -84,6 +84,7 @@ class TestToolRegistry:
             "run_molecule",
             "scaffold_role",
             "search_docs",
+            "search_knowledge",
             "session_search",
             "terraform_exec",
             "terraform_to_inventory",

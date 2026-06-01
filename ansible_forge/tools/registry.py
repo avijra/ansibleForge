@@ -145,6 +145,7 @@ def create_default_registry() -> ToolRegistry:
     from ansible_forge.tools.git_manager import GitManager
     from ansible_forge.tools.inventory_discovery import InventoryDiscoveryTool
     from ansible_forge.tools.inventory_manager import InventoryManager
+    from ansible_forge.tools.knowledge_tool import KnowledgeTool
     from ansible_forge.tools.lint_runner import LintRunner
     from ansible_forge.tools.local_exec import LocalExec
     from ansible_forge.tools.memory_tool import MemoryTool
@@ -177,6 +178,7 @@ def create_default_registry() -> ToolRegistry:
         FactsCollector,
         ConnectivityTester,
         DocSearcher,
+        KnowledgeTool,
         WebSearcher,
         FileReader,
         FileWriter,

@@ -352,6 +352,81 @@ END;
             })
         return results
 
+    def _save_checkpoint_sync(
+        self, session_id: str, label: str, data: dict[str, Any],
+    ) -> None:
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  label TEXT NOT NULL,"
+                "  data TEXT NOT NULL,"
+                "  timestamp REAL NOT NULL,"
+                "  UNIQUE(session_id, label)"
+                ")"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO checkpoints (session_id, label, data, timestamp) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, label, json.dumps(data), now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _list_checkpoints_sync(self, session_id: str) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  label TEXT NOT NULL,"
+                "  data TEXT NOT NULL,"
+                "  timestamp REAL NOT NULL,"
+                "  UNIQUE(session_id, label)"
+                ")"
+            )
+            rows = conn.execute(
+                "SELECT label, timestamp FROM checkpoints "
+                "WHERE session_id=? ORDER BY timestamp",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [{"label": r[0], "timestamp": r[1]} for r in rows]
+
+    def _load_checkpoint_sync(
+        self, session_id: str, label: str,
+    ) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id TEXT NOT NULL,"
+                "  label TEXT NOT NULL,"
+                "  data TEXT NOT NULL,"
+                "  timestamp REAL NOT NULL,"
+                "  UNIQUE(session_id, label)"
+                ")"
+            )
+            row = conn.execute(
+                "SELECT data FROM checkpoints WHERE session_id=? AND label=?",
+                (session_id, label),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     # ------------------------------------------------------------------
     # Public sync API (kept for callers outside an event loop, e.g. init)
     # ------------------------------------------------------------------
@@ -388,6 +463,15 @@ END;
     def search_events(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return self._run_in_lock(self._search_events_sync, query, limit)
 
+    def save_checkpoint(self, session_id: str, label: str, data: dict[str, Any]) -> None:
+        self._run_in_lock(self._save_checkpoint_sync, session_id, label, data)
+
+    def list_checkpoints(self, session_id: str) -> list[dict[str, Any]]:
+        return self._run_in_lock(self._list_checkpoints_sync, session_id)
+
+    def load_checkpoint(self, session_id: str, label: str) -> dict[str, Any] | None:
+        return self._run_in_lock(self._load_checkpoint_sync, session_id, label)
+
     # ------------------------------------------------------------------
     # Async API — use from FastAPI route handlers
     # ------------------------------------------------------------------
@@ -423,3 +507,12 @@ END;
 
     async def asearch_events(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return await self._offload(self._search_events_sync, query, limit)
+
+    async def asave_checkpoint(self, session_id: str, label: str, data: dict[str, Any]) -> None:
+        await self._offload(self._save_checkpoint_sync, session_id, label, data)
+
+    async def alist_checkpoints(self, session_id: str) -> list[dict[str, Any]]:
+        return await self._offload(self._list_checkpoints_sync, session_id)
+
+    async def aload_checkpoint(self, session_id: str, label: str) -> dict[str, Any] | None:
+        return await self._offload(self._load_checkpoint_sync, session_id, label)
