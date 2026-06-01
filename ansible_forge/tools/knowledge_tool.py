@@ -101,11 +101,11 @@ class KnowledgeTool(BaseTool):
                 logger.debug("learning_search_failed", exc_info=True)
 
         if not results:
-            return ToolResult.success(
+            return ToolResult.ok(
                 "No matching knowledge found. Use web_search or search_docs instead.",
             )
 
-        return ToolResult.success("\n".join(results))
+        return ToolResult.ok("\n".join(results))
 
     @staticmethod
     def _handle_record(pattern: dict[str, str]) -> ToolResult:
@@ -116,6 +116,6 @@ class KnowledgeTool(BaseTool):
         try:
             from ansible_forge.knowledge.learning_store import LearningStore
             msg = LearningStore.get_instance().record_pattern(name, desc)
-            return ToolResult.success(msg)
+            return ToolResult.ok(msg)
         except Exception as exc:
             return ToolResult.fail(f"Failed to record pattern: {exc}")

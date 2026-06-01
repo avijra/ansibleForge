@@ -87,6 +87,7 @@ module = [
     "ansible_forge.tools.galaxy_manager",
     "ansible_forge.tools.git_manager",
     "ansible_forge.tools.log_analyzer",
+    "ansible_forge.tools.knowledge_tool",
     "ansible_forge.tools.template_renderer",
     "ansible_forge.tools.terraform_executor",
     "ansible_forge.tools.terraform_inventory",
