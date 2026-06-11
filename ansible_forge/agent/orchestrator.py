@@ -2770,6 +2770,7 @@ class Orchestrator:
                     continue
 
             except asyncio.CancelledError:
+                logger.info("react_loop_cancelled", session_id=state.session_id)
                 raise
             except Exception as step_exc:
                 logger.error(

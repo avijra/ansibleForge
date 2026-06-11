@@ -29,7 +29,9 @@ class TestRoleScaffolder:
         for subdir in ("tasks", "handlers", "defaults", "meta", "templates", "files", "vars"):
             assert (role_path / subdir).is_dir()
         assert (role_path / "tasks" / "main.yml").exists()
-        assert (role_path / "meta" / "main.yml").exists()
+        meta = (role_path / "meta" / "main.yml").read_text()
+        assert "namespace: tuyere" in meta
+        assert 'role_name: "nginx"' in meta
 
     @pytest.mark.asyncio
     async def test_custom_tasks_content(

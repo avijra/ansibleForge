@@ -15,7 +15,11 @@ RUN dnf install -y --allowerasing \
     gcc \
     libffi-devel \
     openssl-devel \
+    glibc-langpack-en \
   && dnf clean all
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
 RUN pip3 install --no-cache-dir \
     ansible-core \

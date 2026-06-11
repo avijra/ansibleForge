@@ -149,6 +149,7 @@ async def chat(
     if prev_task and not prev_task.done():
         prev_state = orch.get_session(session_id)
         if prev_state is not None:
+            prev_state._generation += 1
             prev_state.cancel_active_work()
             orch._approval_gate.cleanup(session_id)
             orch._secret_vault.for_session(session_id).cancel_all_pending()

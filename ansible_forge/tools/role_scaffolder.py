@@ -21,6 +21,8 @@ DEFAULT_META = """\
 ---
 galaxy_info:
   author: Tuyere
+  role_name: "{role_name}"
+  namespace: tuyere
   description: "{description}"
   license: MIT
   min_ansible_version: "2.17"
@@ -189,6 +191,7 @@ class RoleScaffolder(BaseTool):
         )
         (roles_dir / "meta" / "main.yml").write_text(
             DEFAULT_META.format(
+                role_name=role_name,
                 description=meta_description or role_name,
                 platforms=platforms_yaml,
             ),

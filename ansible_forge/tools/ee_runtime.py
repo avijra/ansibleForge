@@ -91,6 +91,22 @@ def _docker_host_env() -> dict[str, str]:
     return {"DOCKER_HOST": docker_host_url(remote_host)}
 
 
+def runner_locale_env() -> dict[str, str]:
+    return {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+
+
+def sanitize_runner_envvars(envvars: dict[str, str]) -> dict[str, str]:
+    for key in list(envvars):
+        if key.startswith("LC_") or key in ("LANG", "LANGUAGE"):
+            envvars.pop(key, None)
+    envvars.update(runner_locale_env())
+    return envvars
+
+
+def _ee_locale_env() -> dict[str, str]:
+    return runner_locale_env()
+
+
 def _merged_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     merged = os.environ.copy()
     merged.update(_docker_host_env())
@@ -195,9 +211,17 @@ async def pull_ee_image() -> tuple[bool, str]:
 async def _pull_background() -> None:
     available, _ = await ee_image_available()
     if available:
-        _set_pull_state("ready", f"Image {get_ee_image()} is ready")
+        ok, verify_msg = await verify_ee_ansible()
+        if ok:
+            _set_pull_state("ready", f"Image {get_ee_image()} is ready")
+        else:
+            _set_pull_state("failed", verify_msg)
         return
-    await pull_ee_image()
+    success, _ = await pull_ee_image()
+    if success:
+        ok, verify_msg = await verify_ee_ansible()
+        if not ok:
+            _set_pull_state("failed", verify_msg)
 
 
 def schedule_ee_image_pull() -> None:
@@ -304,9 +328,36 @@ def apply_ee_kwargs(
     envvars.pop("PYTHONPATH", None)
     envvars.pop("ANSIBLE_PYTHON_INTERPRETER", None)
     envvars.update(_docker_host_env())
+    if is_ee_enabled():
+        sanitize_runner_envvars(envvars)
     runner_kwargs["envvars"] = envvars
 
     return runner_kwargs
+
+
+async def verify_ee_ansible() -> tuple[bool, str]:
+    if not is_ee_enabled():
+        return True, "Execution environment disabled"
+
+    pull = get_pull_state()
+    if pull["status"] == "pulling":
+        return False, "EE image is still downloading"
+    if pull["status"] == "failed":
+        available, _ = await ee_image_available()
+        if not available:
+            message = str(pull.get("message") or "EE image unavailable")
+            return False, message
+
+    rc, stdout, stderr = await ee_exec(["ansible", "--version"], timeout=60)
+    combined = (stderr or stdout or "").strip()
+    if rc != 0:
+        detail = combined[:400] or f"ansible --version exited with code {rc}"
+        if "locale" in detail.lower():
+            return False, f"EE locale misconfigured: {detail}"
+        return False, f"EE ansible check failed: {detail}"
+
+    version_line = (stdout or stderr).strip().splitlines()[0] if combined else "ansible available"
+    return True, version_line
 
 
 async def test_remote_connection() -> tuple[bool, str]:
@@ -417,6 +468,9 @@ async def ee_exec(
             container_cmd.extend(["-v", mount])
     if effective_cwd:
         container_cmd.extend(["-w", str(effective_cwd)])
+
+    for key, val in _ee_locale_env().items():
+        container_cmd.extend(["-e", f"{key}={val}"])
 
     if env:
         for key, val in env.items():

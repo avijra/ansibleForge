@@ -75,6 +75,7 @@ async def run_self_check() -> SelfCheckReport:
         if effective_ee_host_mode() == "remote":
             report.checks.append(await _check_remote_host())
         report.checks.append(await _check_ee_image())
+        report.checks.append(await _check_ee_ansible())
     else:
         report.checks.append(await _check_companion_binaries())
         report.checks.append(await _check_galaxy_connectivity())
@@ -507,4 +508,23 @@ async def _check_ee_image() -> CheckResult:
             f"'docker pull {get_ee_image()}' on the target host."
         ),
         critical=False,
+    )
+
+
+async def _check_ee_ansible() -> CheckResult:
+    from ansible_forge.tools.ee_runtime import verify_ee_ansible
+
+    ok, detail = await verify_ee_ansible()
+    if ok:
+        return CheckResult(
+            name="ee_ansible",
+            passed=True,
+            message=f"EE ansible runtime OK: {detail}",
+            critical=True,
+        )
+    return CheckResult(
+        name="ee_ansible",
+        passed=False,
+        message=detail,
+        critical=True,
     )

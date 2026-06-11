@@ -59,6 +59,25 @@ class TestEERuntimeHelpers:
             "DOCKER_HOST": "ssh://runner@remote.example"
         }
 
+    def test_apply_ee_kwargs_sets_container_locale(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {
+                "envvars": {
+                    "LANG": "en_US.UTF-8",
+                    "LC_ALL": "en_US.UTF-8",
+                    "AWS_ACCESS_KEY_ID": "test",
+                }
+            },
+            Path("/tmp/ws"),
+        )
+        assert kwargs["envvars"]["LANG"] == "C.UTF-8"
+        assert kwargs["envvars"]["LC_ALL"] == "C.UTF-8"
+        assert kwargs["envvars"]["AWS_ACCESS_KEY_ID"] == "test"
+
     def test_build_volume_mounts_remote_only_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
         mounts = ee_runtime.build_volume_mounts(
@@ -78,6 +97,11 @@ class TestEERuntimeHelpers:
             ee_runtime,
             "ee_image_available",
             AsyncMock(return_value=(True, "avijra28/tuyere-ee:latest")),
+        )
+        monkeypatch.setattr(
+            ee_runtime,
+            "verify_ee_ansible",
+            AsyncMock(return_value=(True, "ansible [core 2.17.0]")),
         )
 
         ee_runtime.schedule_ee_image_pull()

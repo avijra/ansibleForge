@@ -13,7 +13,12 @@ import ansible_runner
 
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
+from ansible_forge.tools._runner_diagnostics import (
+    diagnose_runner_failure,
+    read_runner_stdout,
+)
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
+from ansible_forge.tools.ee_runtime import runner_locale_env
 from ansible_forge.tools.executor import (
     _LIVE_EVENT_TYPES,
     _format_live_event,
@@ -56,8 +61,7 @@ def _adhoc_envvars() -> dict[str, str]:
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
-        "LC_ALL": "en_US.UTF-8",
-        "LANG": "en_US.UTF-8",
+        **runner_locale_env(),
     }
 
     if getattr(sys, "frozen", False):
@@ -530,13 +534,21 @@ class AdhocRunner(BaseTool):
                         runner_errors.append(str(stderr)[:500])
 
             if not host_results:
+                raw_stdout = read_runner_stdout(result)
                 detail = " ".join(runner_errors) if runner_errors else ""
+                if not detail.strip():
+                    detail = diagnose_runner_failure(
+                        get_runner_events(result),
+                        raw_stdout=raw_stdout,
+                        rc=getattr(result, "rc", None),
+                    )
                 return ToolResult.fail(
                     f"No hosts responded for pattern '{host_pattern}'. "
                     f"{detail} "
                     f"Check that the inventory file contains matching hosts and "
                     f"the host_pattern is correct. If targeting localhost, ensure "
-                    f"the inventory has 'ansible_connection=local' set."
+                    f"the inventory has 'ansible_connection=local' set.",
+                    raw_stdout=raw_stdout[-4000:],
                 )
 
             ok = sum(1 for r in host_results.values() if r["status"] in ("ok", "changed"))

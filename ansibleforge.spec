@@ -108,6 +108,7 @@ hidden_imports = [
     "ansible_forge.tools.variable_inspector",
     "ansible_forge.tools.verifier",
     "ansible_forge.tools.ee_runtime",
+    "ansible_forge.tools._runner_diagnostics",
     "ansible_forge.tools.workspace_sync",
     "ansible_forge.tools.molecule_runner",
     "ansible_forge.tools.binary_resolver",

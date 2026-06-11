@@ -40,12 +40,6 @@ class ToolResult(BaseModel):
         return cls(status=ToolStatus.NEEDS_APPROVAL, output=output, data=data)
 
     def to_llm_context(self) -> str:
-        """Compact JSON for LLM memory — drops ``data`` and ``artifacts``, caps output.
-
-        The full ``model_dump_json()`` is still used for UI events and persistence.
-        This method produces a smaller string suitable for the LLM conversation
-        context, keeping only ``status``, a capped ``output``, and ``error``.
-        """
         d: dict[str, Any] = {"status": self.status.value}
         if self.output:
             out = self.output[:_MAX_LLM_CONTEXT_CHARS]
@@ -54,6 +48,18 @@ class ToolResult(BaseModel):
             d["output"] = out
         if self.error:
             d["error"] = self.error[:1000]
+        if self.status == ToolStatus.ERROR and self.data:
+            for key in ("raw_stdout", "stderr", "summary"):
+                value = self.data.get(key)
+                if not value:
+                    continue
+                if isinstance(value, dict):
+                    text = _json.dumps(value)
+                else:
+                    text = str(value)
+                if len(text) > 1500:
+                    text = text[:1500] + "...[truncated]"
+                d[key] = text
         return _json.dumps(d)
 
 

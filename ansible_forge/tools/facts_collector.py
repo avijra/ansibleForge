@@ -13,7 +13,12 @@ import ansible_runner
 
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
+from ansible_forge.tools._runner_diagnostics import (
+    diagnose_runner_failure,
+    read_runner_stdout,
+)
 from ansible_forge.tools.base import BaseTool, ToolResult
+from ansible_forge.tools.ee_runtime import runner_locale_env
 from ansible_forge.tools.executor import (
     _resolve_python_interpreter,
     get_runner_events,
@@ -37,6 +42,7 @@ def _facts_envvars() -> dict[str, str]:
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
+        **runner_locale_env(),
     }
     if getattr(sys, "frozen", False):
         envvars["PYTHONHOME"] = ""
@@ -207,9 +213,15 @@ class FactsCollector(BaseTool):
                     }
 
         if not host_facts:
+            raw_stdout = read_runner_stdout(result)
+            diag = diagnose_runner_failure(
+                get_runner_events(result),
+                raw_stdout=raw_stdout,
+                rc=getattr(result, "rc", None),
+            )
             return ToolResult.fail(
-                "Could not gather system information. "
-                "Check that hosts are reachable and credentials are correct."
+                f"Could not gather system information. {diag}",
+                raw_stdout=raw_stdout[-4000:],
             )
 
         import tempfile

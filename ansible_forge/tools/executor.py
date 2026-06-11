@@ -26,7 +26,12 @@ from ansible_forge.tools._log_tailer import (
 from ansible_forge.tools._log_tailer import (
     tail_new_logs as _tail_new_logs,
 )
+from ansible_forge.tools._runner_diagnostics import (
+    diagnose_runner_failure,
+    read_runner_stdout,
+)
 from ansible_forge.tools.base import BaseTool, ToolResult, ToolStatus
+from ansible_forge.tools.ee_runtime import runner_locale_env
 from ansible_forge.tools.secret_check import find_missing_secrets
 from ansible_forge.workspace.project_layout import ensure_ansible_cfg
 
@@ -62,8 +67,7 @@ def _runner_envvars() -> dict[str, str]:
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
-        "LC_ALL": "en_US.UTF-8",
-        "LANG": "en_US.UTF-8",
+        **runner_locale_env(),
     }
 
     if getattr(sys, "frozen", False):
@@ -840,9 +844,7 @@ class Executor(BaseTool):
                     "result": _summarize_event_result(event.get("event_data", {}).get("res", {})),
                 })
 
-        _raw = result.stdout.read() if hasattr(result.stdout, "read") else str(result.stdout)
-        if hasattr(result.stdout, "seek"):
-            result.stdout.seek(0)
+        _raw = read_runner_stdout(result)
         raw_stdout = _raw[-8000:] if len(_raw) > 8000 else _raw
 
         summary = {
@@ -873,7 +875,7 @@ class Executor(BaseTool):
                     output=f"Preview completed — {len(events)} step(s) would run. No changes were made.",
                     data=result_data,
                 )
-            diag = _first_failure_diagnosis(events)
+            diag = diagnose_runner_failure(events, raw_stdout=raw_stdout, rc=result.rc)
             return ToolResult.fail(
                 f"Preview failed ({playbook}). {diag}",
                 **result_data,
@@ -884,7 +886,7 @@ class Executor(BaseTool):
                 output=f"Deployment completed successfully ({len(events)} steps ran).",
                 **result_data,
             )
-        diag = _first_failure_diagnosis(events)
+        diag = diagnose_runner_failure(events, raw_stdout=raw_stdout, rc=result.rc)
         return ToolResult.fail(
             f"Deployment failed ({playbook}). {diag}",
             **result_data,
@@ -931,21 +933,6 @@ class Executor(BaseTool):
             facts_path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
             logger.info("host_facts_cached", path=str(facts_path), hosts=len(existing))
 
-
-def _first_failure_diagnosis(events: list[dict[str, Any]]) -> str:
-    """Extract the first failed/unreachable task into a one-line diagnosis."""
-    for ev in events:
-        if ev.get("event") not in ("runner_on_failed", "runner_on_unreachable"):
-            continue
-        task = ev.get("task", "unknown task")
-        host = ev.get("host", "unknown host")
-        res = ev.get("result", {})
-        msg = res.get("msg") or res.get("stderr") or res.get("module_stderr") or ""
-        if isinstance(msg, str) and len(msg) > 300:
-            msg = msg[:300] + "…"
-        label = "UNREACHABLE" if ev["event"] == "runner_on_unreachable" else "FAILED"
-        return f'{label} task "{task}" on {host}: {msg}'
-    return "Check the execution log below for details."
 
 
 _RESULT_KEYS = (

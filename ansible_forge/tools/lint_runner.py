@@ -36,6 +36,13 @@ class LintRunner(BaseTool):
                     "type": "string",
                     "description": "Path to playbook, role dir, or workspace to lint",
                 },
+                "workspace_path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the workspace project directory. "
+                        "Required when target is relative to the workspace."
+                    ),
+                },
                 "profile": {
                     "type": "string",
                     "enum": list(PROFILES),
@@ -49,19 +56,46 @@ class LintRunner(BaseTool):
             "required": ["target"],
         }
 
+    @staticmethod
+    def _resolve_target(target: str, workspace_path: str) -> Path:
+        raw = Path(target)
+        if raw.is_absolute() and raw.exists():
+            return raw
+
+        if workspace_path:
+            ws = Path(workspace_path)
+            candidates = [
+                ws / target,
+                ws / "playbooks" / target,
+                ws / "roles" / target,
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            if not raw.is_absolute():
+                return ws / target
+
+        return raw
+
     async def execute(
         self,
         target: str = "",
         profile: str = "moderate",
         auto_fix: bool = False,
+        workspace_path: str = "",
         **kwargs: Any,
     ) -> ToolResult:
         if not target:
             return ToolResult.fail("target path is required")
 
-        target_path = Path(target)
+        target_path = self._resolve_target(target, workspace_path)
         if not target_path.exists():
-            return ToolResult.fail(f"Target not found: {target}")
+            hint = (
+                f" Use workspace_path='{workspace_path}' with a workspace-relative target."
+                if workspace_path
+                else " Provide workspace_path when using a relative target."
+            )
+            return ToolResult.fail(f"Target not found: {target_path}.{hint}")
 
         args = [
             "ansible-lint",
@@ -75,8 +109,9 @@ class LintRunner(BaseTool):
 
         from ansible_forge.tools.ee_runtime import ee_exec
 
-        cwd = target_path.parent if target_path.is_file() else target_path
-        rc, stdout, stderr = await ee_exec(args, cwd=cwd, timeout=120, ws=cwd)
+        ws = Path(workspace_path) if workspace_path else None
+        cwd = ws or (target_path.parent if target_path.is_file() else target_path)
+        rc, stdout, stderr = await ee_exec(args, cwd=cwd, timeout=120, ws=ws)
 
         if "timed out" in stderr:
             return ToolResult.fail(f"ansible-lint timed out after 2 minutes. {stderr}")
