@@ -556,23 +556,56 @@ function Field({
 }
 
 function ExecutionSection() {
-  const { settings, loading, update } = useExecutionSettings();
+  const { settings, loading, update, pull, testRemote, startPollingWhilePulling } =
+    useExecutionSettings();
   const [image, setImage] = useState("");
   const [runtime, setRuntime] = useState("docker");
+  const [hostMode, setHostMode] = useState<"local" | "remote">("local");
+  const [remoteHost, setRemoteHost] = useState("");
+  const [remoteWorkspaceRoot, setRemoteWorkspaceRoot] = useState("/var/lib/tuyere/workspaces");
+  const [remoteTestMessage, setRemoteTestMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
     setImage(settings.image);
     setRuntime(settings.container_runtime);
-  }, [settings]);
+    setHostMode(settings.host_mode);
+    setRemoteHost(settings.remote_host ?? "");
+    setRemoteWorkspaceRoot(settings.remote_workspace_root);
+    if (settings.enabled && settings.image_pull_status === "pulling") {
+      startPollingWhilePulling();
+    }
+  }, [settings, startPollingWhilePulling]);
 
   const handleToggle = async () => {
     if (!settings) return;
-    await update({ enabled: !settings.enabled });
+    const data = await update({ enabled: !settings.enabled });
+    if (data.enabled && data.image_pull_status === "pulling") {
+      startPollingWhilePulling();
+    }
   };
 
   const handleSaveEE = async () => {
-    await update({ image: image.trim(), container_runtime: runtime });
+    const data = await update({
+      image: image.trim(),
+      container_runtime: runtime,
+      host_mode: hostMode,
+      remote_host: hostMode === "remote" ? remoteHost.trim() || null : null,
+      remote_workspace_root: remoteWorkspaceRoot.trim() || undefined,
+    });
+    if (data.enabled && data.image_pull_status === "pulling") {
+      startPollingWhilePulling();
+    }
+  };
+
+  const handlePull = async () => {
+    await pull();
+  };
+
+  const handleTestRemote = async () => {
+    setRemoteTestMessage(null);
+    const result = await testRemote();
+    setRemoteTestMessage(result.ok ? result.message ?? "Connected" : result.error ?? "Failed");
   };
 
   if (!settings) return null;
@@ -612,6 +645,52 @@ function ExecutionSection() {
       {settings.enabled && (
         <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
           <div>
+            <label className="mb-1 block text-[11px] text-zinc-400">Execution Location</label>
+            <select
+              value={hostMode}
+              onChange={(e) => setHostMode(e.target.value as "local" | "remote")}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
+            >
+              <option value="local">Local machine</option>
+              <option value="remote">Remote host (Docker over SSH)</option>
+            </select>
+          </div>
+
+          {hostMode === "remote" && (
+            <>
+              <div>
+                <label className="mb-1 block text-[11px] text-zinc-400">Remote Host</label>
+                <input
+                  type="text"
+                  value={remoteHost}
+                  onChange={(e) => setRemoteHost(e.target.value)}
+                  placeholder="user@192.168.1.50"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-zinc-400">Remote Workspace Root</label>
+                <input
+                  type="text"
+                  value={remoteWorkspaceRoot}
+                  onChange={(e) => setRemoteWorkspaceRoot(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
+                />
+              </div>
+              <button
+                onClick={handleTestRemote}
+                disabled={loading || !remoteHost.trim()}
+                className="w-full rounded-md border border-zinc-700 px-3 py-1.5 text-[11px] font-medium text-zinc-200 hover:bg-zinc-800 transition-colors disabled:opacity-50"
+              >
+                Test Connection
+              </button>
+              {remoteTestMessage && (
+                <p className="text-[10px] text-zinc-400">{remoteTestMessage}</p>
+              )}
+            </>
+          )}
+
+          <div>
             <label className="mb-1 block text-[11px] text-zinc-400">Container Image</label>
             <input
               type="text"
@@ -642,6 +721,49 @@ function ExecutionSection() {
               </span>
             )}
           </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/40 p-2 text-[10px]">
+            {settings.image_pull_status === "pulling" && (
+              <span className="flex items-center gap-1.5 text-amber-300">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {settings.image_pull_message || "Pulling execution image..."}
+              </span>
+            )}
+            {settings.image_pull_status === "ready" && settings.image_ready && (
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                <Check className="h-3 w-3" />
+                Execution image ready
+              </span>
+            )}
+            {settings.image_pull_status === "failed" && (
+              <div className="space-y-2">
+                <span className="flex items-center gap-1.5 text-red-400">
+                  <AlertCircle className="h-3 w-3" />
+                  {settings.image_pull_message || "Image pull failed"}
+                </span>
+                <button
+                  onClick={handlePull}
+                  disabled={loading}
+                  className="rounded-md bg-zinc-700 px-2 py-1 text-[10px] text-zinc-200 hover:bg-zinc-600"
+                >
+                  Retry Pull
+                </button>
+              </div>
+            )}
+            {settings.image_pull_status === "idle" && !settings.image_ready && (
+              <div className="space-y-2">
+                <span className="text-zinc-400">Execution image not downloaded yet.</span>
+                <button
+                  onClick={handlePull}
+                  disabled={loading}
+                  className="rounded-md bg-zinc-700 px-2 py-1 text-[10px] text-zinc-200 hover:bg-zinc-600"
+                >
+                  Pull Image
+                </button>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={handleSaveEE}
             disabled={loading}

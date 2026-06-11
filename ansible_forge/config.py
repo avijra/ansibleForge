@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     ee_enabled: bool = False
     ee_image: str = "avijra28/tuyere-ee:latest"
     ee_container_runtime: str = "docker"
+    ee_host_mode: str = "local"
+    ee_remote_host: str | None = None
+    ee_remote_workspace_root: str = "/var/lib/tuyere/workspaces"
 
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None
@@ -151,6 +154,9 @@ class RuntimeEEConfig(BaseModel):
     enabled: bool | None = None
     image: str | None = None
     container_runtime: str | None = None
+    host_mode: str | None = None
+    remote_host: str | None = None
+    remote_workspace_root: str | None = None
 
 
 _settings: Settings | None = None
@@ -295,6 +301,27 @@ def effective_ee_container_runtime() -> str:
     if rt.container_runtime:
         return rt.container_runtime
     return get_settings().ee_container_runtime
+
+
+def effective_ee_host_mode() -> str:
+    rt = get_runtime_ee()
+    if rt.host_mode:
+        return rt.host_mode
+    return get_settings().ee_host_mode
+
+
+def effective_ee_remote_host() -> str | None:
+    rt = get_runtime_ee()
+    if rt.remote_host:
+        return rt.remote_host
+    return get_settings().ee_remote_host
+
+
+def effective_ee_remote_workspace_root() -> str:
+    rt = get_runtime_ee()
+    if rt.remote_workspace_root:
+        return rt.remote_workspace_root
+    return get_settings().ee_remote_workspace_root
 
 
 def effective_llm_provider() -> str:

@@ -62,6 +62,7 @@ class SelfCheckReport:
 
 async def run_self_check() -> SelfCheckReport:
     """Execute all validation checks and return a report."""
+    from ansible_forge.config import effective_ee_host_mode
     from ansible_forge.tools.ee_runtime import is_ee_enabled
 
     report = SelfCheckReport()
@@ -71,6 +72,8 @@ async def run_self_check() -> SelfCheckReport:
 
     if is_ee_enabled():
         report.checks.append(await _check_container_runtime())
+        if effective_ee_host_mode() == "remote":
+            report.checks.append(await _check_remote_host())
         report.checks.append(await _check_ee_image())
     else:
         report.checks.append(await _check_companion_binaries())
@@ -438,8 +441,54 @@ async def _check_container_runtime() -> CheckResult:
     )
 
 
+async def _check_remote_host() -> CheckResult:
+    from ansible_forge.config import effective_ee_remote_host
+    from ansible_forge.tools.ee_runtime import test_remote_connection
+
+    if not effective_ee_remote_host():
+        return CheckResult(
+            name="remote_host",
+            passed=False,
+            message="Remote host is not configured",
+            critical=True,
+        )
+    ok, detail = await test_remote_connection()
+    if ok:
+        return CheckResult(
+            name="remote_host",
+            passed=True,
+            message=detail,
+        )
+    return CheckResult(
+        name="remote_host",
+        passed=False,
+        message=detail,
+        critical=True,
+    )
+
+
 async def _check_ee_image() -> CheckResult:
-    from ansible_forge.tools.ee_runtime import ee_image_available, get_ee_image
+    from ansible_forge.tools.ee_runtime import (
+        ee_image_available,
+        get_ee_image,
+        get_pull_state,
+    )
+
+    pull_state = get_pull_state()
+    if pull_state["status"] == "pulling":
+        return CheckResult(
+            name="ee_image",
+            passed=False,
+            message=f"Pulling EE image: {pull_state['message']}",
+            critical=False,
+        )
+    if pull_state["status"] == "failed":
+        return CheckResult(
+            name="ee_image",
+            passed=False,
+            message=f"EE image pull failed: {pull_state['message']}",
+            critical=False,
+        )
 
     available, detail = await ee_image_available()
     if available:
@@ -452,6 +501,10 @@ async def _check_ee_image() -> CheckResult:
     return CheckResult(
         name="ee_image",
         passed=False,
-        message=f"EE image not found: {detail}. Run 'docker pull {get_ee_image()}' to fetch it.",
+        message=(
+            f"EE image not found: {detail}. "
+            f"Enable execution environment to auto-pull, or run "
+            f"'docker pull {get_ee_image()}' on the target host."
+        ),
         critical=False,
     )

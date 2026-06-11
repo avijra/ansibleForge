@@ -149,6 +149,15 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(body),
       }),
+    pull: () =>
+      request<ExecutionSettings>("/settings/execution/pull", {
+        method: "POST",
+      }),
+    testRemote: () =>
+      request<{ ok: boolean; message?: string; error?: string }>(
+        "/settings/execution/test-remote",
+        { method: "POST" },
+      ),
     reset: () =>
       request<ExecutionSettings>("/settings/execution", { method: "DELETE" }),
   },

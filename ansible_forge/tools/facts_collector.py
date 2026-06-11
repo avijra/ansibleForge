@@ -150,9 +150,10 @@ class FactsCollector(BaseTool):
             if extravars:
                 runner_kwargs["extravars"] = extravars
 
-            from ansible_forge.tools.ee_runtime import apply_ee_kwargs
+            from ansible_forge.tools.ee_runtime import apply_ee_kwargs, prepare_ee_workspace
 
-            apply_ee_kwargs(runner_kwargs, ws)
+            remote_ws = await prepare_ee_workspace(ws)
+            apply_ee_kwargs(runner_kwargs, ws, remote_ws=remote_ws)
 
             loop = asyncio.get_running_loop()
             try:

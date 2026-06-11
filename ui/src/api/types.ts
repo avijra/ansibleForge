@@ -189,6 +189,12 @@ export interface ExecutionSettings {
   image: string;
   container_runtime: string;
   runtime_available: boolean;
+  host_mode: "local" | "remote";
+  remote_host: string | null;
+  remote_workspace_root: string;
+  image_ready: boolean;
+  image_pull_status: "idle" | "pulling" | "ready" | "failed";
+  image_pull_message: string;
   source: "runtime" | "env";
 }
 
@@ -196,4 +202,7 @@ export interface ExecutionSettingsUpdate {
   enabled?: boolean;
   image?: string;
   container_runtime?: string;
+  host_mode?: "local" | "remote";
+  remote_host?: string | null;
+  remote_workspace_root?: string;
 }

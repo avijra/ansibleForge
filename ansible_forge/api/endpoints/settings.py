@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -16,7 +16,10 @@ from ansible_forge.config import (
     clear_runtime_llm,
     effective_ee_container_runtime,
     effective_ee_enabled,
+    effective_ee_host_mode,
     effective_ee_image,
+    effective_ee_remote_host,
+    effective_ee_remote_workspace_root,
     effective_llm_model,
     effective_llm_provider,
     get_runtime_ee,
@@ -146,6 +149,14 @@ class ExecutionSettingsResponse(BaseModel):
     image: str = Field(description="Container image name")
     container_runtime: str = Field(description="Container runtime (docker or podman)")
     runtime_available: bool = Field(description="Whether the container runtime binary is found")
+    host_mode: str = Field(description="Execution host mode: local or remote")
+    remote_host: str | None = Field(default=None, description="Remote SSH host (user@hostname)")
+    remote_workspace_root: str = Field(description="Remote workspace sync root directory")
+    image_ready: bool = Field(description="Whether the EE image is available on the target host")
+    image_pull_status: Literal["idle", "pulling", "ready", "failed"] = Field(
+        description="Current EE image pull status"
+    )
+    image_pull_message: str = Field(description="Human-readable pull status message")
     source: str = Field(description="'runtime' if overridden, 'env' if using .env defaults")
 
 
@@ -153,25 +164,68 @@ class ExecutionSettingsUpdate(BaseModel):
     enabled: bool | None = Field(default=None, description="Enable/disable EE container mode")
     image: str | None = Field(default=None, description="Container image name")
     container_runtime: str | None = Field(default=None, description="Container runtime (docker or podman)")
+    host_mode: str | None = Field(default=None, description="Execution host mode: local or remote")
+    remote_host: str | None = Field(default=None, description="Remote SSH host (user@hostname)")
+    remote_workspace_root: str | None = Field(
+        default=None, description="Remote workspace sync root directory"
+    )
 
 
-@router.get("/settings/execution", response_model=ExecutionSettingsResponse)
-async def get_execution_settings(
-    _: Any = Depends(verify_api_key),
-) -> ExecutionSettingsResponse:
-    from ansible_forge.tools.ee_runtime import container_runtime_available
+async def _build_execution_settings_response() -> ExecutionSettingsResponse:
+    from ansible_forge.tools.ee_runtime import (
+        container_runtime_available,
+        ee_image_available,
+        get_pull_state,
+    )
 
     rt = get_runtime_ee()
-    is_overridden = rt.enabled is not None or rt.image is not None or rt.container_runtime is not None
+    is_overridden = any(
+        value is not None
+        for value in (
+            rt.enabled,
+            rt.image,
+            rt.container_runtime,
+            rt.host_mode,
+            rt.remote_host,
+            rt.remote_workspace_root,
+        )
+    )
     available, _ = container_runtime_available()
+    image_available, _ = await ee_image_available()
+    pull_state = get_pull_state()
+
+    image_ready = image_available or pull_state["status"] == "ready"
+    pull_status = pull_state["status"]
+    if image_available and pull_status != "pulling":
+        pull_status = "ready"
 
     return ExecutionSettingsResponse(
         enabled=effective_ee_enabled(),
         image=effective_ee_image(),
         container_runtime=effective_ee_container_runtime(),
         runtime_available=available,
+        host_mode=effective_ee_host_mode(),
+        remote_host=effective_ee_remote_host(),
+        remote_workspace_root=effective_ee_remote_workspace_root(),
+        image_ready=image_ready,
+        image_pull_status=pull_status,
+        image_pull_message=str(pull_state["message"]),
         source="runtime" if is_overridden else "env",
     )
+
+
+async def _maybe_schedule_image_pull(was_enabled: bool, patch: dict[str, Any]) -> None:
+    from ansible_forge.tools.ee_runtime import schedule_ee_image_pull
+
+    if effective_ee_enabled():
+        schedule_ee_image_pull()
+
+
+@router.get("/settings/execution", response_model=ExecutionSettingsResponse)
+async def get_execution_settings(
+    _: Any = Depends(verify_api_key),
+) -> ExecutionSettingsResponse:
+    return await _build_execution_settings_response()
 
 
 @router.put("/settings/execution", response_model=ExecutionSettingsResponse)
@@ -179,9 +233,35 @@ async def update_execution_settings(
     body: ExecutionSettingsUpdate,
     _: Any = Depends(verify_api_key),
 ) -> ExecutionSettingsResponse:
+    was_enabled = effective_ee_enabled()
     patch = body.model_dump(exclude_none=True)
     update_runtime_ee(patch)
-    return await get_execution_settings()
+    await _maybe_schedule_image_pull(was_enabled, patch)
+    return await _build_execution_settings_response()
+
+
+@router.post("/settings/execution/pull", response_model=ExecutionSettingsResponse)
+async def pull_execution_image(
+    _: Any = Depends(verify_api_key),
+) -> ExecutionSettingsResponse:
+    from ansible_forge.tools.ee_runtime import schedule_ee_image_pull
+
+    if not effective_ee_enabled():
+        return await _build_execution_settings_response()
+    schedule_ee_image_pull()
+    return await _build_execution_settings_response()
+
+
+@router.post("/settings/execution/test-remote")
+async def test_execution_remote(
+    _: Any = Depends(verify_api_key),
+) -> dict[str, Any]:
+    from ansible_forge.tools.ee_runtime import test_remote_connection
+
+    if effective_ee_host_mode() != "remote":
+        return {"ok": False, "error": "Execution host mode is not set to remote"}
+    ok, message = await test_remote_connection()
+    return {"ok": ok, "message": message}
 
 
 @router.delete("/settings/execution", response_model=ExecutionSettingsResponse)
@@ -189,4 +269,4 @@ async def reset_execution_settings(
     _: Any = Depends(verify_api_key),
 ) -> ExecutionSettingsResponse:
     clear_runtime_ee()
-    return await get_execution_settings()
+    return await _build_execution_settings_response()
