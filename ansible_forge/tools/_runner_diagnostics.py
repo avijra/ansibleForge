@@ -28,7 +28,6 @@ def _extract_error_snippet(text: str) -> str:
         return ""
 
     for line in lines:
-        upper = line.upper()
         if line.startswith("ERROR:") or "unsupported locale" in line.lower():
             return line[:_MAX_SNIPPET_CHARS]
 

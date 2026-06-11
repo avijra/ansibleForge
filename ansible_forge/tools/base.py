@@ -53,10 +53,7 @@ class ToolResult(BaseModel):
                 value = self.data.get(key)
                 if not value:
                     continue
-                if isinstance(value, dict):
-                    text = _json.dumps(value)
-                else:
-                    text = str(value)
+                text = _json.dumps(value) if isinstance(value, dict) else str(value)
                 if len(text) > 1500:
                     text = text[:1500] + "...[truncated]"
                 d[key] = text

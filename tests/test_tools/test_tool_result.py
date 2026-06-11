@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ansible_forge.tools.base import ToolResult, ToolStatus
+from ansible_forge.tools.base import ToolResult
 
 
 class TestToolResultLLMContext:
