@@ -195,9 +195,17 @@ async def _build_execution_settings_response() -> ExecutionSettingsResponse:
     pull_state = get_pull_state()
 
     image_ready = image_available or pull_state["status"] == "ready"
-    pull_status = pull_state["status"]
-    if image_available and pull_status != "pulling":
+    raw_status = str(pull_state["status"])
+    if image_available and raw_status != "pulling":
+        pull_status: Literal["idle", "pulling", "ready", "failed"] = "ready"
+    elif raw_status == "pulling":
+        pull_status = "pulling"
+    elif raw_status == "failed":
+        pull_status = "failed"
+    elif raw_status == "ready":
         pull_status = "ready"
+    else:
+        pull_status = "idle"
 
     return ExecutionSettingsResponse(
         enabled=effective_ee_enabled(),

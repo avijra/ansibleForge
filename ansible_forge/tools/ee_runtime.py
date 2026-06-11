@@ -155,11 +155,12 @@ async def pull_ee_image() -> tuple[bool, str]:
             env=_merged_subprocess_env(),
         )
         assert proc.stderr is not None
+        stderr_stream = proc.stderr
         stderr_lines: list[str] = []
 
         async def _read_stderr() -> None:
             while True:
-                line = await proc.stderr.readline()
+                line = await stderr_stream.readline()
                 if not line:
                     break
                 text = line.decode(errors="replace").strip()
