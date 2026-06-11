@@ -46,7 +46,11 @@ RUN ansible-galaxy collection install -r /tmp/requirements.yml --force \
     -p /usr/share/ansible/collections \
   && rm -f /tmp/requirements.yml
 
-RUN useradd -u 1000 -m runner
+RUN useradd -u 1000 -m runner \
+  && mkdir -p /home/runner/.ansible/tmp /tmp/.ansible \
+  && chown -R runner:runner /home/runner /tmp/.ansible
+
+ENV HOME=/home/runner
 USER 1000
 WORKDIR /home/runner
 

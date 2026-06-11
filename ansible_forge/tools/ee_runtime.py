@@ -103,6 +103,45 @@ def sanitize_runner_envvars(envvars: dict[str, str]) -> dict[str, str]:
     return envvars
 
 
+_EE_STRIPPED_ENV_KEYS = frozenset({"HOME", "TMPDIR", "USER", "LOGNAME"})
+
+
+def _effective_ws_path(ws: Path, remote_ws: str | None) -> Path:
+    return Path(remote_ws) if remote_ws else ws
+
+
+def ensure_ee_workspace_dirs(ws: Path) -> None:
+    for rel in (".tuyere/ee-home/.ansible/tmp", ".tuyere/tmp/ansible"):
+        (ws / rel).mkdir(parents=True, exist_ok=True)
+
+
+def ee_bootstrap_env(ws: Path, remote_ws: str | None = None) -> dict[str, str]:
+    root = _effective_ws_path(ws, remote_ws)
+    home = root / ".tuyere" / "ee-home"
+    tmp = root / ".tuyere" / "tmp" / "ansible"
+    return {
+        "HOME": str(home),
+        "TMPDIR": str(tmp),
+        "ANSIBLE_LOCAL_TMP": str(tmp),
+        "ANSIBLE_REMOTE_TMP": str(tmp),
+    }
+
+
+def inject_ee_container_env(
+    envvars: dict[str, str],
+    ws: Path,
+    remote_ws: str | None = None,
+) -> dict[str, str]:
+    ensure_ee_workspace_dirs(ws)
+    for key in list(envvars):
+        if key in _EE_STRIPPED_ENV_KEYS or (
+            key.startswith("ANSIBLE_") and "TMP" in key
+        ):
+            envvars.pop(key, None)
+    envvars.update(ee_bootstrap_env(ws, remote_ws))
+    return sanitize_runner_envvars(envvars)
+
+
 def _ee_locale_env() -> dict[str, str]:
     return runner_locale_env()
 
@@ -294,6 +333,7 @@ def build_volume_mounts(ws: Path, remote_ws: str | None = None) -> list[str]:
 
 
 async def prepare_ee_workspace(ws: Path) -> str | None:
+    ensure_ee_workspace_dirs(ws)
     if not is_remote_mode():
         return None
     if not effective_ee_remote_host():
@@ -329,7 +369,7 @@ def apply_ee_kwargs(
     envvars.pop("ANSIBLE_PYTHON_INTERPRETER", None)
     envvars.update(_docker_host_env())
     if is_ee_enabled():
-        sanitize_runner_envvars(envvars)
+        inject_ee_container_env(envvars, ws, effective_remote_ws)
     runner_kwargs["envvars"] = envvars
 
     return runner_kwargs
@@ -348,15 +388,33 @@ async def verify_ee_ansible() -> tuple[bool, str]:
             message = str(pull.get("message") or "EE image unavailable")
             return False, message
 
-    rc, stdout, stderr = await ee_exec(["ansible", "--version"], timeout=60)
+    import tempfile
+
+    verify_ws = Path(tempfile.mkdtemp(prefix="tuyere-ee-verify-"))
+
+    rc, stdout, stderr = await ee_exec(["ansible", "--version"], ws=verify_ws, timeout=60)
     combined = (stderr or stdout or "").strip()
     if rc != 0:
         detail = combined[:400] or f"ansible --version exited with code {rc}"
         if "locale" in detail.lower():
             return False, f"EE locale misconfigured: {detail}"
+        if "permission denied" in detail.lower():
+            return False, f"EE container HOME/tmp not writable: {detail}"
         return False, f"EE ansible check failed: {detail}"
 
-    version_line = (stdout or stderr).strip().splitlines()[0] if combined else "ansible available"
+    rc, stdout, stderr = await ee_exec(
+        ["ansible", "localhost", "-m", "ping", "-c", "local", "-i", "localhost,"],
+        ws=verify_ws,
+        timeout=90,
+    )
+    ping_output = (stderr or stdout or "").strip()
+    if rc != 0:
+        detail = ping_output[:400] or f"ansible ping exited with code {rc}"
+        if "permission denied" in detail.lower() or "/.ansible" in detail:
+            return False, f"EE container HOME/tmp not writable: {detail}"
+        return False, f"EE ansible ping check failed: {detail}"
+
+    version_line = combined.splitlines()[0] if combined else "ansible available"
     return True, version_line
 
 
@@ -461,6 +519,9 @@ async def ee_exec(
         if cwd:
             effective_cwd = local_to_remote_path(cwd, Path(mount_ws), remote_ws)
 
+    if effective_cwd is None and mount_ws:
+        effective_cwd = _effective_ws_path(Path(mount_ws), remote_ws)
+
     container_cmd: list[str] = [binary, "run", "--rm"]
 
     if mount_ws:
@@ -469,12 +530,16 @@ async def ee_exec(
     if effective_cwd:
         container_cmd.extend(["-w", str(effective_cwd)])
 
-    for key, val in _ee_locale_env().items():
-        container_cmd.extend(["-e", f"{key}={val}"])
-
+    container_env: dict[str, str] = {}
+    if mount_ws:
+        ensure_ee_workspace_dirs(Path(mount_ws))
+        container_env.update(ee_bootstrap_env(Path(mount_ws), remote_ws))
+    container_env.update(_ee_locale_env())
     if env:
-        for key, val in env.items():
-            container_cmd.extend(["-e", f"{key}={val}"])
+        container_env.update(env)
+
+    for key, val in container_env.items():
+        container_cmd.extend(["-e", f"{key}={val}"])
 
     _passthrough_vars = (
         "AWS_ACCESS_KEY_ID",
@@ -498,9 +563,9 @@ async def ee_exec(
         "DO_API_TOKEN",
     )
     for key, val in os.environ.items():
-        if any(key.startswith(p) or key == p for p in _passthrough_vars) and (
-            not env or key not in env
-        ):
+        if key in container_env or key in _EE_STRIPPED_ENV_KEYS:
+            continue
+        if any(key.startswith(p) or key == p for p in _passthrough_vars):
             container_cmd.extend(["-e", f"{key}={val}"])
 
     container_cmd.append(get_ee_image())

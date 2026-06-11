@@ -78,6 +78,54 @@ class TestEERuntimeHelpers:
         assert kwargs["envvars"]["LC_ALL"] == "C.UTF-8"
         assert kwargs["envvars"]["AWS_ACCESS_KEY_ID"] == "test"
 
+    def test_apply_ee_kwargs_sets_writable_home_and_ansible_tmp(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {"envvars": {"HOME": "/"}},
+            ws,
+        )
+        env = kwargs["envvars"]
+        expected_home = str(ws / ".tuyere" / "ee-home")
+        expected_tmp = str(ws / ".tuyere" / "tmp" / "ansible")
+        assert env["HOME"] == expected_home
+        assert env["TMPDIR"] == expected_tmp
+        assert env["ANSIBLE_LOCAL_TMP"] == expected_tmp
+        assert env["ANSIBLE_REMOTE_TMP"] == expected_tmp
+        assert (ws / ".tuyere" / "ee-home" / ".ansible" / "tmp").is_dir()
+        assert (ws / ".tuyere" / "tmp" / "ansible").is_dir()
+
+    def test_apply_ee_kwargs_remote_uses_remote_workspace_paths(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "effective_ee_remote_host",
+            lambda: "runner@remote.example",
+        )
+        ws = tmp_path / "project"
+        ws.mkdir()
+        remote_ws = "/var/lib/tuyere/workspaces/project-deadbeef"
+        kwargs = ee_runtime.apply_ee_kwargs({"envvars": {}}, ws, remote_ws=remote_ws)
+        env = kwargs["envvars"]
+        assert env["HOME"] == f"{remote_ws}/.tuyere/ee-home"
+        assert env["ANSIBLE_LOCAL_TMP"] == f"{remote_ws}/.tuyere/tmp/ansible"
+        assert (ws / ".tuyere" / "ee-home" / ".ansible" / "tmp").is_dir()
+
     def test_build_volume_mounts_remote_only_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
         mounts = ee_runtime.build_volume_mounts(
