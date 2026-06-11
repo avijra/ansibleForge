@@ -120,6 +120,31 @@ fn get_backend_command(app: &AppHandle) -> (String, Vec<String>, String) {
     )
 }
 
+fn augmented_path_for_backend() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut extra: Vec<&str> = Vec::new();
+    if cfg!(target_os = "macos") {
+        extra.extend([
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/Applications/Docker.app/Contents/Resources/bin",
+        ]);
+    } else if cfg!(target_os = "linux") {
+        extra.extend(["/usr/local/bin", "/usr/bin", "/snap/bin"]);
+    }
+    let mut parts: Vec<String> = extra
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).is_dir())
+        .map(str::to_string)
+        .collect();
+    for part in current.split(':').filter(|p| !p.is_empty()) {
+        if !parts.iter().any(|existing| existing == part) {
+            parts.push(part.to_string());
+        }
+    }
+    parts.join(":")
+}
+
 pub fn start_backend(app: &AppHandle) {
     let (cmd, args, cwd) = get_backend_command(app);
     let pid = std::process::id();
@@ -130,6 +155,7 @@ pub fn start_backend(app: &AppHandle) {
     command
         .args(&args)
         .current_dir(&cwd)
+        .env("PATH", augmented_path_for_backend())
         .env("ANSIBLEFORGE_HOST", "127.0.0.1")
         .env("ANSIBLEFORGE_PORT", PORT.to_string())
         .env("ANSIBLEFORGE_PARENT_PID", pid.to_string());

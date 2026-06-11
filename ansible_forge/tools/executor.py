@@ -782,10 +782,12 @@ class Executor(BaseTool):
             _MAX_PLAYBOOK_TIMEOUT,
         )
 
-        from ansible_forge.tools.ee_runtime import apply_ee_kwargs, prepare_ee_workspace
+        from ansible_forge.tools.ee_runtime import configure_ee_runner
 
-        remote_ws = await prepare_ee_workspace(ws)
-        apply_ee_kwargs(runner_kwargs, ws, remote_ws=remote_ws)
+        inv_for_stage = self._resolve_inventory(ws, inventory) if inventory else None
+        await configure_ee_runner(
+            ws, run_dir, runner_kwargs, inventory_path=inv_for_stage
+        )
 
         extra_log_dirs = _extract_extra_log_dirs(ws, merged_vars, playbook)
         log_snapshot = _snapshot_log_files(ws, extra_dirs=extra_log_dirs)

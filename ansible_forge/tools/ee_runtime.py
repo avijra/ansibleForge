@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,9 +78,35 @@ def _set_pull_state(status: PullStatus, message: str) -> None:
         _pull_state.message = message
 
 
+def _container_runtime_search_paths() -> list[str]:
+    paths: list[str] = []
+    if sys.platform == "darwin":
+        paths.extend(
+            [
+                "/usr/local/bin",
+                "/opt/homebrew/bin",
+                "/Applications/Docker.app/Contents/Resources/bin",
+            ]
+        )
+    elif sys.platform == "linux":
+        paths.extend(["/usr/local/bin", "/usr/bin", "/snap/bin"])
+    return paths
+
+
+def resolve_container_runtime_binary(runtime: str | None = None) -> str | None:
+    name = runtime or get_container_runtime()
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in _container_runtime_search_paths():
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _runtime_binary() -> str | None:
-    rt = get_container_runtime()
-    return shutil.which(rt)
+    return resolve_container_runtime_binary()
 
 
 def _docker_host_env() -> dict[str, str]:
@@ -127,6 +154,69 @@ def ee_bootstrap_env(ws: Path, remote_ws: str | None = None) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class EEContext:
+    workspace: Path
+    remote_workspace: str | None
+    effective_root: Path
+
+
+def build_ee_context(ws: Path, remote_ws: str | None = None) -> EEContext:
+    effective_remote = remote_ws
+    if is_remote_mode() and not effective_remote:
+        from ansible_forge.tools.workspace_sync import remote_workspace_path
+
+        effective_remote = remote_workspace_path(ws)
+    root = _effective_ws_path(ws, effective_remote)
+    return EEContext(workspace=ws.resolve(), remote_workspace=effective_remote, effective_root=root)
+
+
+def stage_runner_inventory(run_dir: Path, inventory_path: Path) -> None:
+    if not inventory_path.exists():
+        return
+    dest = run_dir / "inventory"
+    if dest.is_symlink() or dest.exists() or dest.is_file():
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink(missing_ok=True)
+    dest.symlink_to(inventory_path.resolve())
+
+
+def _inject_ee_ansible_paths(envvars: dict[str, str], ctx: EEContext) -> None:
+    local_collections = ctx.workspace / ".ansible" / "collections"
+    local_collections.mkdir(parents=True, exist_ok=True)
+    collections = ctx.effective_root / ".ansible" / "collections"
+    roles = ctx.effective_root / "roles"
+    envvars["ANSIBLE_COLLECTIONS_PATH"] = (
+        f"{collections}:/usr/share/ansible/collections"
+    )
+    envvars["ANSIBLE_ROLES_PATH"] = str(roles)
+
+
+async def configure_ee_runner(
+    ws: Path,
+    run_dir: Path,
+    runner_kwargs: dict[str, Any],
+    *,
+    inventory_path: Path | None = None,
+) -> None:
+    if not is_ee_enabled():
+        return
+    ensure_ee_workspace_dirs(ws)
+    if inventory_path is not None:
+        stage_runner_inventory(run_dir, inventory_path)
+    remote_ws: str | None = None
+    if is_remote_mode():
+        remote_ws = await sync_to_remote(ws)
+    apply_ee_kwargs(
+        runner_kwargs,
+        ws,
+        remote_ws=remote_ws,
+        run_dir=run_dir,
+    )
+
+
 def inject_ee_container_env(
     envvars: dict[str, str],
     ws: Path,
@@ -139,6 +229,7 @@ def inject_ee_container_env(
         ):
             envvars.pop(key, None)
     envvars.update(ee_bootstrap_env(ws, remote_ws))
+    _inject_ee_ansible_paths(envvars, build_ee_context(ws, remote_ws))
     return sanitize_runner_envvars(envvars)
 
 
@@ -156,7 +247,7 @@ def _merged_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str
 
 def container_runtime_available() -> tuple[bool, str]:
     rt = get_container_runtime()
-    binary = shutil.which(rt)
+    binary = resolve_container_runtime_binary(rt)
     if binary:
         return True, binary
     return False, f"{rt} not found on PATH"
@@ -345,31 +436,37 @@ def apply_ee_kwargs(
     runner_kwargs: dict[str, Any],
     ws: Path,
     remote_ws: str | None = None,
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Inject EE container isolation kwargs into an ansible-runner call."""
     if not is_ee_enabled():
         return runner_kwargs
 
+    ctx = build_ee_context(ws, remote_ws)
+    runtime_bin = resolve_container_runtime_binary()
     runner_kwargs["process_isolation"] = True
-    runner_kwargs["process_isolation_executable"] = get_container_runtime()
+    runner_kwargs["process_isolation_executable"] = (
+        runtime_bin or get_container_runtime()
+    )
     runner_kwargs["container_image"] = get_ee_image()
-    effective_remote_ws = remote_ws
-    if is_remote_mode() and not effective_remote_ws:
-        from ansible_forge.tools.workspace_sync import remote_workspace_path
-
-        effective_remote_ws = remote_workspace_path(ws)
+    runner_kwargs["host_cwd"] = str(ctx.workspace)
+    runner_kwargs["container_workdir"] = str(ctx.effective_root)
     runner_kwargs["container_volume_mounts"] = build_volume_mounts(
         ws,
-        remote_ws=effective_remote_ws,
+        remote_ws=ctx.remote_workspace,
     )
+
+    if run_dir is not None and ctx.remote_workspace:
+        runner_kwargs["private_data_dir"] = str(
+            local_to_remote_path(run_dir.resolve(), ctx.workspace, ctx.remote_workspace)
+        )
 
     envvars = runner_kwargs.get("envvars", {})
     envvars.pop("PYTHONHOME", None)
     envvars.pop("PYTHONPATH", None)
     envvars.pop("ANSIBLE_PYTHON_INTERPRETER", None)
     envvars.update(_docker_host_env())
-    if is_ee_enabled():
-        inject_ee_container_env(envvars, ws, effective_remote_ws)
+    inject_ee_container_env(envvars, ws, ctx.remote_workspace)
     runner_kwargs["envvars"] = envvars
 
     return runner_kwargs
@@ -413,6 +510,30 @@ async def verify_ee_ansible() -> tuple[bool, str]:
         if "permission denied" in detail.lower() or "/.ansible" in detail:
             return False, f"EE container HOME/tmp not writable: {detail}"
         return False, f"EE ansible ping check failed: {detail}"
+
+    playbooks = verify_ws / "playbooks"
+    playbooks.mkdir(exist_ok=True)
+    (playbooks / "ping.yml").write_text(
+        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+        "  tasks:\n    - ansible.builtin.ping:\n",
+        encoding="utf-8",
+    )
+    rc, stdout, stderr = await ee_exec(
+        [
+            "ansible-playbook",
+            "playbooks/ping.yml",
+            "-i",
+            "localhost,",
+        ],
+        ws=verify_ws,
+        timeout=90,
+    )
+    playbook_output = (stderr or stdout or "").strip()
+    if rc != 0:
+        detail = playbook_output[:400] or f"ansible-playbook exited with code {rc}"
+        if "could not be found" in detail.lower():
+            return False, f"EE playbook path contract broken: {detail}"
+        return False, f"EE ansible-playbook check failed: {detail}"
 
     version_line = combined.splitlines()[0] if combined else "ansible available"
     return True, version_line
@@ -523,6 +644,9 @@ async def ee_exec(
         effective_cwd = _effective_ws_path(Path(mount_ws), remote_ws)
 
     container_cmd: list[str] = [binary, "run", "--rm"]
+
+    if get_container_runtime() == "docker":
+        container_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
 
     if mount_ws:
         for mount in build_volume_mounts(Path(mount_ws), remote_ws=remote_ws):

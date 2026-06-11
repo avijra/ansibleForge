@@ -77,7 +77,7 @@ class GalaxyManager(BaseTool):
         if action == "search":
             return await self._search(collection_name)
         if action == "install":
-            return await self._install(collection_name, version)
+            return await self._install(collection_name, version, workspace_path)
         if action == "list":
             return await self._list_installed()
         if action == "install_role":
@@ -168,13 +168,15 @@ class GalaxyManager(BaseTool):
             logger.debug("galaxy_api_search_failed", exc_info=True)
         return results
 
-    async def _install(self, collection_name: str, version: str) -> ToolResult:
+    async def _install(
+        self, collection_name: str, version: str, workspace_path: str = ""
+    ) -> ToolResult:
         if not collection_name:
             return ToolResult.fail("collection_name is required for install")
 
         target = f"{collection_name}:{version}" if version else collection_name
         rc, stdout, stderr = await self._run_galaxy(
-            "collection", "install", target, "--force"
+            "collection", "install", target, "--force", workspace=workspace_path
         )
 
         if rc != 0:
@@ -406,7 +408,7 @@ class GalaxyManager(BaseTool):
     ) -> tuple[int, str, str]:
         import os
 
-        from ansible_forge.tools.ee_runtime import ee_exec
+        from ansible_forge.tools.ee_runtime import ee_exec, is_ee_enabled
 
         env: dict[str, str] = {}
         ssl_cert = os.environ.get("SSL_CERT_FILE", "")
@@ -417,8 +419,14 @@ class GalaxyManager(BaseTool):
         from pathlib import Path
 
         ws_path = Path(workspace) if workspace else None
+        cmd = ["ansible-galaxy", *args]
+        if ws_path and is_ee_enabled():
+            collections = ws_path / ".ansible" / "collections"
+            collections.mkdir(parents=True, exist_ok=True)
+            if "-p" not in args and "--collections-path" not in args:
+                cmd.extend(["-p", str(collections)])
         return await ee_exec(
-            ["ansible-galaxy", *args],
+            cmd,
             env=env if env else None,
             timeout=timeout,
             ws=ws_path,

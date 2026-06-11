@@ -126,6 +126,22 @@ class TestEERuntimeHelpers:
         assert env["ANSIBLE_LOCAL_TMP"] == f"{remote_ws}/.tuyere/tmp/ansible"
         assert (ws / ".tuyere" / "ee-home" / ".ansible" / "tmp").is_dir()
 
+    def test_resolve_container_runtime_binary_finds_docker_on_macos_paths(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        fake_docker = tmp_path / "docker"
+        fake_docker.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake_docker.chmod(0o755)
+        monkeypatch.setattr(ee_runtime.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            ee_runtime,
+            "_container_runtime_search_paths",
+            lambda: [str(tmp_path)],
+        )
+        assert ee_runtime.resolve_container_runtime_binary("docker") == str(fake_docker)
+
     def test_build_volume_mounts_remote_only_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
         mounts = ee_runtime.build_volume_mounts(
@@ -133,6 +149,70 @@ class TestEERuntimeHelpers:
             remote_ws="/var/lib/tuyere/workspaces/project-deadbeef",
         )
         assert mounts == ["/var/lib/tuyere/workspaces/project-deadbeef:/var/lib/tuyere/workspaces/project-deadbeef:Z"]
+
+    def test_apply_ee_kwargs_sets_container_workdir_and_host_cwd(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "resolve_container_runtime_binary",
+            lambda _rt=None: "/usr/local/bin/docker",
+        )
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs({"envvars": {}}, ws)
+        assert kwargs["host_cwd"] == str(ws.resolve())
+        assert kwargs["container_workdir"] == str(ws.resolve())
+        assert kwargs["process_isolation_executable"] == "/usr/local/bin/docker"
+
+    def test_stage_runner_inventory_symlinks_into_run_dir(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        ws = tmp_path / "project"
+        inv = ws / "inventory" / "hosts.yml"
+        inv.parent.mkdir(parents=True)
+        inv.write_text("all:\n  hosts:\n    localhost:\n", encoding="utf-8")
+        run_dir = ws / ".tuyere" / "runs" / "abc123"
+        run_dir.mkdir(parents=True)
+        ee_runtime.stage_runner_inventory(run_dir, inv)
+        staged = run_dir / "inventory"
+        assert staged.is_symlink()
+        assert staged.resolve() == inv.resolve()
+
+    def test_apply_ee_kwargs_remote_translates_private_data_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "resolve_container_runtime_binary",
+            lambda _rt=None: "/usr/local/bin/docker",
+        )
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        run_dir = ws / ".tuyere" / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        remote_ws = "/var/lib/tuyere/workspaces/project-deadbeef"
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {"envvars": {}, "private_data_dir": str(run_dir)},
+            ws,
+            remote_ws=remote_ws,
+            run_dir=run_dir,
+        )
+        assert kwargs["private_data_dir"] == (
+            "/var/lib/tuyere/workspaces/project-deadbeef/.tuyere/runs/run1"
+        )
+        assert kwargs["container_workdir"] == remote_ws
 
     @pytest.mark.asyncio
     async def test_schedule_pull_sets_ready_when_image_exists(

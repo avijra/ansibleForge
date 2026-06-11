@@ -142,6 +142,7 @@ class ConnectivityTester(BaseTool):
                     envvars[key] = str(value)
             runner_kwargs: dict[str, Any] = {
                 "private_data_dir": str(run_dir),
+                "project_dir": str(ws),
                 "module": "ansible.builtin.ping",
                 "host_pattern": host_pattern,
                 "inventory": str(inv_path),
@@ -150,10 +151,11 @@ class ConnectivityTester(BaseTool):
             if extravars:
                 runner_kwargs["extravars"] = extravars
 
-            from ansible_forge.tools.ee_runtime import apply_ee_kwargs, prepare_ee_workspace
+            from ansible_forge.tools.ee_runtime import configure_ee_runner
 
-            remote_ws = await prepare_ee_workspace(ws)
-            apply_ee_kwargs(runner_kwargs, ws, remote_ws=remote_ws)
+            await configure_ee_runner(
+                ws, run_dir, runner_kwargs, inventory_path=inv_path
+            )
 
             loop = asyncio.get_running_loop()
             try:

@@ -151,6 +151,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error("standalone_python_install_timeout")
 
     self_check_task = asyncio.create_task(_startup_self_check())
+
+    from ansible_forge.config import effective_ee_enabled
+    from ansible_forge.tools.ee_runtime import schedule_ee_image_pull
+
+    if effective_ee_enabled():
+        schedule_ee_image_pull()
+
     try:
         yield
     finally:
