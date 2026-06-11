@@ -39,6 +39,7 @@ RUN pip3 install --no-cache-dir \
 
 COPY requirements.yml /tmp/requirements.yml
 RUN ansible-galaxy collection install -r /tmp/requirements.yml --force \
+    -p /usr/share/ansible/collections \
   && rm -f /tmp/requirements.yml
 
 RUN useradd -u 1000 -m runner
