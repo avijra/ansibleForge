@@ -55,3 +55,4 @@ class HealthResponse(BaseModel):
     llm_status: str = "unknown"
     llm_status_detail: str = ""
     external_tools: dict[str, str] = Field(default_factory=dict)
+    execution_mode: str = "host"

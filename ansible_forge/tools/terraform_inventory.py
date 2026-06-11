@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -99,35 +98,23 @@ class TerraformInventoryBridge(BaseTool):
                     env[name] = str(value)
         env["TF_IN_AUTOMATION"] = "1"
 
-        show_proc = await asyncio.create_subprocess_exec(
-            tf_binary, "show", "-no-color", "-json",
-            cwd=str(tf_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        from ansible_forge.tools.ee_runtime import ee_exec, is_ee_enabled
+
+        ee_binary = tf_binary
+        if is_ee_enabled():
+            ee_binary = "tofu" if "tofu" in tf_binary else "terraform"
+
+        ws_path = Path(workspace_path)
+        show_rc, show_stdout_str, show_stderr_str = await ee_exec(
+            [ee_binary, "show", "-no-color", "-json"],
+            cwd=tf_dir, env=env, timeout=60, ws=ws_path,
         )
-        try:
-            show_stdout, show_stderr = await asyncio.wait_for(show_proc.communicate(), timeout=60)
-        except asyncio.CancelledError:
-            try:
-                show_proc.kill()
-                await show_proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            try:
-                show_proc.kill()
-                await show_proc.wait()
-            except Exception:
-                pass
-            return ToolResult.fail("Terraform state read timed out")
 
-        if show_proc.returncode != 0:
-            return ToolResult.fail(f"Failed to read Terraform state: {show_stderr.decode(errors='replace').strip()}")
+        if show_rc != 0:
+            return ToolResult.fail(f"Failed to read Terraform state: {show_stderr_str.strip()}")
 
         try:
-            state = json.loads(show_stdout.decode(errors="replace"))
+            state = json.loads(show_stdout_str)
         except json.JSONDecodeError:
             return ToolResult.fail("Failed to parse Terraform state JSON")
 
@@ -135,32 +122,13 @@ class TerraformInventoryBridge(BaseTool):
         hosts = self._extract_hosts(resources, use_private_ip)
 
         if not hosts:
-            out_proc = await asyncio.create_subprocess_exec(
-                tf_binary, "output", "-no-color", "-json",
-                cwd=str(tf_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
+            out_rc, out_stdout_str, _ = await ee_exec(
+                [ee_binary, "output", "-no-color", "-json"],
+                cwd=tf_dir, env=env, timeout=30, ws=ws_path,
             )
-            try:
-                out_stdout, _ = await asyncio.wait_for(out_proc.communicate(), timeout=30)
-            except asyncio.CancelledError:
+            if out_rc == 0 and out_stdout_str.strip():
                 try:
-                    out_proc.kill()
-                    await out_proc.wait()
-                except Exception:
-                    pass
-                raise
-            except TimeoutError:
-                try:
-                    out_proc.kill()
-                    await out_proc.wait()
-                except Exception:
-                    pass
-                out_stdout = b""
-            if out_proc.returncode == 0 and out_stdout:
-                try:
-                    outputs = json.loads(out_stdout.decode(errors="replace"))
+                    outputs = json.loads(out_stdout_str)
                     hosts = self._extract_hosts_from_outputs(outputs)
                 except json.JSONDecodeError:
                     logger.debug("tf_outputs_parse_failed", exc_info=True)

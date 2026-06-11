@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -74,32 +73,18 @@ class LintRunner(BaseTool):
         if auto_fix:
             args.append("--fix")
 
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(target_path.parent) if target_path.is_file() else str(target_path),
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return ToolResult.fail("ansible-lint timed out after 2 minutes.")
-        stdout = stdout_b.decode(errors="replace")
-        stderr = stderr_b.decode(errors="replace")
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        cwd = target_path.parent if target_path.is_file() else target_path
+        rc, stdout, stderr = await ee_exec(args, cwd=cwd, timeout=120, ws=cwd)
+
+        if "timed out" in stderr:
+            return ToolResult.fail(f"ansible-lint timed out after 2 minutes. {stderr}")
 
         violations = self._parse_output(stdout)
         count = len(violations)
 
-        if proc.returncode == 0:
+        if rc == 0:
             return ToolResult.ok(
                 output=f"Lint passed ({profile} profile) — no violations found.",
                 violations=violations,
@@ -107,10 +92,15 @@ class LintRunner(BaseTool):
                 profile=profile,
             )
 
+        if count == 0 and rc != 0:
+            return ToolResult.fail(
+                f"ansible-lint exited with code {rc}. {stderr.strip()}"
+            )
+
         return ToolResult(
-            status=ToolStatus.SUCCESS if count == 0 else ToolStatus.ERROR,
+            status=ToolStatus.ERROR,
             output=f"Lint found {count} violation(s) with profile '{profile}'.",
-            error=f"{count} lint violation(s) found" if count else None,
+            error=f"{count} lint violation(s) found",
             data={
                 "violations": violations,
                 "violation_count": count,

@@ -6,6 +6,8 @@ import type {
   CollectionResponse,
   ExecuteRequest,
   ExecuteResponse,
+  ExecutionSettings,
+  ExecutionSettingsUpdate,
   HealthResponse,
   InventoryResponse,
   LintRequest,
@@ -138,6 +140,17 @@ export const api = {
         "/settings/llm/test",
         { method: "POST", body: JSON.stringify(body) },
       ),
+  },
+
+  executionSettings: {
+    get: () => request<ExecutionSettings>("/settings/execution"),
+    update: (body: ExecutionSettingsUpdate) =>
+      request<ExecutionSettings>("/settings/execution", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+    reset: () =>
+      request<ExecutionSettings>("/settings/execution", { method: "DELETE" }),
   },
 
   sessions: {

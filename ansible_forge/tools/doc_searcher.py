@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -112,27 +111,6 @@ class DocSearcher(BaseTool):
 
     @staticmethod
     async def _run_ansible_doc(*args: str) -> tuple[int, str, str]:
-        proc = await asyncio.create_subprocess_exec(
-            "ansible-doc",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return (1, "", "ansible-doc timed out after 60s")
-        return (
-            proc.returncode or 0,
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
-        )
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        return await ee_exec(["ansible-doc", *args], timeout=60)

@@ -250,61 +250,45 @@ class InventoryDiscoveryTool(BaseTool):
         secret_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         suffix = plugin_type.split(".")[-1]
-        tmp_dir = Path(workspace_path) / "inventory" if workspace_path else None
+        tmp_dir: Path | None = None
+        if workspace_path:
+            tmp_dir = Path(workspace_path) / ".tuyere" / "tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
 
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=f"_{suffix}.yml",
-            dir=str(tmp_dir) if tmp_dir and tmp_dir.is_dir() else None,
+            dir=str(tmp_dir) if tmp_dir else None,
             delete=False,
         ) as f:
             f.write(config_yaml)
             config_path = Path(f.name)
 
-        env = os.environ.copy()
-        import sys
-        if getattr(sys, "frozen", False):
-            env.pop("PYTHONHOME", None)
-            env.pop("PYTHONPATH", None)
+        env: dict[str, str] = {}
         if secret_env:
             env.update(secret_env)
 
-        proc = None
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        ws_path = Path(workspace_path) if workspace_path else None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "ansible-inventory", "--list", "-i", str(config_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
+            rc, stdout_raw, stderr_raw = await ee_exec(
+                ["ansible-inventory", "--list", "-i", str(config_path)],
+                env=env if env else None,
+                timeout=120,
+                ws=ws_path,
             )
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.CancelledError:
-            if proc is not None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
             config_path.unlink(missing_ok=True)
             raise
-        except TimeoutError:
-            if proc is not None:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-            config_path.unlink(missing_ok=True)
-            return {"inventory": {}, "error": "ansible-inventory timed out after 120s"}
         finally:
             config_path.unlink(missing_ok=True)
 
-        if proc.returncode != 0:
-            stderr = stderr_b.decode(errors="replace").strip()
-            return {"inventory": {}, "error": self._diagnose_error(stderr, plugin_type)}
+        if rc != 0:
+            return {"inventory": {}, "error": self._diagnose_error(stderr_raw.strip(), plugin_type)}
 
         try:
-            inventory = json.loads(stdout_b.decode(errors="replace"))
+            inventory = json.loads(stdout_raw)
         except json.JSONDecodeError:
             return {"inventory": {}, "error": "ansible-inventory returned non-JSON output"}
 

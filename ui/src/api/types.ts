@@ -31,6 +31,7 @@ export interface HealthResponse {
   llm_status?: string;
   llm_status_detail?: string;
   external_tools?: Record<string, string>;
+  execution_mode?: string;
 }
 
 export interface SessionStatusResponse {
@@ -181,4 +182,18 @@ export interface LLMSettingsUpdate {
   api_base?: string;
   temperature?: number;
   max_tokens?: number;
+}
+
+export interface ExecutionSettings {
+  enabled: boolean;
+  image: string;
+  container_runtime: string;
+  runtime_available: boolean;
+  source: "runtime" | "env";
+}
+
+export interface ExecutionSettingsUpdate {
+  enabled?: boolean;
+  image?: string;
+  container_runtime?: string;
 }

@@ -263,6 +263,10 @@ class Verifier(BaseTool):
             if extravars:
                 runner_kwargs["extravars"] = extravars
 
+            from ansible_forge.tools.ee_runtime import apply_ee_kwargs
+
+            apply_ee_kwargs(runner_kwargs, ws)
+
             loop = asyncio.get_running_loop()
             try:
                 result = await asyncio.wait_for(

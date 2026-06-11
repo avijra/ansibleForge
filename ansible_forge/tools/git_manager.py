@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -101,34 +100,9 @@ class GitManager(BaseTool):
         )
 
     async def _run_git(self, cwd: Path, *args: str, timeout: int = 30) -> tuple[int, str, str]:
-        cmd = ["git"] + list(args)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            return 1, "", "Git command timed out"
-        return (
-            proc.returncode or 0,
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
-        )
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        return await ee_exec(["git", *args], cwd=cwd, timeout=timeout, ws=cwd)
 
     async def _do_init(self, cwd: Path, **_: Any) -> ToolResult:
         if (cwd / ".git").exists():

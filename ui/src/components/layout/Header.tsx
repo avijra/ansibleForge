@@ -145,6 +145,11 @@ export function Header({ health, llmSettings, onSettingsClick, sessionTitle }: H
               override
             </span>
           )}
+          {health?.execution_mode === "container" && (
+            <span className="rounded bg-sky-950/30 px-1.5 py-0.5 text-[10px] text-sky-400 font-medium">
+              EE
+            </span>
+          )}
           {health && (
             <StatusBadge
               status={health.status}

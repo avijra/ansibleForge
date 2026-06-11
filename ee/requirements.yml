@@ -1,0 +1,73 @@
+---
+collections:
+  # Core
+  - name: ansible.posix
+  - name: ansible.netcommon
+  - name: ansible.windows
+
+  # Cloud — AWS
+  - name: amazon.aws
+  - name: community.aws
+
+  # Cloud — Azure
+  - name: azure.azcollection
+
+  # Cloud — GCP
+  - name: google.cloud
+
+  # Cloud — Other
+  - name: digitalocean.digital_ocean
+  - name: hetzner.hcloud
+
+  # Containers / Kubernetes
+  - name: kubernetes.core
+  - name: redhat.openshift
+  - name: community.docker
+
+  # VMware / Virtualization
+  - name: community.vmware
+  - name: vmware.vmware
+  - name: community.libvirt
+  - name: community.proxmox
+
+  # General purpose
+  - name: community.general
+  - name: community.network
+  - name: community.windows
+
+  # Databases
+  - name: community.postgresql
+  - name: community.mysql
+  - name: community.mongodb
+
+  # Networking vendors
+  - name: cisco.nxos
+  - name: cisco.ios
+  - name: cisco.iosxr
+  - name: cisco.aci
+  - name: arista.eos
+  - name: junipernetworks.junos
+
+  # Security / Infrastructure
+  - name: community.hashi_vault
+  - name: community.grafana
+  - name: community.zabbix
+  - name: community.datadog
+  - name: community.cloudflare
+  - name: fortinet.fortios
+  - name: fortinet.fortimanager
+  - name: paloaltonetworks.panos
+  - name: netbox.netbox
+  - name: openstack.cloud
+
+  # Firewall
+  - name: f5networks.f5_modules
+
+  # ServiceNow / ITSM
+  - name: servicenow.servicenow
+
+  # Infoblox
+  - name: infoblox.nios_modules
+
+  # Splunk
+  - name: splunk.es

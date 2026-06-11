@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -73,7 +72,7 @@ class VaultManager(BaseTool):
         if not action or not workspace_path or not vault_password:
             return ToolResult.fail("action, workspace_path, and vault_password are required")
 
-        pw_file = self._write_password_file(vault_password)
+        pw_file = self._write_password_file(vault_password, workspace_path)
 
         try:
             if action == "encrypt_file":
@@ -81,7 +80,7 @@ class VaultManager(BaseTool):
             if action == "decrypt_file":
                 return await self._decrypt_file(workspace_path, file_path, pw_file)
             if action == "encrypt_string":
-                return await self._encrypt_string(content, variable_name, pw_file)
+                return await self._encrypt_string(content, variable_name, pw_file, workspace_path)
             if action == "create_encrypted":
                 return await self._create_encrypted(workspace_path, file_path, content, pw_file)
             return ToolResult.fail(f"Unknown action: {action}")
@@ -89,8 +88,13 @@ class VaultManager(BaseTool):
             Path(pw_file).unlink(missing_ok=True)
 
     @staticmethod
-    def _write_password_file(password: str) -> str:
-        fd, path = tempfile.mkstemp(prefix="vault_pw_")
+    def _write_password_file(password: str, workspace: str = "") -> str:
+        tmp_dir: str | None = None
+        if workspace:
+            tuyere_tmp = Path(workspace) / ".tuyere" / "tmp"
+            tuyere_tmp.mkdir(parents=True, exist_ok=True)
+            tmp_dir = str(tuyere_tmp)
+        fd, path = tempfile.mkstemp(prefix="vault_pw_", dir=tmp_dir)
         with open(fd, "w") as f:
             f.write(password)
         return path
@@ -113,7 +117,7 @@ class VaultManager(BaseTool):
             return ToolResult.fail(f"File not found: {target}")
 
         rc, stdout, stderr = await self._run_vault(
-            "encrypt", str(target), f"--vault-password-file={pw_file}"
+            "encrypt", str(target), f"--vault-password-file={pw_file}", ws=workspace,
         )
         if rc != 0:
             return ToolResult.fail(f"Vault encrypt failed: {stderr}")
@@ -129,14 +133,14 @@ class VaultManager(BaseTool):
             return ToolResult.fail(f"File not found: {target}")
 
         rc, stdout, stderr = await self._run_vault(
-            "decrypt", str(target), f"--vault-password-file={pw_file}"
+            "decrypt", str(target), f"--vault-password-file={pw_file}", ws=workspace,
         )
         if rc != 0:
             return ToolResult.fail(f"Vault decrypt failed: {stderr}")
         return ToolResult.ok(output=f"Decrypted {target}", path=str(target))
 
     async def _encrypt_string(
-        self, content: str, variable_name: str, pw_file: str
+        self, content: str, variable_name: str, pw_file: str, workspace: str = "",
     ) -> ToolResult:
         if not content:
             return ToolResult.fail("content is required for encrypt_string")
@@ -145,7 +149,7 @@ class VaultManager(BaseTool):
         if variable_name:
             args.extend(["--name", variable_name])
 
-        rc, stdout, stderr = await self._run_vault(*args)
+        rc, stdout, stderr = await self._run_vault(*args, ws=workspace)
         if rc != 0:
             return ToolResult.fail(f"Vault encrypt_string failed: {stderr}")
         return ToolResult.ok(output=stdout)
@@ -163,35 +167,16 @@ class VaultManager(BaseTool):
         target.write_text(content, encoding="utf-8")
 
         rc, stdout, stderr = await self._run_vault(
-            "encrypt", str(target), f"--vault-password-file={pw_file}"
+            "encrypt", str(target), f"--vault-password-file={pw_file}", ws=workspace,
         )
         if rc != 0:
             return ToolResult.fail(f"Vault encrypt failed: {stderr}")
         return ToolResult.ok(output=f"Created encrypted file at {target}", path=str(target))
 
     @staticmethod
-    async def _run_vault(*args: str) -> tuple[int, str, str]:
-        proc = await asyncio.create_subprocess_exec(
-            "ansible-vault",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return (1, "", "ansible-vault timed out after 60s")
-        return (
-            proc.returncode or 0,
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
-        )
+    async def _run_vault(*args: str, ws: str = "") -> tuple[int, str, str]:
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        ws_path = Path(ws) if ws else None
+        return await ee_exec(["ansible-vault", *args], timeout=60, ws=ws_path, cwd=ws_path)
+

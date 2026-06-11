@@ -1,0 +1,71 @@
+# AWS
+boto3
+botocore
+jmespath
+
+# Azure
+azure-identity
+azure-mgmt-resource
+azure-mgmt-compute
+azure-mgmt-network
+azure-mgmt-storage
+azure-mgmt-containerservice
+azure-mgmt-authorization
+azure-mgmt-dns
+azure-mgmt-keyvault
+azure-mgmt-web
+azure-mgmt-monitor
+
+# GCP
+google-auth
+google-cloud-compute
+google-cloud-storage
+google-cloud-dns
+google-api-python-client
+
+# Kubernetes
+kubernetes
+jsonpatch
+openshift-client
+
+# VMware
+pyvmomi
+
+# Docker SDK
+docker
+
+# Networking
+paramiko
+ncclient
+xmltodict
+jxmlease
+pywinrm
+
+# Databases
+psycopg2-binary
+pymysql
+pymongo
+
+# Infrastructure
+hvac
+pynetbox
+openstacksdk
+proxmoxer
+requests
+httpx
+
+# Cloud providers
+pydo
+hcloud
+
+# Monitoring / Observability
+datadog
+zabbix-api
+
+# Other
+meraki
+pysnow
+infoblox-client
+pan-os-python
+packaging
+setuptools

@@ -1,4 +1,4 @@
-"""Runtime LLM settings endpoint — configure model, provider, and API keys from the UI."""
+"""Runtime settings endpoints — configure LLM and Execution Environment from the UI."""
 
 from __future__ import annotations
 
@@ -12,11 +12,17 @@ from ansible_forge.api.middleware.auth import verify_api_key
 from ansible_forge.config import (
     APPROVED_MODEL_IDS,
     APPROVED_MODELS,
+    clear_runtime_ee,
     clear_runtime_llm,
+    effective_ee_container_runtime,
+    effective_ee_enabled,
+    effective_ee_image,
     effective_llm_model,
     effective_llm_provider,
+    get_runtime_ee,
     get_runtime_llm,
     get_settings,
+    update_runtime_ee,
     update_runtime_llm,
 )
 
@@ -133,3 +139,54 @@ async def reset_llm_settings(
     clear_runtime_llm()
     reset_llm_status_cache()
     return await get_llm_settings()
+
+
+class ExecutionSettingsResponse(BaseModel):
+    enabled: bool = Field(description="Whether EE container mode is active")
+    image: str = Field(description="Container image name")
+    container_runtime: str = Field(description="Container runtime (docker or podman)")
+    runtime_available: bool = Field(description="Whether the container runtime binary is found")
+    source: str = Field(description="'runtime' if overridden, 'env' if using .env defaults")
+
+
+class ExecutionSettingsUpdate(BaseModel):
+    enabled: bool | None = Field(default=None, description="Enable/disable EE container mode")
+    image: str | None = Field(default=None, description="Container image name")
+    container_runtime: str | None = Field(default=None, description="Container runtime (docker or podman)")
+
+
+@router.get("/settings/execution", response_model=ExecutionSettingsResponse)
+async def get_execution_settings(
+    _: Any = Depends(verify_api_key),
+) -> ExecutionSettingsResponse:
+    from ansible_forge.tools.ee_runtime import container_runtime_available
+
+    rt = get_runtime_ee()
+    is_overridden = rt.enabled is not None or rt.image is not None or rt.container_runtime is not None
+    available, _ = container_runtime_available()
+
+    return ExecutionSettingsResponse(
+        enabled=effective_ee_enabled(),
+        image=effective_ee_image(),
+        container_runtime=effective_ee_container_runtime(),
+        runtime_available=available,
+        source="runtime" if is_overridden else "env",
+    )
+
+
+@router.put("/settings/execution", response_model=ExecutionSettingsResponse)
+async def update_execution_settings(
+    body: ExecutionSettingsUpdate,
+    _: Any = Depends(verify_api_key),
+) -> ExecutionSettingsResponse:
+    patch = body.model_dump(exclude_none=True)
+    update_runtime_ee(patch)
+    return await get_execution_settings()
+
+
+@router.delete("/settings/execution", response_model=ExecutionSettingsResponse)
+async def reset_execution_settings(
+    _: Any = Depends(verify_api_key),
+) -> ExecutionSettingsResponse:
+    clear_runtime_ee()
+    return await get_execution_settings()

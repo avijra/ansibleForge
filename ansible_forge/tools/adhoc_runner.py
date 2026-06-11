@@ -440,6 +440,10 @@ class AdhocRunner(BaseTool):
             if verbosity:
                 runner_kwargs["verbosity"] = verbosity
 
+            from ansible_forge.tools.ee_runtime import apply_ee_kwargs
+
+            apply_ee_kwargs(runner_kwargs, ws)
+
             effective_timeout = min(
                 timeout if timeout and timeout > 0 else _DEFAULT_ADHOC_TIMEOUT,
                 _MAX_ADHOC_TIMEOUT,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 from typing import Any
@@ -132,30 +131,15 @@ class ProjectImporter(BaseTool):
             cmd.extend(["--branch", branch])
         cmd.extend([url, str(clone_dir)])
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        rc, _, stderr_str = await ee_exec(cmd, cwd=ws, timeout=120, ws=ws)
+
+        if "timed out" in stderr_str:
             return ToolResult.fail("Git clone timed out after 2 minutes")
 
-        if proc.returncode != 0:
-            return ToolResult.fail(f"Git clone failed: {stderr_b.decode(errors='replace').strip()}")
+        if rc != 0:
+            return ToolResult.fail(f"Git clone failed: {stderr_str.strip()}")
 
         return ToolResult.ok(output="Repository cloned")
 

@@ -179,6 +179,14 @@ class TerraformExecutor(BaseTool):
         timeout: int = 600,
         live_queue: asyncio.Queue | None = None,
     ) -> tuple[int, str, str]:
+        from ansible_forge.tools.ee_runtime import ee_exec, is_ee_enabled
+
+        if is_ee_enabled():
+            ee_binary = "tofu" if "tofu" in tf_binary else "terraform"
+            return await ee_exec(
+                [ee_binary, *args], cwd=tf_dir, env=env, timeout=timeout, ws=tf_dir,
+            )
+
         cmd = [tf_binary] + args
         proc = None
         log_watcher: asyncio.Task[None] | None = None

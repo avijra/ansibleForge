@@ -778,6 +778,10 @@ class Executor(BaseTool):
             _MAX_PLAYBOOK_TIMEOUT,
         )
 
+        from ansible_forge.tools.ee_runtime import apply_ee_kwargs
+
+        apply_ee_kwargs(runner_kwargs, ws)
+
         extra_log_dirs = _extract_extra_log_dirs(ws, merged_vars, playbook)
         log_snapshot = _snapshot_log_files(ws, extra_dirs=extra_log_dirs)
 

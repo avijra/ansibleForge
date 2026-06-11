@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -297,12 +296,12 @@ class GalaxyManager(BaseTool):
 
         rc, stdout, stderr = await self._run_galaxy(
             "collection", "install", "-r", str(req_path), "--force",
-            timeout=600,
+            timeout=600, workspace=workspace_path,
         )
         role_msg = ""
         rc2, stdout2, stderr2 = await self._run_galaxy(
             "role", "install", "-r", str(req_path), "--force",
-            timeout=600,
+            timeout=600, workspace=workspace_path,
         )
         if rc2 == 0 and stdout2.strip():
             role_msg = f" Roles: {stdout2.strip()[-500:]}"
@@ -402,41 +401,27 @@ class GalaxyManager(BaseTool):
         return str(path)
 
     @staticmethod
-    async def _run_galaxy(*args: str, timeout: int = 300) -> tuple[int, str, str]:
+    async def _run_galaxy(
+        *args: str, timeout: int = 300, workspace: str = "",
+    ) -> tuple[int, str, str]:
         import os
 
-        env = os.environ.copy()
-        ssl_cert = env.get("SSL_CERT_FILE", "")
-        if ssl_cert:
-            env.setdefault("REQUESTS_CA_BUNDLE", ssl_cert)
+        from ansible_forge.tools.ee_runtime import ee_exec
 
-        proc = await asyncio.create_subprocess_exec(
-            "ansible-galaxy",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        env: dict[str, str] = {}
+        ssl_cert = os.environ.get("SSL_CERT_FILE", "")
+        if ssl_cert:
+            env["SSL_CERT_FILE"] = ssl_cert
+            env["REQUESTS_CA_BUNDLE"] = os.environ.get("REQUESTS_CA_BUNDLE", ssl_cert)
+
+        from pathlib import Path
+
+        ws_path = Path(workspace) if workspace else None
+        return await ee_exec(
+            ["ansible-galaxy", *args],
+            env=env if env else None,
+            timeout=timeout,
+            ws=ws_path,
+            cwd=ws_path,
         )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            raise
-        except TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                logger.debug("galaxy_timeout_kill_failed", exc_info=True)
-            return (1, "", f"ansible-galaxy timed out after {timeout}s")
-        return (
-            proc.returncode or 0,
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
-        )
+

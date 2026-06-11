@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AlertTriangle,
+  Box,
   Check,
   ChevronDown,
   Cpu,
@@ -18,6 +19,7 @@ import type {
   LLMSettings,
   LLMSettingsUpdate,
 } from "@/api/types";
+import { useExecutionSettings } from "@/hooks/useExecutionSettings";
 import { cn } from "@/lib/utils";
 
 interface SettingsModalProps {
@@ -434,6 +436,10 @@ export function SettingsModal({
                   label="Tools"
                   value={`${health.tools_available.length} available`}
                 />
+                <Row
+                  label="Execution"
+                  value={health.execution_mode === "container" ? "Container (EE)" : "Host"}
+                />
               </>
             ) : (
               <p className="text-zinc-500">
@@ -441,6 +447,10 @@ export function SettingsModal({
               </p>
             )}
           </div>
+
+          {/* Execution Environment */}
+          <hr className="border-zinc-800" />
+          <ExecutionSection />
         </div>
 
         {/* Footer */}
@@ -540,6 +550,106 @@ function Field({
         <p className="mt-1 text-[10px] leading-relaxed text-zinc-600">
           {hint}
         </p>
+      )}
+    </div>
+  );
+}
+
+function ExecutionSection() {
+  const { settings, loading, update } = useExecutionSettings();
+  const [image, setImage] = useState("");
+  const [runtime, setRuntime] = useState("docker");
+
+  useEffect(() => {
+    if (!settings) return;
+    setImage(settings.image);
+    setRuntime(settings.container_runtime);
+  }, [settings]);
+
+  const handleToggle = async () => {
+    if (!settings) return;
+    await update({ enabled: !settings.enabled });
+  };
+
+  const handleSaveEE = async () => {
+    await update({ image: image.trim(), container_runtime: runtime });
+  };
+
+  if (!settings) return null;
+
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Box className="h-3.5 w-3.5 text-zinc-500" />
+          <span className="font-medium text-zinc-300">Execution Environment</span>
+        </div>
+        <button
+          onClick={handleToggle}
+          disabled={loading}
+          className={cn(
+            "relative h-5 w-9 rounded-full transition-colors",
+            settings.enabled ? "bg-emerald-600" : "bg-zinc-700"
+          )}
+          role="switch"
+          aria-checked={settings.enabled}
+          aria-label="Toggle container execution"
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+              settings.enabled && "translate-x-4"
+            )}
+          />
+        </button>
+      </div>
+
+      <p className="text-[10px] text-zinc-500 leading-relaxed">
+        When enabled, all Ansible, Terraform, and Git commands run inside an isolated container
+        instead of on the host machine.
+      </p>
+
+      {settings.enabled && (
+        <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
+          <div>
+            <label className="mb-1 block text-[11px] text-zinc-400">Container Image</label>
+            <input
+              type="text"
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] text-zinc-400">Container Runtime</label>
+            <select
+              value={runtime}
+              onChange={(e) => setRuntime(e.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-500 transition-colors"
+            >
+              <option value="docker">Docker</option>
+              <option value="podman">Podman</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-1.5 text-[10px]">
+            {settings.runtime_available ? (
+              <span className="flex items-center gap-1 text-emerald-400">
+                <Check className="h-3 w-3" /> {runtime} available
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-red-400">
+                <AlertCircle className="h-3 w-3" /> {runtime} not found
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleSaveEE}
+            disabled={loading}
+            className="w-full rounded-md bg-zinc-700 px-3 py-1.5 text-[11px] font-medium text-zinc-200 hover:bg-zinc-600 transition-colors disabled:opacity-50"
+          >
+            {loading ? "Saving..." : "Save Execution Settings"}
+          </button>
+        </div>
       )}
     </div>
   );

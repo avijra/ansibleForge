@@ -62,17 +62,25 @@ class SelfCheckReport:
 
 async def run_self_check() -> SelfCheckReport:
     """Execute all validation checks and return a report."""
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
     report = SelfCheckReport()
 
     report.checks.append(_check_ssl_cert_file())
     report.checks.append(_check_ssl_context())
-    report.checks.append(await _check_companion_binaries())
-    report.checks.append(await _check_galaxy_connectivity())
+
+    if is_ee_enabled():
+        report.checks.append(await _check_container_runtime())
+        report.checks.append(await _check_ee_image())
+    else:
+        report.checks.append(await _check_companion_binaries())
+        report.checks.append(await _check_galaxy_connectivity())
+        report.checks.append(_check_managed_site_packages())
+        report.checks.append(_check_package_installer())
+        report.checks.append(await _check_ansible_python_interpreter())
+
     report.checks.append(_check_workspace_writable())
     report.checks.append(_check_database_accessible())
-    report.checks.append(_check_managed_site_packages())
-    report.checks.append(_check_package_installer())
-    report.checks.append(await _check_ansible_python_interpreter())
 
     if report.all_passed:
         _mark_validated()
@@ -411,3 +419,39 @@ async def _check_ansible_python_interpreter() -> CheckResult:
             passed=False,
             message=f"Standalone Python error: {e}",
         )
+
+
+async def _check_container_runtime() -> CheckResult:
+    from ansible_forge.tools.ee_runtime import container_runtime_available, get_container_runtime
+
+    available, detail = container_runtime_available()
+    if available:
+        return CheckResult(
+            name="container_runtime",
+            passed=True,
+            message=f"{get_container_runtime()} found at {detail}",
+        )
+    return CheckResult(
+        name="container_runtime",
+        passed=False,
+        message=f"Container runtime not available: {detail}",
+    )
+
+
+async def _check_ee_image() -> CheckResult:
+    from ansible_forge.tools.ee_runtime import ee_image_available, get_ee_image
+
+    available, detail = await ee_image_available()
+    if available:
+        return CheckResult(
+            name="ee_image",
+            passed=True,
+            message=f"EE image available: {detail}",
+            critical=False,
+        )
+    return CheckResult(
+        name="ee_image",
+        passed=False,
+        message=f"EE image not found: {detail}. Run 'docker pull {get_ee_image()}' to fetch it.",
+        critical=False,
+    )

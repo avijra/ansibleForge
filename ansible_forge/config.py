@@ -112,6 +112,11 @@ class Settings(BaseSettings):
             return Path(v).expanduser()
         return v
 
+    # ── Execution Environment ─────────────────────────────────────
+    ee_enabled: bool = False
+    ee_image: str = "avijra28/tuyere-ee:latest"
+    ee_container_runtime: str = "docker"
+
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None
     jwt_secret: str | None = None
@@ -140,11 +145,21 @@ class RuntimeLLMConfig(BaseModel):
     max_tokens: int | None = None
 
 
+class RuntimeEEConfig(BaseModel):
+    """Mutable EE configuration that can be changed at runtime via the API."""
+
+    enabled: bool | None = None
+    image: str | None = None
+    container_runtime: str | None = None
+
+
 _settings: Settings | None = None
 _runtime_llm = RuntimeLLMConfig()
+_runtime_ee = RuntimeEEConfig()
 _lock = threading.Lock()
 
 _RUNTIME_LLM_PATH = Path.home() / ".ansibleforge" / "llm_settings.json"
+_RUNTIME_EE_PATH = Path.home() / ".ansibleforge" / "ee_settings.json"
 
 
 def _load_persisted_llm() -> RuntimeLLMConfig:
@@ -207,6 +222,79 @@ def _init_runtime_llm() -> None:
 
 
 _init_runtime_llm()
+
+
+def _load_persisted_ee() -> RuntimeEEConfig:
+    try:
+        if _RUNTIME_EE_PATH.exists():
+            import json
+            data = json.loads(_RUNTIME_EE_PATH.read_text(encoding="utf-8"))
+            return RuntimeEEConfig(**data)
+    except Exception:
+        pass
+    return RuntimeEEConfig()
+
+
+def _persist_ee(config: RuntimeEEConfig) -> None:
+    try:
+        import json
+        _RUNTIME_EE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RUNTIME_EE_PATH.write_text(
+            json.dumps(config.model_dump(), indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def get_runtime_ee() -> RuntimeEEConfig:
+    return _runtime_ee
+
+
+def update_runtime_ee(patch: dict[str, Any]) -> RuntimeEEConfig:
+    global _runtime_ee
+    with _lock:
+        current = _runtime_ee.model_dump()
+        current.update({k: v for k, v in patch.items() if v is not None})
+        _runtime_ee = RuntimeEEConfig(**current)
+        _persist_ee(_runtime_ee)
+    return _runtime_ee
+
+
+def clear_runtime_ee() -> None:
+    global _runtime_ee
+    with _lock:
+        _runtime_ee = RuntimeEEConfig()
+        _persist_ee(_runtime_ee)
+
+
+def _init_runtime_ee() -> None:
+    global _runtime_ee
+    _runtime_ee = _load_persisted_ee()
+
+
+_init_runtime_ee()
+
+
+def effective_ee_enabled() -> bool:
+    rt = get_runtime_ee()
+    if rt.enabled is not None:
+        return rt.enabled
+    return get_settings().ee_enabled
+
+
+def effective_ee_image() -> str:
+    rt = get_runtime_ee()
+    if rt.image:
+        return rt.image
+    return get_settings().ee_image
+
+
+def effective_ee_container_runtime() -> str:
+    rt = get_runtime_ee()
+    if rt.container_runtime:
+        return rt.container_runtime
+    return get_settings().ee_container_runtime
 
 
 def effective_llm_provider() -> str:

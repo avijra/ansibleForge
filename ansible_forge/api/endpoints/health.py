@@ -20,6 +20,11 @@ from ansible_forge.config import (
 )
 from ansible_forge.logging import get_logger
 from ansible_forge.tools.binary_resolver import resolve_terraform
+from ansible_forge.tools.ee_runtime import (
+    container_runtime_available,
+    get_ee_image,
+    is_ee_enabled,
+)
 from ansible_forge.tools.python_resolver import resolve_standalone_python
 from ansible_forge.tools.registry import create_default_registry
 
@@ -91,18 +96,23 @@ class ReadinessResponse(BaseModel):
 def _check_external_tools() -> dict[str, str]:
     tools: dict[str, str] = {}
 
-    standalone_py = resolve_standalone_python()
-    tools["ansible_python"] = standalone_py if standalone_py else "not installed (required for module execution)"
+    if is_ee_enabled():
+        available, detail = container_runtime_available()
+        tools["container_runtime"] = detail if available else f"NOT FOUND: {detail}"
+        tools["ee_image"] = get_ee_image()
+    else:
+        standalone_py = resolve_standalone_python()
+        tools["ansible_python"] = standalone_py if standalone_py else "not installed (required for module execution)"
+
+        for name in ("ansible-playbook", "ansible-galaxy", "ansible-inventory"):
+            path = shutil.which(name)
+            tools[name] = path if path else "not found"
 
     tf = resolve_terraform()
     tools["terraform"] = tf if tf else "not installed (auto-downloads on first use)"
 
     git = shutil.which("git")
     tools["git"] = git if git else "not installed"
-
-    for name in ("ansible-playbook", "ansible-galaxy", "ansible-inventory"):
-        path = shutil.which(name)
-        tools[name] = path if path else "not found"
 
     return tools
 
@@ -121,6 +131,7 @@ async def health_check() -> HealthResponse:
         llm_status=llm_status,
         llm_status_detail=llm_detail,
         external_tools=_check_external_tools(),
+        execution_mode="container" if is_ee_enabled() else "host",
     )
 
 
