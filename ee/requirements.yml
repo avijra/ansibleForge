@@ -16,12 +16,12 @@ collections:
   - name: google.cloud
 
   # Cloud — Other
-  - name: digitalocean.digital_ocean
+  - name: digitalocean.cloud
   - name: hetzner.hcloud
 
   # Containers / Kubernetes
   - name: kubernetes.core
-  - name: redhat.openshift
+  - name: community.okd
   - name: community.docker
 
   # VMware / Virtualization
@@ -52,8 +52,8 @@ collections:
   - name: community.hashi_vault
   - name: community.grafana
   - name: community.zabbix
-  - name: community.datadog
-  - name: community.cloudflare
+  - name: datadog.dd
+  - name: community.dns
   - name: fortinet.fortios
   - name: fortinet.fortimanager
   - name: paloaltonetworks.panos
@@ -64,7 +64,7 @@ collections:
   - name: f5networks.f5_modules
 
   # ServiceNow / ITSM
-  - name: servicenow.servicenow
+  - name: servicenow.itsm
 
   # Infoblox
   - name: infoblox.nios_modules
