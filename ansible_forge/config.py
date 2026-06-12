@@ -70,6 +70,29 @@ def _parse_model_list(raw: str) -> list[str]:
     return [m.strip() for m in stripped.split(",") if m.strip()]
 
 
+def _normalize_container_runtime_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    leaf = Path(text).name.lower()
+    if leaf.endswith(".exe"):
+        leaf = leaf[:-4]
+    if leaf in ("docker", "podman"):
+        return leaf
+    return None
+
+
+def _normalize_host_mode_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("local", "remote"):
+        return text
+    return None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ANSIBLEFORGE_",
@@ -120,6 +143,18 @@ class Settings(BaseSettings):
     ee_remote_host: str | None = None
     ee_remote_workspace_root: str = "/var/lib/tuyere/workspaces"
 
+    @field_validator("ee_container_runtime", mode="before")
+    @classmethod
+    def _normalize_ee_container_runtime(cls, v: Any) -> str:
+        normalized = _normalize_container_runtime_value(v)
+        return normalized or "docker"
+
+    @field_validator("ee_host_mode", mode="before")
+    @classmethod
+    def _normalize_ee_host_mode(cls, v: Any) -> str:
+        normalized = _normalize_host_mode_value(v)
+        return normalized or "local"
+
     # ── API ────────────────────────────────────────────────────────
     api_key: str | None = None
     jwt_secret: str | None = None
@@ -157,6 +192,16 @@ class RuntimeEEConfig(BaseModel):
     host_mode: str | None = None
     remote_host: str | None = None
     remote_workspace_root: str | None = None
+
+    @field_validator("container_runtime", mode="before")
+    @classmethod
+    def _normalize_container_runtime(cls, v: Any) -> str | None:
+        return _normalize_container_runtime_value(v)
+
+    @field_validator("host_mode", mode="before")
+    @classmethod
+    def _normalize_host_mode(cls, v: Any) -> str | None:
+        return _normalize_host_mode_value(v)
 
 
 _settings: Settings | None = None

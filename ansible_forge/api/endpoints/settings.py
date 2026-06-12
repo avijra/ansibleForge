@@ -163,8 +163,14 @@ class ExecutionSettingsResponse(BaseModel):
 class ExecutionSettingsUpdate(BaseModel):
     enabled: bool | None = Field(default=None, description="Enable/disable EE container mode")
     image: str | None = Field(default=None, description="Container image name")
-    container_runtime: str | None = Field(default=None, description="Container runtime (docker or podman)")
-    host_mode: str | None = Field(default=None, description="Execution host mode: local or remote")
+    container_runtime: Literal["docker", "podman"] | None = Field(
+        default=None,
+        description="Container runtime (docker or podman)",
+    )
+    host_mode: Literal["local", "remote"] | None = Field(
+        default=None,
+        description="Execution host mode: local or remote",
+    )
     remote_host: str | None = Field(default=None, description="Remote SSH host (user@hostname)")
     remote_workspace_root: str | None = Field(
         default=None, description="Remote workspace sync root directory"

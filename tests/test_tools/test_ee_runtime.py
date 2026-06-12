@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from ansible_forge.config import RuntimeEEConfig, Settings
 from ansible_forge.tools import ee_runtime, workspace_sync
 
 
@@ -156,11 +157,7 @@ class TestEERuntimeHelpers:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
-        monkeypatch.setattr(
-            ee_runtime,
-            "resolve_container_runtime_binary",
-            lambda _rt=None: "/usr/local/bin/docker",
-        )
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
         monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
         monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
         ws = tmp_path / "project"
@@ -168,7 +165,25 @@ class TestEERuntimeHelpers:
         kwargs = ee_runtime.apply_ee_kwargs({"envvars": {}}, ws)
         assert kwargs["host_cwd"] == str(ws.resolve())
         assert kwargs["container_workdir"] == str(ws.resolve())
-        assert kwargs["process_isolation_executable"] == "/usr/local/bin/docker"
+        assert kwargs["process_isolation_executable"] == "docker"
+
+    def test_apply_ee_kwargs_normalizes_runtime_path_for_runner(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "get_container_runtime",
+            lambda: "/Applications/Docker.app/Contents/Resources/bin/docker",
+        )
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs({"envvars": {}}, ws)
+        assert kwargs["process_isolation_executable"] == "docker"
 
     def test_stage_runner_inventory_symlinks_into_run_dir(
         self,
@@ -191,11 +206,7 @@ class TestEERuntimeHelpers:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
-        monkeypatch.setattr(
-            ee_runtime,
-            "resolve_container_runtime_binary",
-            lambda _rt=None: "/usr/local/bin/docker",
-        )
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
         monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
         monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
         ws = tmp_path / "project"
@@ -213,6 +224,50 @@ class TestEERuntimeHelpers:
             "/var/lib/tuyere/workspaces/project-deadbeef/.tuyere/runs/run1"
         )
         assert kwargs["container_workdir"] == remote_ws
+
+    def test_normalize_container_runtime_path_and_case(self) -> None:
+        assert ee_runtime.normalize_container_runtime(
+            "/Applications/Docker.app/Contents/Resources/bin/docker"
+        ) == "docker"
+        assert ee_runtime.normalize_container_runtime("PODMAN") == "podman"
+
+    @pytest.mark.asyncio
+    async def test_remote_connection_uses_normalized_runtime(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"28.0.1", b""
+
+        async def _fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["remote_cmd"] = str(args[6])
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ee_runtime,
+            "effective_ee_remote_host",
+            lambda: "runner@remote.example",
+        )
+        monkeypatch.setattr(
+            ee_runtime,
+            "get_container_runtime",
+            lambda: "/opt/homebrew/bin/docker",
+        )
+        monkeypatch.setattr(
+            ee_runtime.asyncio,
+            "create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        ok, detail = await ee_runtime.test_remote_connection()
+        assert ok is True
+        assert captured["remote_cmd"].startswith("docker info ")
+        assert "docker 28.0.1" in detail
 
     @pytest.mark.asyncio
     async def test_schedule_pull_sets_ready_when_image_exists(
@@ -238,6 +293,32 @@ class TestEERuntimeHelpers:
         state = ee_runtime.get_pull_state()
         assert state["status"] == "ready"
         assert state["image_ready"] is True
+
+
+class TestEEConfigNormalization:
+    def test_runtime_ee_config_normalizes_path_and_case(self) -> None:
+        cfg = RuntimeEEConfig(
+            container_runtime="/opt/homebrew/bin/docker",
+            host_mode="REMOTE",
+        )
+        assert cfg.container_runtime == "docker"
+        assert cfg.host_mode == "remote"
+
+    def test_runtime_ee_config_ignores_unsupported_values(self) -> None:
+        cfg = RuntimeEEConfig(
+            container_runtime="nerdctl",
+            host_mode="hybrid",
+        )
+        assert cfg.container_runtime is None
+        assert cfg.host_mode is None
+
+    def test_settings_fall_back_to_safe_runtime_defaults(self) -> None:
+        settings = Settings(
+            ee_container_runtime="nerdctl",
+            ee_host_mode="hybrid",
+        )
+        assert settings.ee_container_runtime == "docker"
+        assert settings.ee_host_mode == "local"
 
 
 class TestExecutionSettingsEndpoints:

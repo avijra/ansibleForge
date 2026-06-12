@@ -8,6 +8,7 @@ or ``ee_exec()`` without knowing Docker/Podman specifics.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import shutil
 import sys
@@ -63,6 +64,22 @@ def get_container_runtime() -> str:
     return effective_ee_container_runtime()
 
 
+_SUPPORTED_CONTAINER_ENGINES = frozenset({"docker", "podman"})
+
+
+def normalize_container_runtime(runtime: str | None = None) -> str:
+    """Normalize runtime strings to canonical engine names when possible."""
+    configured = (runtime or get_container_runtime() or "").strip()
+    if not configured:
+        return "docker"
+    leaf = Path(configured).name.lower()
+    if leaf.endswith(".exe"):
+        leaf = leaf[:-4]
+    if leaf in _SUPPORTED_CONTAINER_ENGINES:
+        return leaf
+    return configured
+
+
 def get_pull_state() -> dict[str, str | bool]:
     with _pull_lock:
         return {
@@ -94,14 +111,30 @@ def _container_runtime_search_paths() -> list[str]:
 
 
 def resolve_container_runtime_binary(runtime: str | None = None) -> str | None:
-    name = runtime or get_container_runtime()
-    found = shutil.which(name)
-    if found:
-        return found
-    for directory in _container_runtime_search_paths():
-        candidate = Path(directory) / name
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    configured = (runtime or get_container_runtime() or "").strip()
+    if not configured:
+        configured = "docker"
+
+    candidates: list[str] = [configured]
+    normalized = normalize_container_runtime(configured)
+    if normalized not in candidates:
+        candidates.append(normalized)
+
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            return found
+
+        direct = Path(name).expanduser()
+        if direct.is_file() and os.access(direct, os.X_OK):
+            return str(direct)
+
+        if "/" in name or "\\" in name:
+            continue
+        for directory in _container_runtime_search_paths():
+            candidate = Path(directory) / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
     return None
 
 
@@ -443,11 +476,9 @@ def apply_ee_kwargs(
         return runner_kwargs
 
     ctx = build_ee_context(ws, remote_ws)
-    runtime_bin = resolve_container_runtime_binary()
+    runtime_name = normalize_container_runtime()
     runner_kwargs["process_isolation"] = True
-    runner_kwargs["process_isolation_executable"] = (
-        runtime_bin or get_container_runtime()
-    )
+    runner_kwargs["process_isolation_executable"] = runtime_name
     runner_kwargs["container_image"] = get_ee_image()
     runner_kwargs["host_cwd"] = str(ctx.workspace)
     runner_kwargs["container_workdir"] = str(ctx.effective_root)
@@ -472,6 +503,70 @@ def apply_ee_kwargs(
     return runner_kwargs
 
 
+async def _verify_ee_runner_execution(verify_ws: Path) -> tuple[bool, str]:
+    import ansible_runner
+
+    from ansible_forge.tools._runner_diagnostics import (
+        diagnose_runner_failure,
+        read_runner_stdout,
+    )
+
+    inventory_dir = verify_ws / "inventory"
+    inventory_dir.mkdir(parents=True, exist_ok=True)
+    inventory_path = inventory_dir / "hosts.yml"
+    inventory_path.write_text(
+        "all:\n  hosts:\n    localhost:\n      ansible_connection: local\n",
+        encoding="utf-8",
+    )
+
+    run_dir = verify_ws / ".tuyere" / "runs" / "verify-runner"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "env").mkdir(exist_ok=True)
+
+    runner_kwargs: dict[str, Any] = {
+        "private_data_dir": str(run_dir),
+        "project_dir": str(verify_ws),
+        "module": "ansible.builtin.ping",
+        "host_pattern": "localhost",
+        "inventory": str(inventory_path),
+        "envvars": {},
+    }
+    await configure_ee_runner(
+        verify_ws,
+        run_dir,
+        runner_kwargs,
+        inventory_path=inventory_path,
+    )
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                functools.partial(ansible_runner.run, **runner_kwargs),
+            ),
+            timeout=120,
+        )
+    except TimeoutError:
+        return False, "EE ansible-runner check timed out after 120s"
+
+    raw_stdout = read_runner_stdout(result)
+    status = str(getattr(result, "status", "") or "")
+    rc = getattr(result, "rc", None)
+    if status == "successful" and rc in (None, 0):
+        return True, "ansible-runner check OK"
+
+    lowered = raw_stdout.lower()
+    if "--die-with-parent" in lowered and "unknown flag" in lowered:
+        return (
+            False,
+            "EE ansible-runner path is misconfigured (docker invoked with bwrap flags)",
+        )
+
+    diag = diagnose_runner_failure([], raw_stdout=raw_stdout, rc=rc)
+    return False, f"EE ansible-runner check failed: {diag}"
+
+
 async def verify_ee_ansible() -> tuple[bool, str]:
     if not is_ee_enabled():
         return True, "Execution environment disabled"
@@ -488,55 +583,61 @@ async def verify_ee_ansible() -> tuple[bool, str]:
     import tempfile
 
     verify_ws = Path(tempfile.mkdtemp(prefix="tuyere-ee-verify-"))
+    try:
+        rc, stdout, stderr = await ee_exec(["ansible", "--version"], ws=verify_ws, timeout=60)
+        combined = (stderr or stdout or "").strip()
+        if rc != 0:
+            detail = combined[:400] or f"ansible --version exited with code {rc}"
+            if "locale" in detail.lower():
+                return False, f"EE locale misconfigured: {detail}"
+            if "permission denied" in detail.lower():
+                return False, f"EE container HOME/tmp not writable: {detail}"
+            return False, f"EE ansible check failed: {detail}"
 
-    rc, stdout, stderr = await ee_exec(["ansible", "--version"], ws=verify_ws, timeout=60)
-    combined = (stderr or stdout or "").strip()
-    if rc != 0:
-        detail = combined[:400] or f"ansible --version exited with code {rc}"
-        if "locale" in detail.lower():
-            return False, f"EE locale misconfigured: {detail}"
-        if "permission denied" in detail.lower():
-            return False, f"EE container HOME/tmp not writable: {detail}"
-        return False, f"EE ansible check failed: {detail}"
+        rc, stdout, stderr = await ee_exec(
+            ["ansible", "localhost", "-m", "ping", "-c", "local", "-i", "localhost,"],
+            ws=verify_ws,
+            timeout=90,
+        )
+        ping_output = (stderr or stdout or "").strip()
+        if rc != 0:
+            detail = ping_output[:400] or f"ansible ping exited with code {rc}"
+            if "permission denied" in detail.lower() or "/.ansible" in detail:
+                return False, f"EE container HOME/tmp not writable: {detail}"
+            return False, f"EE ansible ping check failed: {detail}"
 
-    rc, stdout, stderr = await ee_exec(
-        ["ansible", "localhost", "-m", "ping", "-c", "local", "-i", "localhost,"],
-        ws=verify_ws,
-        timeout=90,
-    )
-    ping_output = (stderr or stdout or "").strip()
-    if rc != 0:
-        detail = ping_output[:400] or f"ansible ping exited with code {rc}"
-        if "permission denied" in detail.lower() or "/.ansible" in detail:
-            return False, f"EE container HOME/tmp not writable: {detail}"
-        return False, f"EE ansible ping check failed: {detail}"
+        playbooks = verify_ws / "playbooks"
+        playbooks.mkdir(exist_ok=True)
+        (playbooks / "ping.yml").write_text(
+            "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
+            "  tasks:\n    - ansible.builtin.ping:\n",
+            encoding="utf-8",
+        )
+        rc, stdout, stderr = await ee_exec(
+            [
+                "ansible-playbook",
+                "playbooks/ping.yml",
+                "-i",
+                "localhost,",
+            ],
+            ws=verify_ws,
+            timeout=90,
+        )
+        playbook_output = (stderr or stdout or "").strip()
+        if rc != 0:
+            detail = playbook_output[:400] or f"ansible-playbook exited with code {rc}"
+            if "could not be found" in detail.lower():
+                return False, f"EE playbook path contract broken: {detail}"
+            return False, f"EE ansible-playbook check failed: {detail}"
 
-    playbooks = verify_ws / "playbooks"
-    playbooks.mkdir(exist_ok=True)
-    (playbooks / "ping.yml").write_text(
-        "---\n- hosts: localhost\n  connection: local\n  gather_facts: false\n"
-        "  tasks:\n    - ansible.builtin.ping:\n",
-        encoding="utf-8",
-    )
-    rc, stdout, stderr = await ee_exec(
-        [
-            "ansible-playbook",
-            "playbooks/ping.yml",
-            "-i",
-            "localhost,",
-        ],
-        ws=verify_ws,
-        timeout=90,
-    )
-    playbook_output = (stderr or stdout or "").strip()
-    if rc != 0:
-        detail = playbook_output[:400] or f"ansible-playbook exited with code {rc}"
-        if "could not be found" in detail.lower():
-            return False, f"EE playbook path contract broken: {detail}"
-        return False, f"EE ansible-playbook check failed: {detail}"
+        runner_ok, runner_detail = await _verify_ee_runner_execution(verify_ws)
+        if not runner_ok:
+            return False, runner_detail
 
-    version_line = combined.splitlines()[0] if combined else "ansible available"
-    return True, version_line
+        version_line = combined.splitlines()[0] if combined else "ansible available"
+        return True, version_line
+    finally:
+        shutil.rmtree(verify_ws, ignore_errors=True)
 
 
 async def test_remote_connection() -> tuple[bool, str]:
@@ -547,6 +648,7 @@ async def test_remote_connection() -> tuple[bool, str]:
     from ansible_forge.tools.workspace_sync import normalize_ssh_host
 
     host = normalize_ssh_host(remote_host)
+    runtime_name = normalize_container_runtime()
     proc = await asyncio.create_subprocess_exec(
         "ssh",
         "-o",
@@ -554,16 +656,16 @@ async def test_remote_connection() -> tuple[bool, str]:
         "-o",
         "ConnectTimeout=10",
         host,
-        "docker info --format '{{.ServerVersion}}'",
+        f"{runtime_name} info --format '{{.ServerVersion}}'",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=20)
     if proc.returncode != 0:
-        detail = stderr_b.decode(errors="replace").strip() or "SSH or Docker check failed"
+        detail = stderr_b.decode(errors="replace").strip() or "SSH or container runtime check failed"
         return False, detail
     version = stdout_b.decode(errors="replace").strip()
-    return True, f"Connected to {host} (Docker {version or 'available'})"
+    return True, f"Connected to {host} ({runtime_name} {version or 'available'})"
 
 
 async def ee_exec(
@@ -645,7 +747,8 @@ async def ee_exec(
 
     container_cmd: list[str] = [binary, "run", "--rm"]
 
-    if get_container_runtime() == "docker":
+    runtime_name = normalize_container_runtime()
+    if runtime_name == "docker":
         container_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
 
     if mount_ws:
