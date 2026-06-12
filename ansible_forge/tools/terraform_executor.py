@@ -125,6 +125,10 @@ class TerraformExecutor(BaseTool):
         }
 
     async def _find_terraform(self) -> str | None:
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
+
+        if is_ee_enabled():
+            return "tofu"
         try:
             return await resolve_terraform_or_download_async()
         except Exception as exc:

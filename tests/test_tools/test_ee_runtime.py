@@ -231,6 +231,127 @@ class TestEERuntimeHelpers:
         ) == "docker"
         assert ee_runtime.normalize_container_runtime("PODMAN") == "podman"
 
+    def test_sanitize_ee_exec_env_strips_host_runtime_keys(self) -> None:
+        env = {
+            "PATH": "/Users/me/.ansibleforge/bin:/usr/bin",
+            "HOME": "/Users/me",
+            "TMPDIR": "/var/folders/tmp",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "PYTHONHOME": "/opt/python",
+            "AWS_ACCESS_KEY_ID": "AKIA...",
+            "TF_VAR_cluster_name": "demo",
+            "CUSTOM_FLAG": "1",
+        }
+        sanitized = ee_runtime._sanitize_ee_exec_env(env)
+        assert "PATH" not in sanitized
+        assert "HOME" not in sanitized
+        assert "TMPDIR" not in sanitized
+        assert "LANG" not in sanitized
+        assert "LC_ALL" not in sanitized
+        assert "PYTHONHOME" not in sanitized
+        assert sanitized["AWS_ACCESS_KEY_ID"] == "AKIA..."
+        assert sanitized["TF_VAR_cluster_name"] == "demo"
+        assert sanitized["CUSTOM_FLAG"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_ee_exec_remote_defaults_workspace_to_cwd(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
+        monkeypatch.setattr(ee_runtime, "effective_ee_remote_host", lambda: "runner@remote.example")
+        monkeypatch.setattr(ee_runtime, "_runtime_binary", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(ee_runtime, "normalize_container_runtime", lambda _=None: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(
+            ee_runtime,
+            "get_pull_state",
+            lambda: {"status": "ready", "message": "", "image_ready": True},
+        )
+        monkeypatch.setattr(ee_runtime, "build_volume_mounts", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(ee_runtime, "ensure_ee_workspace_dirs", lambda _ws: None)
+        monkeypatch.setattr(ee_runtime, "ee_bootstrap_env", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(ee_runtime, "_merged_subprocess_env", lambda: {})
+
+        sync_mock = AsyncMock(return_value="/var/lib/tuyere/workspaces/ws-abc")
+        monkeypatch.setattr(ee_runtime, "sync_to_remote", sync_mock)
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"", b""
+
+            def kill(self) -> None:
+                return None
+
+            async def wait(self) -> None:
+                return None
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return _FakeProc()
+
+        monkeypatch.setattr(ee_runtime.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        rc, _out, _err = await ee_runtime.ee_exec(["ansible-doc", "copy"])
+
+        assert rc == 0
+        sync_mock.assert_awaited_once_with(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_ee_exec_does_not_passthrough_host_ansible_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        captured: dict[str, list[str]] = {}
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        monkeypatch.setattr(ee_runtime, "_runtime_binary", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(ee_runtime, "normalize_container_runtime", lambda _=None: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(
+            ee_runtime,
+            "get_pull_state",
+            lambda: {"status": "ready", "message": "", "image_ready": True},
+        )
+        monkeypatch.setattr(ee_runtime, "build_volume_mounts", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(ee_runtime, "ensure_ee_workspace_dirs", lambda _ws: None)
+        monkeypatch.setattr(ee_runtime, "ee_bootstrap_env", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(ee_runtime, "_merged_subprocess_env", lambda: {})
+
+        monkeypatch.setenv("ANSIBLE_COLLECTIONS_PATH", "/Users/me/.ansible/collections")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA123")
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"", b""
+
+            def kill(self) -> None:
+                return None
+
+            async def wait(self) -> None:
+                return None
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):  # type: ignore[no-untyped-def]
+            captured["cmd"] = list(args)
+            return _FakeProc()
+
+        monkeypatch.setattr(ee_runtime.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+        rc, _out, _err = await ee_runtime.ee_exec(["ansible", "--version"], ws=tmp_path)
+
+        assert rc == 0
+        cmd = captured["cmd"]
+        assert not any("ANSIBLE_COLLECTIONS_PATH=" in str(part) for part in cmd)
+        assert any("AWS_ACCESS_KEY_ID=AKIA123" in str(part) for part in cmd)
+
     @pytest.mark.asyncio
     async def test_remote_connection_uses_normalized_runtime(
         self,

@@ -84,10 +84,15 @@ class TerraformInventoryBridge(BaseTool):
         if not tf_dir.exists():
             return ToolResult.fail("No terraform/ directory found in workspace")
 
-        try:
-            tf_binary = await resolve_terraform_or_download_async()
-        except Exception as exc:
-            return ToolResult.fail(f"Terraform/OpenTofu not available: {exc}")
+        from ansible_forge.tools.ee_runtime import ee_exec, is_ee_enabled
+
+        if is_ee_enabled():
+            tf_binary = "tofu"
+        else:
+            try:
+                tf_binary = await resolve_terraform_or_download_async()
+            except Exception as exc:
+                return ToolResult.fail(f"Terraform/OpenTofu not available: {exc}")
 
         session_id = kwargs.get("_session_id", "")
         env = os.environ.copy()
@@ -98,11 +103,7 @@ class TerraformInventoryBridge(BaseTool):
                     env[name] = str(value)
         env["TF_IN_AUTOMATION"] = "1"
 
-        from ansible_forge.tools.ee_runtime import ee_exec, is_ee_enabled
-
         ee_binary = tf_binary
-        if is_ee_enabled():
-            ee_binary = "tofu" if "tofu" in tf_binary else "terraform"
 
         ws_path = Path(workspace_path)
         show_rc, show_stdout_str, show_stderr_str = await ee_exec(

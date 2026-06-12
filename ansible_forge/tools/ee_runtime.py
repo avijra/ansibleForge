@@ -164,6 +164,20 @@ def sanitize_runner_envvars(envvars: dict[str, str]) -> dict[str, str]:
 
 
 _EE_STRIPPED_ENV_KEYS = frozenset({"HOME", "TMPDIR", "USER", "LOGNAME"})
+_EE_EXEC_STRIPPED_ENV_KEYS = _EE_STRIPPED_ENV_KEYS | frozenset(
+    {
+        "PATH",
+        "PWD",
+        "SHLVL",
+        "_",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
+        "ANSIBLE_PYTHON_INTERPRETER",
+    }
+)
 
 
 def _effective_ws_path(ws: Path, remote_ws: str | None) -> Path:
@@ -268,6 +282,19 @@ def inject_ee_container_env(
 
 def _ee_locale_env() -> dict[str, str]:
     return runner_locale_env()
+
+
+def _sanitize_ee_exec_env(env: dict[str, str] | None) -> dict[str, str]:
+    if not env:
+        return {}
+    sanitized: dict[str, str] = {}
+    for key, value in env.items():
+        if key in _EE_EXEC_STRIPPED_ENV_KEYS:
+            continue
+        if key.startswith("LC_") or key in ("LANG", "LANGUAGE"):
+            continue
+        sanitized[key] = value
+    return sanitized
 
 
 def _merged_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -732,7 +759,7 @@ async def ee_exec(
 
     if is_remote_mode():
         if not mount_ws:
-            return 1, "", "Remote EE execution requires a workspace path"
+            mount_ws = Path.cwd()
         if not effective_ee_remote_host():
             return 1, "", "Remote host is not configured"
         try:
@@ -763,7 +790,7 @@ async def ee_exec(
         container_env.update(ee_bootstrap_env(Path(mount_ws), remote_ws))
     container_env.update(_ee_locale_env())
     if env:
-        container_env.update(env)
+        container_env.update(_sanitize_ee_exec_env(env))
 
     for key, val in container_env.items():
         container_cmd.extend(["-e", f"{key}={val}"])
@@ -782,7 +809,6 @@ async def ee_exec(
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CLOUD_PROJECT",
         "TF_VAR_",
-        "ANSIBLE_",
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
         "HCLOUD_TOKEN",
@@ -790,7 +816,7 @@ async def ee_exec(
         "DO_API_TOKEN",
     )
     for key, val in os.environ.items():
-        if key in container_env or key in _EE_STRIPPED_ENV_KEYS:
+        if key in container_env or key in _EE_EXEC_STRIPPED_ENV_KEYS:
             continue
         if any(key.startswith(p) or key == p for p in _passthrough_vars):
             container_cmd.extend(["-e", f"{key}={val}"])
@@ -804,7 +830,7 @@ async def ee_exec(
         *container_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=_merged_subprocess_env(env),
+        env=_merged_subprocess_env(),
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(

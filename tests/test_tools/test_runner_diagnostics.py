@@ -49,3 +49,17 @@ class TestRunnerDiagnostics:
     def test_read_runner_stdout_from_file_like(self) -> None:
         runner = type("Runner", (), {"stdout": _FakeStdout("hello\n")})()
         assert read_runner_stdout(runner) == "hello\n"
+
+    def test_diagnose_non_zero_with_lfstack_signature(self) -> None:
+        events = [
+            {
+                "event": "runner_on_failed",
+                "task": "Verify openshift-install binary",
+                "host": "localhost",
+                "result": {"msg": "non-zero return code"},
+            }
+        ]
+        raw = "runtime: lfstack.push invalid packing\nfatal error: lfstack.push"
+        diag = diagnose_runner_failure(events, raw_stdout=raw, rc=2)
+        assert "Likely architecture mismatch" in diag
+        assert "arm64 EE container" in diag
