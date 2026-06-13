@@ -315,142 +315,10 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # STAGE 2: build-windows (tag only)
-  # ---------------------------------------------------------------------------
-  build-windows:
-    needs: [test, preflight]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install .
-
-      - name: Build UI
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
-
-      - name: Set Windows UTF-8 locale
-        run: |
-          [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          chcp 65001
-
-      - name: Bundle backend with PyInstaller
-        env:
-          PYTHONIOENCODING: utf-8
-          PYTHONUTF8: "1"
-          PYTHONLEGACYWINDOWSSTDIO: "0"
-        shell: cmd
-        run: |
-          chcp 65001
-          set PYTHONUTF8=1
-          set PYTHONIOENCODING=utf-8
-          pyinstaller --clean --noconfirm ansibleforge.spec
-
-      - name: Smoke test packaged backend (Windows)
-        shell: bash
-        run: |
-          BACKEND="./dist/ansibleforge-backend/ansibleforge-backend.exe"
-          if [ ! -f "$BACKEND" ]; then
-            echo "FAIL: Backend binary not found"; exit 1
-          fi
-          echo "=== Validating binary exists ==="
-          ls -lh "$BACKEND"
-          echo "=== Checking CA bundle ==="
-          CA="./dist/ansibleforge-backend/_internal/certifi/cacert.pem"
-          if [ -f "$CA" ]; then
-            echo "  OK: cacert.pem present ($(wc -c < "$CA" | tr -d ' ') bytes)"
-          else
-            echo "  WARN: cacert.pem not at expected path"
-          fi
-          echo "=== Starting backend ==="
-          ANSIBLEFORGE_PORT=18420 ANSIBLEFORGE_HOST=127.0.0.1 "$BACKEND" &
-          PID=$!
-          for i in $(seq 1 60); do
-            if curl -sf "http://127.0.0.1:18420/api/v1/health" > /dev/null 2>&1; then
-              echo "=== Backend healthy after ${i}s ==="
-              break
-            fi
-            if ! kill -0 $PID 2>/dev/null; then
-              echo "FAIL: Backend process died during startup"
-              exit 1
-            fi
-            if [ "$i" -eq 60 ]; then
-              echo "FAIL: Backend never became healthy within 60s"
-              kill $PID 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
-          HEALTH=$(curl -sf "http://127.0.0.1:18420/api/v1/health")
-          echo "Health: $HEALTH"
-          kill $PID 2>/dev/null || true
-          echo "=== Windows smoke test passed ==="
-        timeout-minutes: 3
-
-      - name: Copy backend to Tauri resources
-        shell: bash
-        run: |
-          mkdir -p src-tauri/resources/backend
-          cp -r dist/ansibleforge-backend/* src-tauri/resources/backend/
-          ls -lh src-tauri/resources/backend/
-
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Build Tauri app
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: cargo tauri build --config '{"build":{"beforeBuildCommand":"","beforeDevCommand":""}}'
-
-      - name: Collect artifacts
-        shell: bash
-        run: |
-          OUTDIR="${{ runner.temp }}/release-windows"
-          mkdir -p "$OUTDIR"
-          find src-tauri/target -name '*.msi' -exec cp {} "$OUTDIR" \;
-          find src-tauri/target -name '*.msi.zip' -exec cp {} "$OUTDIR" \;
-          find src-tauri/target -name '*.msi.zip.sig' -exec cp {} "$OUTDIR" \;
-          find src-tauri/target -name '*.exe' -path '*/nsis/*' -exec cp {} "$OUTDIR" \;
-          find src-tauri/target -name '*-setup.nsis.zip' -exec cp {} "$OUTDIR" \;
-          find src-tauri/target -name '*-setup.nsis.zip.sig' -exec cp {} "$OUTDIR" \;
-          ls -lh "$OUTDIR"
-
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: ${{ runner.temp }}/release-windows/
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
   # STAGE 3: publish GitHub Release (tag only)
   # ---------------------------------------------------------------------------
   publish:
-    needs: [build-mac-arm64, build-linux, build-windows, preflight]
+    needs: [build-mac-arm64, build-linux, preflight]
     if: |
       always() &&
       startsWith(github.ref, 'refs/tags/v') &&
@@ -472,13 +340,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-linux
-          path: artifacts
-
-      - name: Download Windows artifacts
-        if: needs.build-windows.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: release-windows
           path: artifacts
 
       - name: List all artifacts
@@ -597,12 +458,6 @@ jobs:
           LINUX_APPIMAGE_TAR=$(ls *.AppImage.tar.gz 2>/dev/null | head -1 || true)
           LINUX_APPIMAGE_SIG=$(get_sig "${LINUX_APPIMAGE_TAR}.sig" 2>/dev/null || true)
 
-          WIN_MSI_ZIP=$(ls *.msi.zip 2>/dev/null | head -1 || true)
-          WIN_MSI_SIG=$(get_sig "${WIN_MSI_ZIP}.sig" 2>/dev/null || true)
-
-          WIN_NSIS_ZIP=$(ls *-setup.nsis.zip 2>/dev/null | head -1 || true)
-          WIN_NSIS_SIG=$(get_sig "${WIN_NSIS_ZIP}.sig" 2>/dev/null || true)
-
           cat > latest.json <<MANIFEST
           {
             "version": "v${VERSION}",
@@ -616,10 +471,6 @@ jobs:
               "linux-x86_64": {
                 "signature": "${LINUX_APPIMAGE_SIG}",
                 "url": "${REPO}/${LINUX_APPIMAGE_TAR}"
-              },
-              "windows-x86_64": {
-                "signature": "${WIN_MSI_SIG}",
-                "url": "${REPO}/${WIN_MSI_ZIP}"
               }
             }
           }
@@ -643,12 +494,6 @@ jobs:
             artifacts/*.AppImage.tar.gz
             artifacts/*.AppImage.tar.gz.sig
             artifacts/*.deb
-            artifacts/*.msi
-            artifacts/*.msi.zip
-            artifacts/*.msi.zip.sig
-            artifacts/*-setup*.exe
-            artifacts/*-setup.nsis.zip
-            artifacts/*-setup.nsis.zip.sig
             artifacts/latest.json
             artifacts/SHA256SUMS.txt
         env:
