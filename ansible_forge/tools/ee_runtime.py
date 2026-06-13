@@ -142,6 +142,132 @@ def _runtime_binary() -> str | None:
     return resolve_container_runtime_binary()
 
 
+_ARCH_ALIASES = {
+    "arm64": "arm64/aarch64",
+    "aarch64": "arm64/aarch64",
+    "amd64": "amd64/x86_64",
+    "x86_64": "amd64/x86_64",
+    "arm": "arm/armv7",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+}
+
+_ee_platform_cache: dict[str, str] | None = None
+_ee_platform_image: str | None = None
+
+
+def _inspect_image_platform() -> dict[str, str] | None:
+    binary = _runtime_binary()
+    image = get_ee_image()
+    if not binary or not image:
+        return None
+    env = os.environ.copy()
+    env.update(_docker_host_env())
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [binary, "image", "inspect", image, "--format", "{{.Os}}/{{.Architecture}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
+    if "/" not in raw:
+        return None
+    os_name, _, arch = raw.partition("/")
+    os_name = os_name.strip().lower()
+    arch = arch.strip().lower()
+    if not os_name or not arch:
+        return None
+    return {"os": os_name, "arch": arch, "raw": f"{os_name}/{arch}"}
+
+
+def detect_ee_platform(force: bool = False) -> dict[str, str] | None:
+    """Return the EE container platform as {"os", "arch", "raw"} or None.
+
+    Detected by inspecting the configured EE image with the container runtime.
+    Cached per image so repeated calls are cheap. Returns None when EE is
+    disabled or the platform cannot be determined.
+    """
+    global _ee_platform_cache, _ee_platform_image
+    if not is_ee_enabled():
+        return None
+    image = get_ee_image()
+    if not force and _ee_platform_cache is not None and _ee_platform_image == image:
+        return _ee_platform_cache
+    result = _inspect_image_platform()
+    if result is not None:
+        _ee_platform_cache = result
+        _ee_platform_image = image
+    return result
+
+
+def get_ee_arch() -> str | None:
+    platform = detect_ee_platform()
+    return platform.get("arch") if platform else None
+
+
+def ee_arch_alias() -> str | None:
+    """Human-friendly architecture aliases (e.g. 'arm64/aarch64')."""
+    arch = get_ee_arch()
+    if not arch:
+        return None
+    return _ARCH_ALIASES.get(arch, arch)
+
+
+def ee_platform_prompt_block() -> str:
+    """System-prompt guidance describing the EE target platform.
+
+    Returns an empty string when EE is disabled so the host-execution path is
+    unaffected. The block tells the agent to select OS/architecture-matched
+    binaries for ANY tool download (Terraform/OpenTofu, kubectl, helm, cloud
+    CLIs, installers, etc.) — this is infrastructure-agnostic.
+    """
+    if not is_ee_enabled():
+        return ""
+
+    platform = detect_ee_platform()
+    runtime = normalize_container_runtime()
+    image = get_ee_image()
+
+    if platform:
+        arch = platform["arch"]
+        alias = _ARCH_ALIASES.get(arch, arch)
+        os_name = platform["os"]
+        target = f"{os_name}/{arch} (CPU architecture: {alias})"
+    else:
+        os_name = "linux"
+        arch = "the container's CPU architecture"
+        alias = arch
+        target = "linux/<container CPU architecture>"
+
+    return (
+        "## Execution Environment (ACTIVE)\n"
+        "All commands, playbooks, and tools run INSIDE an isolated "
+        f"{os_name} container ({runtime} image `{image}`), NOT on the host. "
+        f"The container platform is **{target}**.\n\n"
+        "CRITICAL — architecture-matched artifacts:\n"
+        f"- When a task downloads a binary, release archive, or installer "
+        f"(e.g. terraform/opentofu, kubectl, helm, oc, vault, consul, cloud "
+        f"CLIs, language toolchains), you MUST select the **{os_name}** build "
+        f"for **{alias}**. Never download macOS/Windows builds or a mismatched "
+        "CPU architecture — they will fail with 'exec format error' or a "
+        "runtime panic.\n"
+        "- Do NOT assume the host's OS or CPU. Resolve the correct download URL "
+        "using the EE platform above. When unsure of the running architecture, "
+        "gather it first (e.g. ansible.builtin.setup → ansible_facts.architecture, "
+        "or `uname -m`) and template the URL from it.\n"
+        "- `sudo`/`become: true` is available in the EE; the runner user has "
+        "passwordless sudo.\n"
+    )
+
+
 def _docker_host_env() -> dict[str, str]:
     if not is_remote_mode():
         return {}

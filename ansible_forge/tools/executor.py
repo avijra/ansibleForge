@@ -1010,6 +1010,7 @@ class Executor(BaseTool):
 _RESULT_KEYS = (
     "changed", "msg", "stdout", "stderr", "diff", "rc",
     "skipped", "warnings", "module_stdout", "module_stderr",
+    "exception", "reason",
 )
 
 

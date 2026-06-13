@@ -775,14 +775,27 @@ class Orchestrator:
             return None
 
     def _build_system_prompt(self, workspace: Workspace) -> str:
+        prompt = SYSTEM_PROMPT
+        ee_block = self._ee_platform_block()
+        if ee_block:
+            prompt = f"{prompt}\n\n{ee_block}"
         rules = self._load_user_rules(workspace)
-        if not rules:
-            return SYSTEM_PROMPT
-        return (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"## User Rules (from .tuyere/rules.md — ALWAYS follow these)\n\n"
-            f"{rules}"
-        )
+        if rules:
+            prompt = (
+                f"{prompt}\n\n"
+                f"## User Rules (from .tuyere/rules.md — ALWAYS follow these)\n\n"
+                f"{rules}"
+            )
+        return prompt
+
+    @staticmethod
+    def _ee_platform_block() -> str:
+        try:
+            from ansible_forge.tools.ee_runtime import ee_platform_prompt_block
+
+            return ee_platform_prompt_block()
+        except Exception:
+            return ""
 
     async def create_session(
         self,

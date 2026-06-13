@@ -552,6 +552,66 @@ class TestEERuntimeHelpers:
         assert state["image_ready"] is True
 
 
+class TestEEPlatformDetection:
+    def setup_method(self) -> None:
+        ee_runtime._ee_platform_cache = None
+        ee_runtime._ee_platform_image = None
+
+    def teardown_method(self) -> None:
+        ee_runtime._ee_platform_cache = None
+        ee_runtime._ee_platform_image = None
+
+    def test_detect_ee_platform_returns_none_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: False)
+        assert ee_runtime.detect_ee_platform() is None
+
+    def test_detect_ee_platform_parses_inspect_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "_inspect_image_platform",
+            lambda: {"os": "linux", "arch": "arm64", "raw": "linux/arm64"},
+        )
+        platform = ee_runtime.detect_ee_platform(force=True)
+        assert platform == {"os": "linux", "arch": "arm64", "raw": "linux/arm64"}
+        assert ee_runtime.get_ee_arch() == "arm64"
+        assert ee_runtime.ee_arch_alias() == "arm64/aarch64"
+
+    def test_prompt_block_empty_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: False)
+        assert ee_runtime.ee_platform_prompt_block() == ""
+
+    def test_prompt_block_mentions_detected_arch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(
+            ee_runtime,
+            "_inspect_image_platform",
+            lambda: {"os": "linux", "arch": "arm64", "raw": "linux/arm64"},
+        )
+        block = ee_runtime.ee_platform_prompt_block()
+        assert "Execution Environment (ACTIVE)" in block
+        assert "linux/arm64" in block
+        assert "arm64/aarch64" in block
+        assert "become: true" in block
+
+    def test_prompt_block_falls_back_when_platform_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "_inspect_image_platform", lambda: None)
+        block = ee_runtime.ee_platform_prompt_block()
+        assert "Execution Environment (ACTIVE)" in block
+        assert "linux" in block
+
+
 class TestEEConfigNormalization:
     def test_runtime_ee_config_normalizes_path_and_case(self) -> None:
         cfg = RuntimeEEConfig(

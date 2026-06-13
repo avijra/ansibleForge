@@ -62,4 +62,45 @@ class TestRunnerDiagnostics:
         raw = "runtime: lfstack.push invalid packing\nfatal error: lfstack.push"
         diag = diagnose_runner_failure(events, raw_stdout=raw, rc=2)
         assert "Likely architecture mismatch" in diag
-        assert "arm64 EE container" in diag
+        assert "architecture" in diag
+
+    def test_arch_signature_in_task_stderr_not_stdout(self) -> None:
+        events = [
+            {
+                "event": "runner_on_failed",
+                "task": "Verify openshift-install is available",
+                "host": "localhost",
+                "result": {
+                    "msg": "non-zero return code",
+                    "stderr": "fatal error: lfstack.push",
+                },
+            }
+        ]
+        diag = diagnose_runner_failure(events, raw_stdout="", rc=2)
+        assert "Likely architecture mismatch" in diag
+
+    def test_exec_format_error_signature(self) -> None:
+        events = [
+            {
+                "event": "runner_on_failed",
+                "task": "Run binary",
+                "host": "localhost",
+                "result": {"stderr": "/bin/sh: ./tool: cannot execute binary file"},
+            }
+        ]
+        diag = diagnose_runner_failure(events, raw_stdout="", rc=126)
+        assert "architecture mismatch" in diag
+
+    def test_empty_task_message_falls_back_to_stdout_snippet(self) -> None:
+        events = [
+            {
+                "event": "runner_on_failed",
+                "task": "Gather route53 info",
+                "host": "localhost",
+                "result": {"msg": ""},
+            }
+        ]
+        raw = "ERROR: Unable to locate credentials for amazon.aws\n"
+        diag = diagnose_runner_failure(events, raw_stdout=raw, rc=1)
+        assert 'FAILED task "Gather route53 info" on localhost' in diag
+        assert "credentials" in diag

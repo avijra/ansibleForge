@@ -14,6 +14,9 @@ import ansible_runner
 from ansible_forge.logging import get_logger
 from ansible_forge.safety.secret_vault import SecretVault
 from ansible_forge.tools._runner_diagnostics import (
+    GENERIC_FALLBACK as _GENERIC_DIAG_FALLBACK,
+)
+from ansible_forge.tools._runner_diagnostics import (
     diagnose_runner_failure,
     read_runner_stdout,
 )
@@ -183,7 +186,14 @@ def _first_host_failure(host_results: dict[str, Any]) -> str:
     for host, info in host_results.items():
         if info.get("status") not in ("failed", "unreachable"):
             continue
-        msg = info.get("msg") or info.get("stderr") or info.get("module_stderr") or ""
+        msg = (
+            info.get("msg")
+            or info.get("stderr")
+            or info.get("module_stderr")
+            or info.get("reason")
+            or info.get("exception")
+            or ""
+        )
         if isinstance(msg, str) and len(msg) > 300:
             msg = msg[:300] + "…"
         if msg:
@@ -538,6 +548,9 @@ class AdhocRunner(BaseTool):
                         "status": ev_type.replace("runner_on_", ""),
                         "changed": res.get("changed", False),
                         "msg": res.get("msg", ""),
+                        "exception": (str(res.get("exception", "")) or "")[:1000],
+                        "reason": (str(res.get("reason", "")) or "")[:500],
+                        "module_stderr": (res.get("module_stderr", "") or "")[:1000],
                         "stdout": (res.get("stdout", "") or "")[:2000],
                         "stderr": (res.get("stderr", "") or "")[:1000],
                         "rc": res.get("rc"),
@@ -584,6 +597,16 @@ class AdhocRunner(BaseTool):
                 if ok:
                     parts.append(f"{ok} succeeded")
                 diag = _first_host_failure(host_results)
+                if not diag.strip():
+                    fallback = " ".join(runner_errors).strip()
+                    if not fallback:
+                        fallback = diagnose_runner_failure(
+                            get_runner_events(result),
+                            raw_stdout=read_runner_stdout(result),
+                            rc=getattr(result, "rc", None),
+                        )
+                    if fallback and fallback != _GENERIC_DIAG_FALLBACK:
+                        diag = f" {fallback}"
                 return ToolResult.fail(
                     f"Command finished on {total} host(s) with issues: "
                     f"{', '.join(parts)}.{diag}",
