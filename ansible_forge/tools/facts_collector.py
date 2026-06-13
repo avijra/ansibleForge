@@ -36,14 +36,17 @@ _SSH_KEY_SECRET_NAMES = ("ssh_private_key", "ssh_key", "ansible_ssh_key", "priva
 def _facts_envvars() -> dict[str, str]:
     import sys
 
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
     envvars: dict[str, str] = {
-        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
         **runner_locale_env(),
     }
+    if not is_ee_enabled():
+        envvars["ANSIBLE_PYTHON_INTERPRETER"] = _resolve_python_interpreter()
     if getattr(sys, "frozen", False):
         envvars["PYTHONHOME"] = ""
         envvars["PYTHONPATH"] = ""
@@ -119,9 +122,12 @@ class FactsCollector(BaseTool):
         if not workspace_path or not inventory:
             return ToolResult.fail("workspace_path and inventory are required")
 
-        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        await resolve_or_install_python_async()
+        if not is_ee_enabled():
+            from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+            await resolve_or_install_python_async()
 
         ws = Path(workspace_path)
         inv_path = self._resolve_inventory(ws, inventory)

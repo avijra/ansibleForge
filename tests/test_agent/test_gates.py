@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +17,40 @@ def state():
     ws.root = "/tmp/test"
     ws.context_summary.return_value = ""
     return SessionState("test-session", ws)
+
+
+def _adhoc(module: str, args: str = "", check_mode: bool = False):
+    return SimpleNamespace(
+        name="run_adhoc",
+        arguments={"module": module, "module_args": args, "check_mode": check_mode},
+    )
+
+
+class TestPlaybookFirstGate:
+    _orch = SimpleNamespace(_is_diagnostic_adhoc=Orchestrator._is_diagnostic_adhoc)
+
+    def test_blocks_mutating_adhoc_without_artifacts(self, state: SessionState):
+        tc = _adhoc("ansible.builtin.shell", "oc apply -f manifest.yml")
+        result = Orchestrator._check_playbook_first_gate(self._orch, state, tc)
+        assert result is not None
+        assert result.status == ToolStatus.ERROR
+        assert "BLOCKED" in result.output
+
+    def test_allows_mutating_adhoc_after_artifact_generated(self, state: SessionState):
+        state._generated_artifacts.add("generate_playbook")
+        tc = _adhoc("ansible.builtin.shell", "oc apply -f manifest.yml")
+        result = Orchestrator._check_playbook_first_gate(self._orch, state, tc)
+        assert result is None
+
+    def test_allows_diagnostic_readonly_adhoc(self, state: SessionState):
+        tc = _adhoc("ansible.builtin.ping")
+        result = Orchestrator._check_playbook_first_gate(self._orch, state, tc)
+        assert result is None
+
+    def test_does_not_apply_to_non_adhoc_tools(self, state: SessionState):
+        tc = SimpleNamespace(name="execute_playbook", arguments={})
+        result = Orchestrator._check_playbook_first_gate(self._orch, state, tc)
+        assert result is None
 
 
 class TestPostApplyVerificationGate:

@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -250,15 +251,24 @@ class InventoryDiscoveryTool(BaseTool):
         secret_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         suffix = plugin_type.split(".")[-1]
-        tmp_dir: Path | None = None
+        # The config file must live inside a directory that the EE container
+        # mounts, otherwise ansible-inventory inside the container cannot read
+        # it. When no workspace is given, fall back to a dedicated temp dir and
+        # mount that directory itself.
+        fallback_dir: Path | None = None
         if workspace_path:
             tmp_dir = Path(workspace_path) / ".tuyere" / "tmp"
             tmp_dir.mkdir(parents=True, exist_ok=True)
+            ws_path: Path | None = Path(workspace_path)
+        else:
+            fallback_dir = Path(tempfile.mkdtemp(prefix="tuyere-inv-"))
+            tmp_dir = fallback_dir
+            ws_path = fallback_dir
 
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=f"_{suffix}.yml",
-            dir=str(tmp_dir) if tmp_dir else None,
+            dir=str(tmp_dir),
             delete=False,
         ) as f:
             f.write(config_yaml)
@@ -270,7 +280,6 @@ class InventoryDiscoveryTool(BaseTool):
 
         from ansible_forge.tools.ee_runtime import ee_exec
 
-        ws_path = Path(workspace_path) if workspace_path else None
         try:
             rc, stdout_raw, stderr_raw = await ee_exec(
                 ["ansible-inventory", "--list", "-i", str(config_path)],
@@ -280,9 +289,13 @@ class InventoryDiscoveryTool(BaseTool):
             )
         except asyncio.CancelledError:
             config_path.unlink(missing_ok=True)
+            if fallback_dir is not None:
+                shutil.rmtree(fallback_dir, ignore_errors=True)
             raise
         finally:
             config_path.unlink(missing_ok=True)
+            if fallback_dir is not None:
+                shutil.rmtree(fallback_dir, ignore_errors=True)
 
         if rc != 0:
             return {"inventory": {}, "error": self._diagnose_error(stderr_raw.strip(), plugin_type)}

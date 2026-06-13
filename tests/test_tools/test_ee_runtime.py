@@ -231,6 +231,101 @@ class TestEERuntimeHelpers:
         ) == "docker"
         assert ee_runtime.normalize_container_runtime("PODMAN") == "podman"
 
+    def test_apply_ee_kwargs_strips_host_interpreter_from_extravars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {
+                "envvars": {},
+                "extravars": {
+                    "ansible_python_interpreter": "/Users/me/.ansibleforge/python/bin/python3",
+                    "cluster_name": "demo",
+                },
+            },
+            ws,
+        )
+        assert "ansible_python_interpreter" not in kwargs["extravars"]
+        assert kwargs["extravars"]["cluster_name"] == "demo"
+
+    def test_apply_ee_kwargs_translates_local_paths_in_remote_extravars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
+        ws = tmp_path / "project"
+        (ws / ".tuyere" / "runs" / "r1" / "ssh_keys").mkdir(parents=True)
+        key_path = ws / ".tuyere" / "runs" / "r1" / "ssh_keys" / "id_rsa"
+        key_path.write_text("KEY", encoding="utf-8")
+        remote_ws = "/var/lib/tuyere/workspaces/project-deadbeef"
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {
+                "envvars": {},
+                "extravars": {
+                    "ansible_ssh_private_key_file": str(key_path),
+                    "region": "us-east-1",
+                },
+            },
+            ws,
+            remote_ws=remote_ws,
+        )
+        assert kwargs["extravars"]["ansible_ssh_private_key_file"] == (
+            f"{remote_ws}/.tuyere/runs/r1/ssh_keys/id_rsa"
+        )
+        assert kwargs["extravars"]["region"] == "us-east-1"
+
+    def test_apply_ee_kwargs_keeps_container_interpreter_in_extravars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs(
+            {
+                "envvars": {},
+                "extravars": {"ansible_python_interpreter": "/usr/bin/python3"},
+            },
+            ws,
+        )
+        assert kwargs["extravars"]["ansible_python_interpreter"] == "/usr/bin/python3"
+
+    def test_sanitize_ee_exec_env_strips_dynamic_linker_and_ansible_paths(self) -> None:
+        env = {
+            "LD_LIBRARY_PATH": "/usr/lib:/opt/lib",
+            "DYLD_LIBRARY_PATH": "/Users/me/lib",
+            "DYLD_FALLBACK_LIBRARY_PATH": "/Users/me/fallback",
+            "ANSIBLE_CONFIG": "/Users/me/ansible.cfg",
+            "ANSIBLE_COLLECTIONS_PATH": "/Users/me/.ansible/collections",
+            "ANSIBLE_ROLES_PATH": "/Users/me/roles",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "AWS_REGION": "us-east-1",
+        }
+        sanitized = ee_runtime._sanitize_ee_exec_env(env)
+        assert "LD_LIBRARY_PATH" not in sanitized
+        assert "DYLD_LIBRARY_PATH" not in sanitized
+        assert "DYLD_FALLBACK_LIBRARY_PATH" not in sanitized
+        assert "ANSIBLE_CONFIG" not in sanitized
+        assert "ANSIBLE_COLLECTIONS_PATH" not in sanitized
+        assert "ANSIBLE_ROLES_PATH" not in sanitized
+        assert "SSL_CERT_DIR" not in sanitized
+        assert sanitized["AWS_REGION"] == "us-east-1"
+
     def test_sanitize_ee_exec_env_strips_host_runtime_keys(self) -> None:
         env = {
             "PATH": "/Users/me/.ansibleforge/bin:/usr/bin",
@@ -253,6 +348,47 @@ class TestEERuntimeHelpers:
         assert sanitized["AWS_ACCESS_KEY_ID"] == "AKIA..."
         assert sanitized["TF_VAR_cluster_name"] == "demo"
         assert sanitized["CUSTOM_FLAG"] == "1"
+
+    def test_stage_runner_inventory_copies_in_remote_mode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: True)
+        ws = tmp_path / "project"
+        inv = ws / "inventory" / "hosts.yml"
+        inv.parent.mkdir(parents=True)
+        inv.write_text("all:\n  hosts:\n    localhost:\n", encoding="utf-8")
+        run_dir = ws / ".tuyere" / "runs" / "abc"
+        run_dir.mkdir(parents=True)
+        ee_runtime.stage_runner_inventory(run_dir, inv)
+        staged = run_dir / "inventory"
+        assert staged.is_file()
+        assert not staged.is_symlink()
+        assert staged.read_text(encoding="utf-8") == inv.read_text(encoding="utf-8")
+
+    def test_drop_unmounted_cert_env_strips_bundle_paths(self) -> None:
+        container_env = {
+            "SSL_CERT_FILE": "/Applications/Tuyere.app/Contents/_internal/certifi/cacert.pem",
+            "REQUESTS_CA_BUNDLE": "/Applications/Tuyere.app/Contents/_internal/certifi/cacert.pem",
+            "AWS_ACCESS_KEY_ID": "AKIA...",
+        }
+        mounts = [
+            "/Users/me/ws:/Users/me/ws:Z",
+            "/Users/me/.ansibleforge:/Users/me/.ansibleforge:Z",
+        ]
+        ee_runtime._drop_unmounted_cert_env(container_env, mounts)
+        assert "SSL_CERT_FILE" not in container_env
+        assert "REQUESTS_CA_BUNDLE" not in container_env
+        assert container_env["AWS_ACCESS_KEY_ID"] == "AKIA..."
+
+    def test_drop_unmounted_cert_env_keeps_mounted_paths(self) -> None:
+        container_env = {
+            "SSL_CERT_FILE": "/Users/me/.ansibleforge/certs/corp-ca.pem",
+        }
+        mounts = ["/Users/me/.ansibleforge:/Users/me/.ansibleforge:Z"]
+        ee_runtime._drop_unmounted_cert_env(container_env, mounts)
+        assert container_env["SSL_CERT_FILE"] == "/Users/me/.ansibleforge/certs/corp-ca.pem"
 
     @pytest.mark.asyncio
     async def test_ee_exec_remote_defaults_workspace_to_cwd(

@@ -98,9 +98,12 @@ class DriftDetector(BaseTool):
         if not inv_path.exists():
             return ToolResult.fail(f"Inventory not found: {inv_path}")
 
-        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        await resolve_or_install_python_async()
+        if not is_ee_enabled():
+            from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+            await resolve_or_install_python_async()
 
         extravars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")

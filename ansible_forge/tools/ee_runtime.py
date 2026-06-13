@@ -172,10 +172,27 @@ _EE_EXEC_STRIPPED_ENV_KEYS = _EE_STRIPPED_ENV_KEYS | frozenset(
         "_",
         "PYTHONHOME",
         "PYTHONPATH",
+        "PYTHONEXECUTABLE",
         "VIRTUAL_ENV",
         "CONDA_PREFIX",
         "CONDA_DEFAULT_ENV",
         "ANSIBLE_PYTHON_INTERPRETER",
+        # Host dynamic-linker / loader paths break ELF resolution in the container
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        # Host Ansible config/search paths do not exist inside the EE image
+        "ANSIBLE_CONFIG",
+        "ANSIBLE_COLLECTIONS_PATH",
+        "ANSIBLE_COLLECTIONS_PATHS",
+        "ANSIBLE_ROLES_PATH",
+        "ANSIBLE_LIBRARY",
+        "ANSIBLE_INVENTORY",
+        "ANSIBLE_HOME",
+        # Host TLS cert directory (file handled separately by cert-drop logic)
+        "SSL_CERT_DIR",
     }
 )
 
@@ -185,7 +202,11 @@ def _effective_ws_path(ws: Path, remote_ws: str | None) -> Path:
 
 
 def ensure_ee_workspace_dirs(ws: Path) -> None:
-    for rel in (".tuyere/ee-home/.ansible/tmp", ".tuyere/tmp/ansible"):
+    for rel in (
+        ".tuyere/ee-home/.ansible/tmp",
+        ".tuyere/tmp/ansible",
+        ".ansible/collections",
+    ):
         (ws / rel).mkdir(parents=True, exist_ok=True)
 
 
@@ -227,7 +248,12 @@ def stage_runner_inventory(run_dir: Path, inventory_path: Path) -> None:
             shutil.rmtree(dest)
         else:
             dest.unlink(missing_ok=True)
-    dest.symlink_to(inventory_path.resolve())
+    # In remote mode the run dir is rsync'd to the remote host; an absolute
+    # symlink would dangle there, so copy the inventory in instead.
+    if is_remote_mode():
+        shutil.copy2(inventory_path.resolve(), dest)
+    else:
+        dest.symlink_to(inventory_path.resolve())
 
 
 def _inject_ee_ansible_paths(envvars: dict[str, str], ctx: EEContext) -> None:
@@ -295,6 +321,28 @@ def _sanitize_ee_exec_env(env: dict[str, str] | None) -> dict[str, str]:
             continue
         sanitized[key] = value
     return sanitized
+
+
+_CERT_PATH_ENV_KEYS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def _drop_unmounted_cert_env(
+    container_env: dict[str, str], mounts: list[str],
+) -> None:
+    """Remove CA-bundle env vars whose host path is not visible in the container.
+
+    In frozen builds SSL_CERT_FILE points inside the app bundle, which is never
+    mounted into the EE — passing it through breaks all HTTPS inside the
+    container. Custom CA bundles under a mounted directory are kept.
+    """
+    roots = [m.split(":")[1] if m.count(":") >= 2 else m for m in mounts]
+    for key in _CERT_PATH_ENV_KEYS:
+        val = container_env.get(key)
+        if not val:
+            continue
+        visible = any(val == root or val.startswith(root.rstrip("/") + "/") for root in roots)
+        if not visible:
+            container_env.pop(key, None)
 
 
 def _merged_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -527,7 +575,30 @@ def apply_ee_kwargs(
     inject_ee_container_env(envvars, ws, ctx.remote_workspace)
     runner_kwargs["envvars"] = envvars
 
+    extravars = runner_kwargs.get("extravars")
+    if isinstance(extravars, dict):
+        interp = str(extravars.get("ansible_python_interpreter", ""))
+        if interp and not interp.startswith("/usr/"):
+            extravars.pop("ansible_python_interpreter", None)
+        if ctx.remote_workspace:
+            _translate_local_paths_for_remote(extravars, ctx)
+
     return runner_kwargs
+
+
+def _translate_local_paths_for_remote(extravars: dict[str, Any], ctx: EEContext) -> None:
+    """Rewrite extravar values that are local workspace paths to their remote
+    equivalents so file references (e.g. materialized SSH keys) resolve inside
+    the container running on the remote Docker host."""
+    ws_str = str(ctx.workspace)
+    for key, value in list(extravars.items()):
+        if not isinstance(value, str) or not value.startswith(ws_str):
+            continue
+        try:
+            relative = Path(value).resolve().relative_to(ctx.workspace)
+        except ValueError:
+            continue
+        extravars[key] = str(Path(ctx.effective_root) / relative)
 
 
 async def _verify_ee_runner_execution(verify_ws: Path) -> tuple[bool, str]:
@@ -701,8 +772,13 @@ async def ee_exec(
     env: dict[str, str] | None = None,
     timeout: int = 300,
     ws: Path | None = None,
+    extra_run_args: list[str] | None = None,
 ) -> tuple[int, str, str]:
-    """Execute a command inside the EE container."""
+    """Execute a command inside the EE container.
+
+    ``extra_run_args`` are inserted verbatim into the ``run`` argument list
+    (e.g. an extra ``-v`` mount). Ignored when EE is disabled.
+    """
     if not is_ee_enabled():
         import sys
 
@@ -778,8 +854,13 @@ async def ee_exec(
     if runtime_name == "docker":
         container_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
 
+    if extra_run_args:
+        container_cmd.extend(extra_run_args)
+
+    mounts: list[str] = []
     if mount_ws:
-        for mount in build_volume_mounts(Path(mount_ws), remote_ws=remote_ws):
+        mounts = build_volume_mounts(Path(mount_ws), remote_ws=remote_ws)
+        for mount in mounts:
             container_cmd.extend(["-v", mount])
     if effective_cwd:
         container_cmd.extend(["-w", str(effective_cwd)])
@@ -791,9 +872,6 @@ async def ee_exec(
     container_env.update(_ee_locale_env())
     if env:
         container_env.update(_sanitize_ee_exec_env(env))
-
-    for key, val in container_env.items():
-        container_cmd.extend(["-e", f"{key}={val}"])
 
     _passthrough_vars = (
         "AWS_ACCESS_KEY_ID",
@@ -819,7 +897,12 @@ async def ee_exec(
         if key in container_env or key in _EE_EXEC_STRIPPED_ENV_KEYS:
             continue
         if any(key.startswith(p) or key == p for p in _passthrough_vars):
-            container_cmd.extend(["-e", f"{key}={val}"])
+            container_env[key] = val
+
+    _drop_unmounted_cert_env(container_env, mounts)
+
+    for key, val in container_env.items():
+        container_cmd.extend(["-e", f"{key}={val}"])
 
     container_cmd.append(get_ee_image())
     container_cmd.extend(cmd)
@@ -849,3 +932,46 @@ async def ee_exec(
         stdout_b.decode(errors="replace"),
         stderr_b.decode(errors="replace"),
     )
+
+
+async def build_interactive_shell_argv(
+    ws: Path,
+) -> tuple[list[str], dict[str, str]]:
+    """Build argv + env for an interactive shell inside the EE container.
+
+    Used by the terminal endpoint so the user's shell runs in the same
+    environment as agent execution. In remote mode the workspace is synced and
+    the container runs on the remote Docker host via ``DOCKER_HOST``.
+    """
+    binary = _runtime_binary()
+    if not binary:
+        raise RuntimeError(f"{get_container_runtime()} not found on PATH")
+
+    remote_ws: str | None = None
+    if is_remote_mode():
+        if not effective_ee_remote_host():
+            raise RuntimeError("Remote host is not configured")
+        remote_ws = await sync_to_remote(ws)
+
+    ensure_ee_workspace_dirs(ws)
+    workdir = _effective_ws_path(ws, remote_ws)
+
+    argv: list[str] = [binary, "run", "--rm", "-i", "-t"]
+    if normalize_container_runtime() == "docker" and not is_remote_mode():
+        argv.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+
+    for mount in build_volume_mounts(ws, remote_ws=remote_ws):
+        argv.extend(["-v", mount])
+    argv.extend(["-w", str(workdir)])
+
+    container_env: dict[str, str] = {}
+    container_env.update(ee_bootstrap_env(ws, remote_ws))
+    container_env.update(_ee_locale_env())
+    container_env["TERM"] = "xterm-256color"
+    for key, val in container_env.items():
+        argv.extend(["-e", f"{key}={val}"])
+
+    argv.append(get_ee_image())
+    argv.extend(["/bin/bash"])
+
+    return argv, _merged_subprocess_env()

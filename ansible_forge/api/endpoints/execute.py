@@ -22,7 +22,22 @@ async def execute_playbook(
     request: ExecuteRequest,
     _: Any = Depends(verify_api_key),
 ) -> ExecuteResponse:
-    """Execute a playbook directly without going through the chat agent."""
+    """Execute a playbook directly without going through the chat agent.
+
+    Change-making (`mode=apply`) requires an explicit ``confirm_apply`` flag so
+    this non-interactive path cannot make infrastructure changes unattended.
+    Previews (``mode=check``) are always allowed.
+    """
+    if request.mode == "apply" and not request.confirm_apply:
+        return ExecuteResponse(
+            status="error",
+            output=(
+                "Refusing to apply without confirmation. Re-run with "
+                "confirm_apply=true to make changes, or use mode=check to preview. "
+                "For guided execution with approval and verification, use the chat agent."
+            ),
+        )
+
     ws_mgr = WorkspaceManager()
     ws = ws_mgr.create()
 

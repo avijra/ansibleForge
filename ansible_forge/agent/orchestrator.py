@@ -1750,9 +1750,9 @@ class Orchestrator:
                                 tc.name, result, state.session_id,
                             )
                         self._update_research_state(state, tc.name, tc.arguments, result)
-                        if tc.name in ("execute_playbook", "terraform_exec"):
-                            state._generated_artifacts.add(tc.name)
                         if result.status != ToolStatus.ERROR:
+                            if tc.name in ("execute_playbook", "terraform_exec"):
+                                state._generated_artifacts.add(tc.name)
                             if tc.name in _ARTIFACT_GENERATING_TOOLS:
                                 state._generated_artifacts.add(tc.name)
                             elif tc.name == "write_file":
@@ -2604,9 +2604,9 @@ class Orchestrator:
                             break
 
                     self._update_research_state(state, tc.name, tc.arguments, result)
-                    if tc.name in ("execute_playbook", "terraform_exec"):
-                        state._generated_artifacts.add(tc.name)
                     if result.status != ToolStatus.ERROR:
+                        if tc.name in ("execute_playbook", "terraform_exec"):
+                            state._generated_artifacts.add(tc.name)
                         if tc.name in _ARTIFACT_GENERATING_TOOLS:
                             state._generated_artifacts.add(tc.name)
                         elif tc.name == "write_file":

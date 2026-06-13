@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 def _get_orchestrator() -> Any:
-    from ansible_forge.api.dependencies import get_orchestrator
+    from ansible_forge.api.endpoints.chat import get_orchestrator
     return get_orchestrator()
 
 

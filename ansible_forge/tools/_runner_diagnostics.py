@@ -69,12 +69,15 @@ def diagnose_runner_failure(
 ) -> str:
     task_diag = first_task_failure_diagnosis(events)
     lowered_stdout = (raw_stdout or "").lower()
-    if task_diag and "non-zero return code" in task_diag.lower():
-        if "lfstack.push invalid packing" in lowered_stdout:
-            return (
-                f"{task_diag} Likely architecture mismatch: an x86_64 Go binary is "
-                "running inside an arm64 EE container. Use an arm64 Linux binary."
-            )
+    if (
+        task_diag
+        and "non-zero return code" in task_diag.lower()
+        and "lfstack.push invalid packing" in lowered_stdout
+    ):
+        return (
+            f"{task_diag} Likely architecture mismatch: an x86_64 Go binary is "
+            "running inside an arm64 EE container. Use an arm64 Linux binary."
+        )
     if task_diag:
         return task_diag
 

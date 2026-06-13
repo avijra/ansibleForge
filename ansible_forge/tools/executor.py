@@ -57,18 +57,22 @@ def _runner_envvars() -> dict[str, str]:
     """Environment variables passed to ansible-runner for every invocation.
 
     In frozen (PyInstaller) mode, strips vars that would interfere with the
-    standalone Python used for module execution on localhost.
+    standalone Python used for module execution on localhost. In EE mode the
+    host interpreter path is never injected — the container has its own Python.
     """
     import sys
 
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
     envvars: dict[str, str] = {
-        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
         **runner_locale_env(),
     }
+    if not is_ee_enabled():
+        envvars["ANSIBLE_PYTHON_INTERPRETER"] = _resolve_python_interpreter()
 
     if getattr(sys, "frozen", False):
         envvars["PYTHONHOME"] = ""
@@ -423,7 +427,15 @@ def _inject_python_interpreter(
     inventory host_vars, and environment variables), so this prevents any
     ansible.cfg `interpreter_python` setting from overriding the standalone
     Python path that AnsibleForge ships.
+
+    Never injected in EE mode: the host interpreter path does not exist
+    inside the container and would break every localhost task.
     """
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
+    if is_ee_enabled():
+        return
+
     if "ansible_python_interpreter" in merged_vars:
         return
 
@@ -623,13 +635,16 @@ class Executor(BaseTool):
         if not workspace_path or not playbook:
             return ToolResult.fail("workspace_path and playbook are required")
 
-        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        await resolve_or_install_python_async()
+        if not is_ee_enabled():
+            from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+            await resolve_or_install_python_async()
 
         ws = Path(workspace_path)
         pb_path = ws / playbook
-        if pb_path.exists():
+        if pb_path.exists() and not is_ee_enabled():
             from ansible_forge.dep_manager import ensure_deps_for_playbook
 
             await ensure_deps_for_playbook(pb_path)
@@ -757,11 +772,14 @@ class Executor(BaseTool):
                 _local_names = {"localhost", "localhost.yml", "localhost.yaml",
                                 "local", "local.yml", "local.yaml"}
                 if inventory.rsplit("/", 1)[-1] in _local_names:
+                    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
                     inv_path.parent.mkdir(parents=True, exist_ok=True)
-                    interp = _resolve_python_interpreter()
                     inv_line = "localhost ansible_connection=local"
-                    if interp and interp != "auto_silent":
-                        inv_line += f" ansible_python_interpreter={interp}"
+                    if not is_ee_enabled():
+                        interp = _resolve_python_interpreter()
+                        if interp and interp != "auto_silent":
+                            inv_line += f" ansible_python_interpreter={interp}"
                     inv_path.write_text(f"[local]\n{inv_line}\n")
                     logger.info("auto_created_localhost_inventory", path=str(inv_path))
                 else:
@@ -782,56 +800,67 @@ class Executor(BaseTool):
             _MAX_PLAYBOOK_TIMEOUT,
         )
 
-        from ansible_forge.tools.ee_runtime import configure_ee_runner
+        from ansible_forge.tools.ee_runtime import configure_ee_runner, is_remote_mode
 
-        inv_for_stage = self._resolve_inventory(ws, inventory) if inventory else None
-        await configure_ee_runner(
-            ws, run_dir, runner_kwargs, inventory_path=inv_for_stage
-        )
+        remote_path = is_remote_mode()
+        extra_log_dirs: list[Path] = []
+        log_snapshot: dict[str, float] = {}
 
-        extra_log_dirs = _extract_extra_log_dirs(ws, merged_vars, playbook)
-        log_snapshot = _snapshot_log_files(ws, extra_dirs=extra_log_dirs)
-
-        loop = asyncio.get_running_loop()
-        thread, runner = await loop.run_in_executor(
-            None,
-            functools.partial(ansible_runner.run_async, **runner_kwargs),
-        )
-
-        log_watcher: asyncio.Task[None] | None = None
-        if live_queue is not None:
-            log_watcher = asyncio.create_task(
-                _tail_new_logs(ws, log_snapshot, live_queue, extra_dirs=extra_log_dirs)
+        if remote_path:
+            result = await self._run_playbook_in_container(
+                ws, playbook, inventory, cmdline_args, merged_vars,
+                envvars, verbosity, effective_timeout,
+            )
+            collected_events = []
+        else:
+            inv_for_stage = self._resolve_inventory(ws, inventory) if inventory else None
+            await configure_ee_runner(
+                ws, run_dir, runner_kwargs, inventory_path=inv_for_stage
             )
 
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(None, thread.join),
-                timeout=effective_timeout,
+            extra_log_dirs = _extract_extra_log_dirs(ws, merged_vars, playbook)
+            log_snapshot = _snapshot_log_files(ws, extra_dirs=extra_log_dirs)
+
+            loop = asyncio.get_running_loop()
+            thread, runner = await loop.run_in_executor(
+                None,
+                functools.partial(ansible_runner.run_async, **runner_kwargs),
             )
-        except asyncio.CancelledError:
-            runner.canceled = True
-            _kill_runner(runner)
-            await loop.run_in_executor(None, lambda: thread.join(timeout=10))
-            logger.info("playbook_cancelled", playbook=playbook)
-            raise
-        except TimeoutError:
-            runner.cancel_callback = lambda: None
-            runner.canceled = True
-            _kill_runner(runner)
-            await loop.run_in_executor(None, lambda: thread.join(timeout=10))
-            mins = effective_timeout // 60
-            return ToolResult.fail(
-                f"Playbook timed out after {mins} minute(s). "
-                f"Consider increasing the timeout parameter if the operation "
-                f"legitimately needs more time."
-            )
-        finally:
-            if log_watcher and not log_watcher.done():
-                log_watcher.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await log_watcher
-        result = runner
+
+            log_watcher: asyncio.Task[None] | None = None
+            if live_queue is not None:
+                log_watcher = asyncio.create_task(
+                    _tail_new_logs(ws, log_snapshot, live_queue, extra_dirs=extra_log_dirs)
+                )
+
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, thread.join),
+                    timeout=effective_timeout,
+                )
+            except asyncio.CancelledError:
+                runner.canceled = True
+                _kill_runner(runner)
+                await loop.run_in_executor(None, lambda: thread.join(timeout=10))
+                logger.info("playbook_cancelled", playbook=playbook)
+                raise
+            except TimeoutError:
+                runner.cancel_callback = lambda: None
+                runner.canceled = True
+                _kill_runner(runner)
+                await loop.run_in_executor(None, lambda: thread.join(timeout=10))
+                mins = effective_timeout // 60
+                return ToolResult.fail(
+                    f"Playbook timed out after {mins} minute(s). "
+                    f"Consider increasing the timeout parameter if the operation "
+                    f"legitimately needs more time."
+                )
+            finally:
+                if log_watcher and not log_watcher.done():
+                    log_watcher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await log_watcher
+            result = runner
 
         raw_events = collected_events or get_runner_events(result)
 
@@ -856,7 +885,11 @@ class Executor(BaseTool):
             "event_count": len(events),
         }
 
-        detected_logs = _detect_new_log_files(ws, log_snapshot, extra_dirs=extra_log_dirs)
+        detected_logs = (
+            []
+            if remote_path
+            else _detect_new_log_files(ws, log_snapshot, extra_dirs=extra_log_dirs)
+        )
 
         result_data = {
             "summary": summary,
@@ -892,6 +925,43 @@ class Executor(BaseTool):
         return ToolResult.fail(
             f"Deployment failed ({playbook}). {diag}",
             **result_data,
+        )
+
+    async def _run_playbook_in_container(
+        self,
+        ws: Path,
+        playbook: str,
+        inventory: str,
+        cmdline_args: list[str],
+        merged_vars: dict[str, Any],
+        envvars: dict[str, str],
+        verbosity: int,
+        timeout: int,
+    ) -> Any:
+        """Run the playbook via ansible-playbook inside the EE container.
+
+        Used in remote EE mode where ansible-runner process_isolation cannot
+        bridge the local/remote filesystem split.
+        """
+        from ansible_forge.tools.container_runner import run_playbook_in_container
+
+        inv_rel = ""
+        if inventory:
+            inv_p = self._resolve_inventory(ws, inventory)
+            if inv_p.exists():
+                try:
+                    inv_rel = str(inv_p.relative_to(ws))
+                except ValueError:
+                    inv_rel = str(inv_p)
+        return await run_playbook_in_container(
+            ws=ws,
+            playbook=playbook,
+            inventory=inv_rel,
+            cmdline_args=cmdline_args,
+            extravars=merged_vars,
+            envvars=envvars,
+            verbosity=verbosity,
+            timeout=timeout,
         )
 
     @staticmethod

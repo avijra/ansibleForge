@@ -75,3 +75,21 @@ class TestExecuteEndpoint:
         assert "data" in data
         assert isinstance(data["data"], dict)
         assert data["status"] in ("success", "error", "needs_approval")
+
+    @pytest.mark.asyncio
+    async def test_execute_apply_requires_confirmation(
+        self,
+        async_client: AsyncClient,
+        sample_playbook: str,
+    ) -> None:
+        response = await async_client.post(
+            "/api/v1/execute",
+            json={
+                "playbook_content": sample_playbook,
+                "mode": "apply",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "error"
+        assert "confirm_apply" in data["output"]

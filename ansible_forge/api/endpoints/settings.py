@@ -250,6 +250,9 @@ async def update_execution_settings(
     was_enabled = effective_ee_enabled()
     patch = body.model_dump(exclude_none=True)
     update_runtime_ee(patch)
+    from ansible_forge.tools.workspace_sync import clear_sync_cache
+
+    clear_sync_cache()
     await _maybe_schedule_image_pull(was_enabled, patch)
     return await _build_execution_settings_response()
 
@@ -283,4 +286,7 @@ async def reset_execution_settings(
     _: Any = Depends(verify_api_key),
 ) -> ExecutionSettingsResponse:
     clear_runtime_ee()
+    from ansible_forge.tools.workspace_sync import clear_sync_cache
+
+    clear_sync_cache()
     return await _build_execution_settings_response()

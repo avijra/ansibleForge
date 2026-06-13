@@ -182,11 +182,14 @@ class GalaxyManager(BaseTool):
         if rc != 0:
             return ToolResult.fail(f"Package install failed: {stderr or stdout}")
 
-        # Auto-install Python SDK dependencies for the collection
-        from ansible_forge.dep_manager import ensure_collection_deps
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        dep_ok, dep_msg = await ensure_collection_deps(collection_name)
-        extra = f"\n{dep_msg}" if dep_msg else ""
+        extra = ""
+        if not is_ee_enabled():
+            from ansible_forge.dep_manager import ensure_collection_deps
+
+            _dep_ok, dep_msg = await ensure_collection_deps(collection_name)
+            extra = f"\n{dep_msg}" if dep_msg else ""
 
         return ToolResult.ok(
             output=f"Package '{target}' installed successfully.{extra}",
@@ -313,23 +316,27 @@ class GalaxyManager(BaseTool):
                 f"Failed to install from requirements.yml: {stderr or stdout}"
             )
 
-        # Auto-install Python SDK dependencies for collections in requirements.yml
+        # Auto-install Python SDK dependencies for collections in requirements.yml.
+        # In EE mode the container ships these SDKs; host installs are skipped.
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
+
         dep_msgs: list[str] = []
-        try:
-            import yaml as _yaml
+        if not is_ee_enabled():
+            try:
+                import yaml as _yaml
 
-            req_data = _yaml.safe_load(req_path.read_text(encoding="utf-8"))
-            collections_list = req_data.get("collections", []) if isinstance(req_data, dict) else []
-            from ansible_forge.dep_manager import ensure_collection_deps
+                req_data = _yaml.safe_load(req_path.read_text(encoding="utf-8"))
+                collections_list = req_data.get("collections", []) if isinstance(req_data, dict) else []
+                from ansible_forge.dep_manager import ensure_collection_deps
 
-            for entry in collections_list:
-                name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
-                if name:
-                    _, msg = await ensure_collection_deps(name)
-                    if msg:
-                        dep_msgs.append(msg)
-        except Exception:
-            pass  # Don't fail the install if dep resolution has issues
+                for entry in collections_list:
+                    name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+                    if name:
+                        _, msg = await ensure_collection_deps(name)
+                        if msg:
+                            dep_msgs.append(msg)
+            except Exception:
+                pass  # Don't fail the install if dep resolution has issues
 
         dep_extra = (" " + "; ".join(dep_msgs)) if dep_msgs else ""
         return ToolResult.ok(

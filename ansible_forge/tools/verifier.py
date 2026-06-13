@@ -240,9 +240,12 @@ class Verifier(BaseTool):
         verify_pb = ws / pb_name
         verify_pb.write_text(playbook_content, encoding="utf-8")
 
-        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        await resolve_or_install_python_async()
+        if not is_ee_enabled():
+            from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+            await resolve_or_install_python_async()
 
         extravars: dict[str, Any] = {}
         session_id = kwargs.get("_session_id")

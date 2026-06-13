@@ -136,10 +136,12 @@ async def chat(
     _: Any = Depends(verify_api_key),
 ) -> EventSourceResponse | ChatResponse:
     orch = get_orchestrator()
-    session_id = request.session_id
-    if session_id is None:
+    session_id: str
+    if request.session_id is None:
         state = await orch.create_session(project_path=request.project_path)
         session_id = state.session_id
+    else:
+        session_id = request.session_id
 
     store = _get_session_store()
     await store.asave_session(session_id, status="active", project_path=request.project_path)

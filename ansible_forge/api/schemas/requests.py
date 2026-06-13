@@ -30,6 +30,10 @@ class ExecuteRequest(BaseModel):
     inventory_content: str = Field(default="", description="Inventory content (YAML or INI)")
     mode: Literal["check", "apply"] = Field(default="check", description="Execution mode")
     extra_vars: dict[str, Any] = Field(default_factory=dict)
+    confirm_apply: bool = Field(
+        default=False,
+        description="Required to be true for mode=apply; guards against unattended changes.",
+    )
 
 
 class LintRequest(BaseModel):

@@ -42,27 +42,37 @@ _STDOUT_MODULES = frozenset({"ansible.builtin.shell", "ansible.builtin.command",
 
 
 def _localhost_inventory_content() -> str:
-    """Build localhost inventory with the best available Python interpreter."""
-    interp = _resolve_python_interpreter()
-    if interp and interp != "auto_silent":
-        return (
-            f"[local]\nlocalhost ansible_connection=local"
-            f" ansible_python_interpreter={interp}\n"
-        )
+    """Build localhost inventory with the best available Python interpreter.
+
+    In EE mode no interpreter path is written — the host path does not exist
+    inside the container.
+    """
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
+    if not is_ee_enabled():
+        interp = _resolve_python_interpreter()
+        if interp and interp != "auto_silent":
+            return (
+                f"[local]\nlocalhost ansible_connection=local"
+                f" ansible_python_interpreter={interp}\n"
+            )
     return "[local]\nlocalhost ansible_connection=local\n"
 
 
 def _adhoc_envvars() -> dict[str, str]:
     import sys
 
+    from ansible_forge.tools.ee_runtime import is_ee_enabled
+
     envvars: dict[str, str] = {
-        "ANSIBLE_PYTHON_INTERPRETER": _resolve_python_interpreter(),
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_FORCE_COLOR": "0",
         "ANSIBLE_NOCOLOR": "1",
         "ANSIBLE_HOST_KEY_CHECKING": "False",
         **runner_locale_env(),
     }
+    if not is_ee_enabled():
+        envvars["ANSIBLE_PYTHON_INTERPRETER"] = _resolve_python_interpreter()
 
     if getattr(sys, "frozen", False):
         envvars["PYTHONHOME"] = ""
@@ -315,13 +325,16 @@ class AdhocRunner(BaseTool):
         if not workspace_path or not module or not inventory:
             return ToolResult.fail("workspace_path, module, and inventory are required")
 
-        from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
 
-        await resolve_or_install_python_async()
+        if not is_ee_enabled():
+            from ansible_forge.tools.python_resolver import resolve_or_install_python_async
+
+            await resolve_or_install_python_async()
 
         _mod = module.strip()
         _parts = _mod.rsplit(".", 1)
-        if len(_parts) == 2 or _mod.count(".") >= 2:
+        if (len(_parts) == 2 or _mod.count(".") >= 2) and not is_ee_enabled():
             _collection = ".".join(_mod.split(".")[:2])
             from ansible_forge.dep_manager import ensure_collection_deps
 
@@ -385,7 +398,11 @@ class AdhocRunner(BaseTool):
                 },
             )
 
-        if host_pattern in local_targets and "ansible_python_interpreter" not in merged_vars:
+        if (
+            not is_ee_enabled()
+            and host_pattern in local_targets
+            and "ansible_python_interpreter" not in merged_vars
+        ):
             interp = _resolve_python_interpreter()
             if interp and interp != "auto_silent":
                 merged_vars["ansible_python_interpreter"] = interp

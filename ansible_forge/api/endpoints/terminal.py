@@ -32,11 +32,29 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
         await websocket.close()
         return
 
-    master_fd, slave_fd = pty.openpty()
+    from ansible_forge.tools.ee_runtime import (
+        build_interactive_shell_argv,
+        is_ee_enabled,
+    )
 
+    shell_argv = ["/bin/bash", "--login"]
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
     env["LANG"] = "en_US.UTF-8"
+
+    if is_ee_enabled():
+        try:
+            shell_argv, env = await build_interactive_shell_argv(ws.path)
+        except Exception as exc:
+            logger.warning("terminal_ee_setup_failed", error=str(exc))
+            await websocket.send_text(
+                f"\r\nExecution Environment is enabled but the container shell "
+                f"could not start: {exc}\r\n"
+            )
+            await websocket.close()
+            return
+
+    master_fd, slave_fd = pty.openpty()
 
     pid = os.fork()
 
@@ -49,7 +67,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
         os.dup2(slave_fd, 2)
         os.close(slave_fd)
         os.chdir(str(ws.path))
-        os.execvpe("/bin/bash", ["/bin/bash", "--login"], env)
+        os.execvpe(shell_argv[0], shell_argv, env)
 
     os.close(slave_fd)
 

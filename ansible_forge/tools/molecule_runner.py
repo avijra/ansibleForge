@@ -84,6 +84,17 @@ class MoleculeRunner(BaseTool):
                 f"Use scaffold_role to create one, or create molecule/{scenario}/molecule.yml manually."
             )
 
+        from ansible_forge.tools.ee_runtime import is_ee_enabled, is_remote_mode
+
+        cmd = ["molecule", action, "--scenario-name", scenario]
+        logger.info("molecule_run", role=role_name, action=action, scenario=scenario)
+
+        if is_ee_enabled():
+            return await self._run_in_ee(
+                cmd, role_dir, workspace_path, role_name, action, scenario,
+                is_remote=is_remote_mode(),
+            )
+
         if not shutil.which("docker") and not shutil.which("podman"):
             return ToolResult.fail(
                 "Docker (or Podman) is required for Molecule but was not found. "
@@ -95,9 +106,6 @@ class MoleculeRunner(BaseTool):
                 "Molecule CLI not found. Install it: pip install 'molecule[docker]' "
                 "or 'pip install molecule molecule-plugins[docker]'."
             )
-
-        cmd = ["molecule", action, "--scenario-name", scenario]
-        logger.info("molecule_run", role=role_name, action=action, scenario=scenario)
 
         live_queue: asyncio.Queue[dict[str, Any]] | None = kwargs.pop("_live_log_queue", None)
 
@@ -147,3 +155,54 @@ class MoleculeRunner(BaseTool):
         except Exception as exc:
             logger.error("molecule_error", role=role_name, error=str(exc), exc_info=True)
             return ToolResult.fail(f"Molecule {action} error: {exc}")
+
+    async def _run_in_ee(
+        self,
+        cmd: list[str],
+        role_dir: Path,
+        workspace_path: str,
+        role_name: str,
+        action: str,
+        scenario: str,
+        is_remote: bool,
+    ) -> ToolResult:
+        """Run Molecule inside the EE container.
+
+        Molecule provisions sibling Docker containers via the daemon socket, so
+        the host socket is bind-mounted into the EE container. Remote EE mode is
+        unsupported because the socket lives on the local host only.
+        """
+        if is_remote:
+            return ToolResult.fail(
+                "Molecule testing is not supported with a remote Execution "
+                "Environment. Switch the EE to local mode (or run Molecule on a "
+                "host with Docker) to test roles."
+            )
+
+        from ansible_forge.tools.ee_runtime import ee_exec
+
+        socket = Path("/var/run/docker.sock")
+        if not socket.exists():
+            return ToolResult.fail(
+                "Molecule needs the Docker daemon socket at /var/run/docker.sock, "
+                "but it was not found. Ensure Docker is running locally."
+            )
+
+        rc, stdout, stderr = await ee_exec(
+            cmd,
+            cwd=role_dir,
+            ws=Path(workspace_path),
+            timeout=3600,
+            extra_run_args=["-v", f"{socket}:{socket}"],
+        )
+        output = (stdout + ("\n" + stderr if stderr else ""))[-8000:]
+        if rc == 0:
+            return ToolResult.ok(
+                output=f"Molecule {action} succeeded for role '{role_name}' (scenario: {scenario}).\n\n{output}",
+                role=role_name,
+                action=action,
+                scenario=scenario,
+            )
+        return ToolResult.fail(
+            f"Molecule {action} failed for role '{role_name}' (exit code {rc}).\n\n{output}"
+        )
