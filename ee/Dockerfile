@@ -9,6 +9,11 @@ RUN dnf install -y --allowerasing \
     openssh-clients \
     git \
     unzip \
+    tar \
+    gzip \
+    which \
+    procps-ng \
+    sudo \
     curl \
     rsync \
     sshpass \
@@ -48,7 +53,9 @@ RUN ansible-galaxy collection install -r /tmp/requirements.yml --force \
 
 RUN useradd -u 1000 -m runner \
   && mkdir -p /home/runner/.ansible/tmp /tmp/.ansible \
-  && chown -R runner:runner /home/runner /tmp/.ansible
+  && chown -R runner:runner /home/runner /tmp/.ansible \
+  && echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner \
+  && chmod 0440 /etc/sudoers.d/runner
 
 ENV HOME=/home/runner
 USER 1000

@@ -34,7 +34,9 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/v}"
             echo "tags=${{ env.IMAGE_NAME }}:${VERSION},${{ env.IMAGE_NAME }}:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=${{ env.IMAGE_NAME }}:dev" >> "$GITHUB_OUTPUT"
+            # Manual dispatch refreshes :latest so image-only fixes can ship
+            # without a version bump.
+            echo "tags=${{ env.IMAGE_NAME }}:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
