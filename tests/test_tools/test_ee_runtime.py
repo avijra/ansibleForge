@@ -611,6 +611,42 @@ class TestEEPlatformDetection:
         assert "Execution Environment (ACTIVE)" in block
         assert "linux" in block
 
+    def test_prompt_block_documents_writable_paths(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "_inspect_image_platform", lambda: None)
+        block = ee_runtime.ee_platform_prompt_block()
+        assert "/workspace" in block
+        assert "/tmp" in block
+
+
+class TestContainerUserSpec:
+    def test_returns_host_uid_with_group_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ee_runtime.os, "getuid", lambda: 501, raising=False)
+        assert ee_runtime.container_user_spec() == "501:0"
+
+    def test_returns_none_without_getuid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delattr(ee_runtime.os, "getuid", raising=False)
+        assert ee_runtime.container_user_spec() is None
+
+    def test_apply_ee_kwargs_sets_container_user(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "tuyere-ee:test")
+        monkeypatch.setattr(ee_runtime, "normalize_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime.os, "getuid", lambda: 501, raising=False)
+        result = ee_runtime.apply_ee_kwargs({}, tmp_path)
+        opts = result["container_options"]
+        assert "--user" in opts
+        assert opts[opts.index("--user") + 1] == "501:0"
+
 
 class TestEEConfigNormalization:
     def test_runtime_ee_config_normalizes_path_and_case(self) -> None:

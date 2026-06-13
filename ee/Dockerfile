@@ -2,10 +2,14 @@ FROM quay.io/centos/centos:stream9
 
 ENV PIP_ROOT_USER_ACTION=ignore
 
+# Python 3.12 is required: modern Ansible collections (amazon.aws, kubernetes.core,
+# community.general, ...) need ansible-core >= 2.17, which in turn requires Python
+# >= 3.11. CentOS Stream 9's default python3 (3.9) caps ansible-core at 2.15 and
+# breaks current collections.
 RUN dnf install -y --allowerasing \
-    python3 \
-    python3-pip \
-    python3-devel \
+    python3.12 \
+    python3.12-pip \
+    python3.12-devel \
     openssh-clients \
     git \
     unzip \
@@ -23,10 +27,16 @@ RUN dnf install -y --allowerasing \
     glibc-langpack-en \
   && dnf clean all
 
+# Make python3.12 the default python3 so ansible module interpreter discovery
+# (auto -> /usr/bin/python3) and installed console scripts all use 3.12.
+RUN alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 2 \
+  && alternatives --set python3 /usr/bin/python3.12 \
+  && python3 --version
+
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-RUN pip3 install --no-cache-dir \
+RUN python3.12 -m pip install --no-cache-dir \
     ansible-core \
     ansible-runner
 
@@ -53,10 +63,10 @@ RUN set -eux; \
     helm version
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt \
+RUN python3.12 -m pip install --no-cache-dir -r /tmp/requirements.txt \
   && rm -f /tmp/requirements.txt
 
-RUN pip3 install --no-cache-dir \
+RUN python3.12 -m pip install --no-cache-dir \
     ansible-lint \
     molecule \
     "molecule-plugins[docker]"
@@ -66,15 +76,25 @@ RUN ansible-galaxy collection install -r /tmp/requirements.yml --force \
     -p /usr/share/ansible/collections \
   && rm -f /tmp/requirements.yml
 
-RUN useradd -u 1000 -m runner \
+COPY ee-entrypoint.sh /usr/local/bin/ee-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/ee-entrypoint.sh
+
+# Arbitrary-UID safe (OpenShift "restricted" SCC pattern). Tuyere runs this
+# image as the host user's uid with gid 0 so workspace files stay host-owned.
+# Make HOME and /etc/passwd group-0 writable so the entrypoint can register the
+# runtime uid and tools can persist state (~/.ansible, ssh keys, galaxy cache).
+RUN useradd -u 1000 -g 0 -m runner \
   && mkdir -p /home/runner/.ansible/tmp /tmp/.ansible \
-  && chown -R runner:runner /home/runner /tmp/.ansible \
+  && chgrp -R 0 /home/runner /tmp/.ansible \
+  && chmod -R g=rwX /home/runner /tmp/.ansible \
+  && chmod g=rw /etc/passwd \
   && echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner \
   && chmod 0440 /etc/sudoers.d/runner
 
 ENV HOME=/home/runner
 USER 1000
 WORKDIR /home/runner
+ENTRYPOINT ["/usr/local/bin/ee-entrypoint.sh"]
 
 LABEL org.opencontainers.image.title="tuyere-ee" \
       org.opencontainers.image.description="Tuyere Execution Environment — all Ansible collections, SDKs, and tools pre-installed" \

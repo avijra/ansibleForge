@@ -25,6 +25,18 @@ mermaid.initialize({
 
 const svgCache = new Map<string, string>();
 
+// LLMs frequently emit "smart" Unicode punctuation (curly quotes, en/em dashes,
+// ellipses, non-breaking spaces) inside diagram labels, which the Mermaid parser
+// rejects. Normalize to ASCII equivalents so diagrams render instead of erroring.
+function sanitizeMermaid(code: string): string {
+  return code
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u2013\u2014\u2015]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ");
+}
+
 type QueueEntry = { code: string; id: string; resolve: (svg: string) => void; reject: (err: Error) => void };
 const renderQueue: QueueEntry[] = [];
 let rendering = false;
@@ -40,7 +52,7 @@ async function drainQueue() {
       continue;
     }
     try {
-      const { svg } = await mermaid.render(entry.id, entry.code);
+      const { svg } = await mermaid.render(entry.id, sanitizeMermaid(entry.code));
       svgCache.set(entry.code, svg);
       entry.resolve(svg);
     } catch (err) {

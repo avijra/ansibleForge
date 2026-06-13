@@ -581,6 +581,9 @@ NEVER omit the closing ``` fence — every opening ``` MUST have a matching clos
 NEVER output raw "graph TD" without the surrounding code fence markers.
 NEVER use ASCII art, box-drawing, or indented tree text for architecture.
 Use graph TD for stacks, graph LR for data flows, sequenceDiagram for request flows.
+Use ONLY straight ASCII quotes (") in labels — never curly/smart quotes. When a label
+contains special characters like parentheses, brackets, or colons, wrap it in straight
+double quotes, e.g. N1["Bastion (public subnet)"]. Plain alphanumeric labels need no quotes.
 Keep diagrams focused — max ~20 nodes. Split into multiple diagrams if complex.
 Every Phase 1 PLAN response MUST include at least one mermaid architecture diagram.
 

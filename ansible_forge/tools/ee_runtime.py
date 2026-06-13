@@ -265,6 +265,16 @@ def ee_platform_prompt_block() -> str:
         "or `uname -m`) and template the URL from it.\n"
         "- `sudo`/`become: true` is available in the EE; the runner user has "
         "passwordless sudo.\n"
+        "\n"
+        "Writable paths inside the EE:\n"
+        "- Your current working directory IS the mounted workspace — write all "
+        "generated artifacts (playbooks, roles, keys, kubeconfig, downloads) "
+        "there or under `/tmp`. Both are writable; `$HOME` is writable too.\n"
+        "- There is NO `/workspace` directory. Do not hardcode it. Use relative "
+        "paths from the working directory, or `/tmp`.\n"
+        "- Create destination directories before writing into them "
+        "(`ansible.builtin.file` with `state: directory`). This also prevents "
+        "check-mode failures when a parent dir does not yet exist.\n"
     )
 
 
@@ -666,6 +676,22 @@ async def prepare_ee_workspace(ws: Path) -> str | None:
     return await sync_to_remote(ws)
 
 
+def container_user_spec() -> str | None:
+    """Container ``--user`` value used for EE runs.
+
+    Runs as the host uid (so files written to the mounted workspace stay owned
+    by the host user) with gid 0. The EE image is arbitrary-UID safe: its
+    entrypoint registers the runtime uid in /etc/passwd and HOME/passwd are
+    group-0 writable, so an unknown uid in group 0 works correctly. Returns
+    ``None`` on platforms without uid semantics (Windows), where the image's
+    default user is used instead.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    return f"{getuid()}:0"
+
+
 def apply_ee_kwargs(
     runner_kwargs: dict[str, Any],
     ws: Path,
@@ -687,6 +713,12 @@ def apply_ee_kwargs(
         ws,
         remote_ws=ctx.remote_workspace,
     )
+
+    user_spec = container_user_spec()
+    if user_spec is not None:
+        existing_opts = list(runner_kwargs.get("container_options") or [])
+        existing_opts.extend(["--user", user_spec])
+        runner_kwargs["container_options"] = existing_opts
 
     if run_dir is not None and ctx.remote_workspace:
         runner_kwargs["private_data_dir"] = str(
@@ -978,7 +1010,9 @@ async def ee_exec(
 
     runtime_name = normalize_container_runtime()
     if runtime_name == "docker":
-        container_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        user_spec = container_user_spec()
+        if user_spec is not None:
+            container_cmd.extend(["--user", user_spec])
 
     if extra_run_args:
         container_cmd.extend(extra_run_args)
@@ -1084,7 +1118,9 @@ async def build_interactive_shell_argv(
 
     argv: list[str] = [binary, "run", "--rm", "-i", "-t"]
     if normalize_container_runtime() == "docker" and not is_remote_mode():
-        argv.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        user_spec = container_user_spec()
+        if user_spec is not None:
+            argv.extend(["--user", user_spec])
 
     for mount in build_volume_mounts(ws, remote_ws=remote_ws):
         argv.extend(["-v", mount])
