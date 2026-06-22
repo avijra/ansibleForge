@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
-from ansible_forge.agent.llm_client import _patch_deepseek_reasoning
+from ansible_forge.agent.llm_client import LLMClient, _patch_deepseek_reasoning
+from ansible_forge.config import APPROVED_MODEL_IDS, APPROVED_MODELS
+
+
+class TestZaiGlmProvider:
+    def test_glm_is_an_approved_model(self) -> None:
+        glm = next((m for m in APPROVED_MODELS if m["model"] == "zai/glm-5.2"), None)
+        assert glm is not None
+        assert glm["provider"] == "zai"
+        assert "zai/glm-5.2" in APPROVED_MODEL_IDS
+
+    def test_zai_provider_env_key_mapping(self) -> None:
+        assert LLMClient._provider_env_key("zai") == "ZAI_API_KEY"
+        assert LLMClient._provider_env_key("ZAI") == "ZAI_API_KEY"
 
 
 class TestPatchDeepseekReasoning:

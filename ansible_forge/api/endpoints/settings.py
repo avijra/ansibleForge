@@ -77,7 +77,9 @@ async def get_llm_settings(
     is_overridden = bool(rt.model or rt.provider)
 
     has_runtime_key = rt.api_key is not None
-    has_env_key = bool(settings.openai_api_key or settings.anthropic_api_key)
+    has_env_key = bool(
+        settings.openai_api_key or settings.anthropic_api_key or settings.zai_api_key
+    )
     active_model = effective_llm_model()
 
     return LLMSettingsResponse(

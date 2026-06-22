@@ -52,6 +52,8 @@ class LLMClient:
             os.environ.setdefault("OPENAI_API_KEY", self._settings.openai_api_key)
         if self._settings.anthropic_api_key:
             os.environ.setdefault("ANTHROPIC_API_KEY", self._settings.anthropic_api_key)
+        if self._settings.zai_api_key:
+            os.environ.setdefault("ZAI_API_KEY", self._settings.zai_api_key)
         if self._settings.ollama_base_url:
             os.environ.setdefault("OLLAMA_API_BASE", self._settings.ollama_base_url)
 
@@ -75,6 +77,7 @@ class LLMClient:
             "cohere": "COHERE_API_KEY",
             "google": "GEMINI_API_KEY",
             "deepseek": "DEEPSEEK_API_KEY",
+            "zai": "ZAI_API_KEY",
             "together_ai": "TOGETHERAI_API_KEY",
             "fireworks_ai": "FIREWORKS_AI_API_KEY",
             "perplexity": "PERPLEXITYAI_API_KEY",

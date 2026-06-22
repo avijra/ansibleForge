@@ -60,6 +60,7 @@ def _check_llm_key_configured() -> tuple[str, str]:
         "openai": os.environ.get("OPENAI_API_KEY") or settings.openai_api_key,
         "anthropic": os.environ.get("ANTHROPIC_API_KEY") or settings.anthropic_api_key,
         "deepseek": os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or settings.openai_api_key,
+        "zai": os.environ.get("ZAI_API_KEY") or settings.zai_api_key,
         "ollama": "local",
     }
 

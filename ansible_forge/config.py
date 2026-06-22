@@ -33,6 +33,13 @@ APPROVED_MODELS: list[dict[str, str]] = [
         "description": "Cheapest — fast, good for simpler tasks, self-hostable",
     },
     {
+        "provider": "zai",
+        "model": "zai/glm-5.2",
+        "label": "GLM-5.2 (Z.AI)",
+        "tier": "$$",
+        "description": "Z.AI flagship — 1M context, strong long-horizon coding & tool calling",
+    },
+    {
         "provider": "openai",
         "model": "openai/gpt-4.1",
         "label": "GPT-4.1",
@@ -119,6 +126,7 @@ class Settings(BaseSettings):
     # Provider keys read without prefix so LiteLLM picks them up too
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    zai_api_key: str | None = Field(default=None, alias="ZAI_API_KEY")
 
     # ── Agent ──────────────────────────────────────────────────────
     max_agent_steps: int = 200
