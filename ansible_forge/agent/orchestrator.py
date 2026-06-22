@@ -757,6 +757,40 @@ class Orchestrator:
             "Read the results, then fix the specific broken task."
         )
 
+    async def _auto_fix_missing_deps(
+        self, state: SessionState, tool_name: str, result: ToolResult
+    ) -> tuple[bool, str]:
+        """Install Python packages a failed execution tool reported as missing.
+
+        In EE mode the packages are installed INTO the container (workspace
+        site-packages on the container PYTHONPATH) so the in-container Python
+        that runs Ansible modules can import them. In host mode they go to the
+        managed host site-packages. Returns (installed, comma-joined packages).
+        """
+        from ansible_forge.dep_manager import guess_pip_packages, parse_missing_modules
+
+        missing = parse_missing_modules(result.error or "")
+        if not missing and result.data:
+            missing = parse_missing_modules(str(result.data.get("raw_stdout", "")))
+        if not missing:
+            return False, ""
+
+        pkgs = guess_pip_packages(missing)
+        if not pkgs:
+            return False, ""
+
+        from ansible_forge.tools.ee_runtime import is_ee_enabled
+
+        if is_ee_enabled():
+            from ansible_forge.tools.ee_runtime import ee_pip_install
+
+            ok, _msg = await ee_pip_install(pkgs, state.workspace.path)
+        else:
+            from ansible_forge.dep_manager import ensure_packages
+
+            ok, _msg = await ensure_packages(pkgs, reason=f"auto-fix for {tool_name}")
+        return (ok, ", ".join(pkgs)) if ok else (False, "")
+
     _MAX_USER_RULES_CHARS = 2000
 
     @staticmethod
@@ -1778,35 +1812,21 @@ class Orchestrator:
 
                         if result.status == ToolStatus.ERROR:
                             if tc.name in self._EXECUTION_TOOLS:
-                                from ansible_forge.dep_manager import (
-                                    ensure_packages,
-                                    guess_pip_packages,
-                                    parse_missing_modules,
+                                _fixed, _pkg_list = await self._auto_fix_missing_deps(
+                                    state, tc.name, result
                                 )
-
-                                _missing = parse_missing_modules(result.error or "")
-                                if not _missing and result.data:
-                                    _missing = parse_missing_modules(
-                                        str(result.data.get("raw_stdout", ""))
+                                if state._generation != my_generation:
+                                    return
+                                if _fixed:
+                                    deferred_user_msgs_p.append(
+                                        f"Missing Python packages ({_pkg_list}) were auto-installed. "
+                                        f"Retry the same action now."
                                     )
-                                if _missing:
-                                    _pkgs = guess_pip_packages(_missing)
-                                    _ok, _msg = await ensure_packages(
-                                        _pkgs, reason=f"auto-fix for {tc.name}"
-                                    )
-                                    if state._generation != my_generation:
-                                        return
-                                    if _ok:
-                                        _pkg_list = ", ".join(_pkgs)
-                                        deferred_user_msgs_p.append(
-                                            f"Missing Python packages ({_pkg_list}) were auto-installed. "
-                                            f"Retry the same action now."
-                                        )
-                                        deferred_events_p.append(AgentEvent("progress", {
-                                            "tool": "dep_manager",
-                                            "message": f"Auto-installed {_pkg_list}",
-                                        }))
-                                        continue
+                                    deferred_events_p.append(AgentEvent("progress", {
+                                        "tool": "dep_manager",
+                                        "message": f"Auto-installed {_pkg_list}",
+                                    }))
+                                    continue
 
                             state._consecutive_errors += 1
                             state.last_error = result.error
@@ -2633,35 +2653,20 @@ class Orchestrator:
                     if result.status == ToolStatus.ERROR:
                         _auto_fixed = False
                         if tc.name in self._EXECUTION_TOOLS:
-                            from ansible_forge.dep_manager import (
-                                ensure_packages,
-                                guess_pip_packages,
-                                parse_missing_modules,
+                            _auto_fixed, _pkg_list = await self._auto_fix_missing_deps(
+                                state, tc.name, result
                             )
-
-                            _missing = parse_missing_modules(result.error or "")
-                            if not _missing and result.data:
-                                _missing = parse_missing_modules(
-                                    str(result.data.get("raw_stdout", ""))
+                            if state._generation != my_generation:
+                                return
+                            if _auto_fixed:
+                                deferred_user_msgs.append(
+                                    f"Missing Python packages ({_pkg_list}) were auto-installed. "
+                                    f"Retry the same action now."
                                 )
-                            if _missing:
-                                _pkgs = guess_pip_packages(_missing)
-                                _ok, _msg = await ensure_packages(
-                                    _pkgs, reason=f"auto-fix for {tc.name}"
-                                )
-                                if state._generation != my_generation:
-                                    return
-                                if _ok:
-                                    _pkg_list = ", ".join(_pkgs)
-                                    deferred_user_msgs.append(
-                                        f"Missing Python packages ({_pkg_list}) were auto-installed. "
-                                        f"Retry the same action now."
-                                    )
-                                    deferred_events.append(AgentEvent("progress", {
-                                        "tool": "dep_manager",
-                                        "message": f"Auto-installed {_pkg_list}",
-                                    }))
-                                    _auto_fixed = True
+                                deferred_events.append(AgentEvent("progress", {
+                                    "tool": "dep_manager",
+                                    "message": f"Auto-installed {_pkg_list}",
+                                }))
 
                         if not _auto_fixed:
                             state._consecutive_errors += 1

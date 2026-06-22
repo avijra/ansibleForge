@@ -185,7 +185,17 @@ class GalaxyManager(BaseTool):
         from ansible_forge.tools.ee_runtime import is_ee_enabled
 
         extra = ""
-        if not is_ee_enabled():
+        if is_ee_enabled():
+            from pathlib import Path
+
+            from ansible_forge.dep_manager import collection_pip_deps
+            from ansible_forge.tools.ee_runtime import ee_pip_install
+
+            deps = collection_pip_deps(collection_name)
+            if deps and workspace_path:
+                _dep_ok, dep_msg = await ee_pip_install(deps, Path(workspace_path))
+                extra = f"\n{dep_msg}" if dep_msg else ""
+        else:
             from ansible_forge.dep_manager import ensure_collection_deps
 
             _dep_ok, dep_msg = await ensure_collection_deps(collection_name)
@@ -317,26 +327,44 @@ class GalaxyManager(BaseTool):
             )
 
         # Auto-install Python SDK dependencies for collections in requirements.yml.
-        # In EE mode the container ships these SDKs; host installs are skipped.
+        # In EE mode the SDKs are installed INTO the container (workspace
+        # site-packages on the container PYTHONPATH); on the host they go to the
+        # managed host site-packages.
         from ansible_forge.tools.ee_runtime import is_ee_enabled
 
         dep_msgs: list[str] = []
-        if not is_ee_enabled():
-            try:
-                import yaml as _yaml
+        try:
+            import yaml as _yaml
 
-                req_data = _yaml.safe_load(req_path.read_text(encoding="utf-8"))
-                collections_list = req_data.get("collections", []) if isinstance(req_data, dict) else []
+            req_data = _yaml.safe_load(req_path.read_text(encoding="utf-8"))
+            collections_list = req_data.get("collections", []) if isinstance(req_data, dict) else []
+            names = [
+                (entry.get("name", "") if isinstance(entry, dict) else str(entry))
+                for entry in collections_list
+            ]
+            names = [n for n in names if n]
+
+            if is_ee_enabled():
+                from ansible_forge.dep_manager import collection_pip_deps
+                from ansible_forge.tools.ee_runtime import ee_pip_install
+
+                deps: list[str] = []
+                for name in names:
+                    deps.extend(collection_pip_deps(name))
+                unique = list(dict.fromkeys(deps))
+                if unique:
+                    _, msg = await ee_pip_install(unique, Path(workspace_path))
+                    if msg:
+                        dep_msgs.append(msg)
+            else:
                 from ansible_forge.dep_manager import ensure_collection_deps
 
-                for entry in collections_list:
-                    name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
-                    if name:
-                        _, msg = await ensure_collection_deps(name)
-                        if msg:
-                            dep_msgs.append(msg)
-            except Exception:
-                pass  # Don't fail the install if dep resolution has issues
+                for name in names:
+                    _, msg = await ensure_collection_deps(name)
+                    if msg:
+                        dep_msgs.append(msg)
+        except Exception:
+            pass  # Don't fail the install if dep resolution has issues
 
         dep_extra = (" " + "; ".join(dep_msgs)) if dep_msgs else ""
         return ToolResult.ok(

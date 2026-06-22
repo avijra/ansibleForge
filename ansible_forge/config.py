@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ansible_forge import __version__
+
 APPROVED_MODELS: list[dict[str, str]] = [
     {
         "provider": "anthropic",
@@ -145,7 +147,11 @@ class Settings(BaseSettings):
 
     # ── Execution Environment ─────────────────────────────────────
     ee_enabled: bool = False
-    ee_image: str = "avijra28/tuyere-ee:latest"
+    # Pin to the image built and tested for THIS app version (the EE image CI
+    # publishes both :<version> and :latest on every release tag). Pinning to
+    # the version tag — not the mutable :latest — keeps a given app release
+    # reproducible and free of silent collection/SDK/ansible-core version drift.
+    ee_image: str = f"avijra28/tuyere-ee:{__version__}"
     ee_container_runtime: str = "docker"
     ee_host_mode: str = "local"
     ee_remote_host: str | None = None

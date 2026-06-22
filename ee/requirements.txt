@@ -54,6 +54,9 @@ proxmoxer
 requests
 httpx
 
+# Virtualization (community.libvirt) — needs libvirt-devel headers at build time
+libvirt-python
+
 # Cloud providers
 pydo
 hcloud

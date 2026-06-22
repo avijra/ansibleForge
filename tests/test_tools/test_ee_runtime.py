@@ -104,6 +104,22 @@ class TestEERuntimeHelpers:
         assert (ws / ".tuyere" / "ee-home" / ".ansible" / "tmp").is_dir()
         assert (ws / ".tuyere" / "tmp" / "ansible").is_dir()
 
+    def test_apply_ee_kwargs_sets_pythonpath_to_site_packages(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "get_container_runtime", lambda: "docker")
+        monkeypatch.setattr(ee_runtime, "get_ee_image", lambda: "avijra28/tuyere-ee:latest")
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        ws = tmp_path / "project"
+        ws.mkdir()
+        kwargs = ee_runtime.apply_ee_kwargs({"envvars": {"PYTHONPATH": "/host/junk"}}, ws)
+        env = kwargs["envvars"]
+        assert env["PYTHONPATH"] == str(ws / ".ansible" / "site-packages")
+        assert (ws / ".ansible" / "site-packages").is_dir()
+
     def test_apply_ee_kwargs_remote_uses_remote_workspace_paths(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -729,3 +745,57 @@ class TestExecutionSettingsEndpoints:
         assert response.status_code == 200
         assert "image_pull_status" in response.json()
         await async_client.delete("/api/v1/settings/execution")
+
+
+class TestEEPipInstall:
+    """In-container pip install used to auto-fix missing SDKs inside the EE."""
+
+    @pytest.mark.asyncio
+    async def test_installs_into_container_site_packages(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        mock_exec = AsyncMock(return_value=(0, "Successfully installed boto3", ""))
+        monkeypatch.setattr(ee_runtime, "ee_exec", mock_exec)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        ok, msg = await ee_runtime.ee_pip_install(["boto3"], ws)
+
+        assert ok
+        cmd = mock_exec.call_args[0][0]
+        assert cmd[:5] == ["python3", "-m", "pip", "install", "--no-cache-dir"]
+        target = cmd[cmd.index("--target") + 1]
+        assert target == str(ws / ".ansible" / "site-packages")
+        assert "boto3" in cmd
+
+    @pytest.mark.asyncio
+    async def test_skips_already_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: True)
+        monkeypatch.setattr(ee_runtime, "is_remote_mode", lambda: False)
+        mock_exec = AsyncMock()
+        monkeypatch.setattr(ee_runtime, "ee_exec", mock_exec)
+        ws = tmp_path / "ws"
+        (ws / ".ansible" / "site-packages" / "boto3").mkdir(parents=True)
+
+        ok, _msg = await ee_runtime.ee_pip_install(["boto3"], ws)
+
+        assert ok
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(ee_runtime, "is_ee_enabled", lambda: False)
+        ok, _msg = await ee_runtime.ee_pip_install(["boto3"], tmp_path)
+        assert not ok
+
+    @pytest.mark.asyncio
+    async def test_empty_is_noop(self, tmp_path: Path) -> None:
+        ok, msg = await ee_runtime.ee_pip_install([], tmp_path)
+        assert ok
+        assert msg == ""

@@ -342,6 +342,7 @@ def ensure_ee_workspace_dirs(ws: Path) -> None:
         ".tuyere/ee-home/.ansible/tmp",
         ".tuyere/tmp/ansible",
         ".ansible/collections",
+        ".ansible/site-packages",
     ):
         (ws / rel).mkdir(parents=True, exist_ok=True)
 
@@ -392,15 +393,27 @@ def stage_runner_inventory(run_dir: Path, inventory_path: Path) -> None:
         dest.symlink_to(inventory_path.resolve())
 
 
+def ee_site_packages_dir(ws: Path) -> Path:
+    """Workspace directory holding pip packages installed into the EE at runtime.
+
+    Bind-mounted into the container and placed on the container PYTHONPATH, so
+    packages installed here persist across ``docker run --rm`` and are
+    importable by the in-container Python that runs Ansible modules.
+    """
+    return ws / ".ansible" / "site-packages"
+
+
 def _inject_ee_ansible_paths(envvars: dict[str, str], ctx: EEContext) -> None:
     local_collections = ctx.workspace / ".ansible" / "collections"
     local_collections.mkdir(parents=True, exist_ok=True)
+    ee_site_packages_dir(ctx.workspace).mkdir(parents=True, exist_ok=True)
     collections = ctx.effective_root / ".ansible" / "collections"
     roles = ctx.effective_root / "roles"
     envvars["ANSIBLE_COLLECTIONS_PATH"] = (
         f"{collections}:/usr/share/ansible/collections"
     )
     envvars["ANSIBLE_ROLES_PATH"] = str(roles)
+    envvars["PYTHONPATH"] = str(ee_site_packages_dir(ctx.effective_root))
 
 
 async def configure_ee_runner(
@@ -1029,6 +1042,9 @@ async def ee_exec(
     if mount_ws:
         ensure_ee_workspace_dirs(Path(mount_ws))
         container_env.update(ee_bootstrap_env(Path(mount_ws), remote_ws))
+        container_env["PYTHONPATH"] = str(
+            ee_site_packages_dir(_effective_ws_path(Path(mount_ws), remote_ws))
+        )
     container_env.update(_ee_locale_env())
     if env:
         container_env.update(_sanitize_ee_exec_env(env))
@@ -1092,6 +1108,50 @@ async def ee_exec(
         stdout_b.decode(errors="replace"),
         stderr_b.decode(errors="replace"),
     )
+
+
+async def ee_pip_install(
+    packages: list[str], ws: Path, timeout: int = 900
+) -> tuple[bool, str]:
+    """Install pip packages INTO the EE container, visible to in-container Python.
+
+    Packages are installed with ``pip install --target`` into the
+    workspace-mounted ``.ansible/site-packages`` directory, which is on the
+    container PYTHONPATH. They persist across ``docker run --rm`` and are
+    importable by the in-container Python that runs Ansible modules on the
+    controller. Wheels are built inside the container, so they match the
+    container architecture (not the host's).
+    """
+    if not packages:
+        return True, ""
+    if not is_ee_enabled():
+        return False, "Execution environment is not enabled"
+
+    from ansible_forge.dep_manager import package_present
+
+    ensure_ee_workspace_dirs(ws)
+    needed = [p for p in packages if not package_present(ee_site_packages_dir(ws), p)]
+    if not needed:
+        return True, ""
+
+    ctx = build_ee_context(ws)
+    cmd = [
+        "python3",
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        "--target",
+        str(ee_site_packages_dir(ctx.effective_root)),
+        *needed,
+    ]
+    rc, stdout, stderr = await ee_exec(cmd, ws=ws, timeout=timeout)
+    if rc != 0:
+        detail = (stderr or stdout or "").strip()[:500]
+        logger.warning("ee_pip_install_failed", packages=needed, detail=detail)
+        return False, f"Failed to install {needed} in the execution environment: {detail}"
+    logger.info("ee_pip_install_ok", packages=needed)
+    return True, f"Installed in execution environment: {', '.join(needed)}"
 
 
 async def build_interactive_shell_argv(

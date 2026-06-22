@@ -207,3 +207,80 @@ class TestFalseCompletionGuard:
         assert state._false_completion_rejects == 1
         Orchestrator._check_false_completion(state)
         assert state._false_completion_rejects == 2
+
+
+def _exec_error(error: str):
+    return SimpleNamespace(error=error, data=None)
+
+
+class TestAutoFixMissingDeps:
+    """The missing-dependency auto-fix must target the EE in EE mode (not host)."""
+
+    @pytest.mark.asyncio
+    async def test_routes_to_ee_install_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        import ansible_forge.tools.ee_runtime as ee
+
+        monkeypatch.setattr(ee, "is_ee_enabled", lambda: True)
+        captured: dict = {}
+
+        async def fake_ee_pip(pkgs, ws, timeout=900):
+            captured["pkgs"] = pkgs
+            return True, "ok"
+
+        monkeypatch.setattr(ee, "ee_pip_install", fake_ee_pip)
+
+        ws = MagicMock()
+        ws.path = tmp_path
+        state = SessionState("s", ws)
+        result = _exec_error("ModuleNotFoundError: No module named 'boto3'")
+
+        fixed, pkg_list = await Orchestrator._auto_fix_missing_deps(
+            SimpleNamespace(), state, "execute_playbook", result
+        )
+        assert fixed
+        assert "boto3" in pkg_list
+        assert captured["pkgs"] == ["boto3"]
+
+    @pytest.mark.asyncio
+    async def test_routes_to_host_install_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        import ansible_forge.dep_manager as dm
+        import ansible_forge.tools.ee_runtime as ee
+
+        monkeypatch.setattr(ee, "is_ee_enabled", lambda: False)
+        captured: dict = {}
+
+        async def fake_ensure(pkgs, reason=""):
+            captured["pkgs"] = pkgs
+            return True, "ok"
+
+        monkeypatch.setattr(dm, "ensure_packages", fake_ensure)
+
+        ws = MagicMock()
+        ws.path = tmp_path
+        state = SessionState("s", ws)
+        result = _exec_error("ModuleNotFoundError: No module named 'kubernetes'")
+
+        fixed, pkg_list = await Orchestrator._auto_fix_missing_deps(
+            SimpleNamespace(), state, "execute_playbook", result
+        )
+        assert fixed
+        assert captured["pkgs"] == ["kubernetes"]
+
+    @pytest.mark.asyncio
+    async def test_no_missing_module_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        ws = MagicMock()
+        ws.path = tmp_path
+        state = SessionState("s", ws)
+        result = _exec_error("Connection refused")
+
+        fixed, pkg_list = await Orchestrator._auto_fix_missing_deps(
+            SimpleNamespace(), state, "execute_playbook", result
+        )
+        assert not fixed
+        assert pkg_list == ""

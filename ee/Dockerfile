@@ -6,7 +6,9 @@ ENV PIP_ROOT_USER_ACTION=ignore
 # community.general, ...) need ansible-core >= 2.17, which in turn requires Python
 # >= 3.11. CentOS Stream 9's default python3 (3.9) caps ansible-core at 2.15 and
 # breaks current collections.
-RUN dnf install -y --allowerasing \
+# libvirt-devel (needed to build libvirt-python for community.libvirt) lives in
+# the CRB repo, which is disabled by default on CentOS Stream 9.
+RUN dnf install -y --allowerasing --enablerepo=crb \
     python3.12 \
     python3.12-pip \
     python3.12-devel \
@@ -24,6 +26,7 @@ RUN dnf install -y --allowerasing \
     gcc \
     libffi-devel \
     openssl-devel \
+    libvirt-devel \
     glibc-langpack-en \
   && dnf clean all
 

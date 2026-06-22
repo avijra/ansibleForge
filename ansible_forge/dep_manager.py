@@ -66,6 +66,7 @@ COLLECTION_DEPS: dict[str, list[str]] = {
     # Kubernetes / OpenShift
     "kubernetes.core": ["kubernetes", "jsonpatch"],
     "redhat.openshift": ["kubernetes", "openshift-client"],
+    "community.okd": ["kubernetes", "openshift-client"],
     # VMware
     "community.vmware": ["pyvmomi", "requests"],
     "vmware.vmware": ["pyvmomi", "requests"],
@@ -83,8 +84,9 @@ COLLECTION_DEPS: dict[str, list[str]] = {
     "cisco.iosxr": ["paramiko", "ncclient", "xmltodict"],
     "cisco.aci": ["requests"],
     "cisco.meraki": ["meraki"],
-    # F5
-    "f5networks.f5_modules": ["f5-sdk"],
+    # F5 — modern f5networks.f5_modules use the iControl REST API directly and
+    # do not require the deprecated f5-sdk (which does not install on Python 3.12).
+    "f5networks.f5_modules": [],
     # Fortinet
     "fortinet.fortios": ["requests"],
     "fortinet.fortimanager": ["requests"],
@@ -376,6 +378,15 @@ def _standalone_site_packages() -> Path | None:
     return None
 
 
+def package_present(directory: Path, package: str) -> bool:
+    """Return True if ``package`` is already installed in ``directory``.
+
+    Used to skip redundant in-EE installs into the workspace site-packages dir.
+    """
+    normalized = package.lower().replace("-", "_").replace(".", "_")
+    return _dir_has_package(directory, normalized)
+
+
 def _is_package_installed(package: str) -> bool:
     """Check if a package is already installed (managed site-packages or standalone Python)."""
     normalized = package.lower().replace("-", "_").replace(".", "_")
@@ -525,6 +536,14 @@ def _scan_yaml_for_collections(path: Path, out: set[str]) -> None:
         candidate = match.group(1)
         if candidate in COLLECTION_DEPS:
             out.add(candidate)
+
+
+def collection_pip_deps(collection_name: str) -> list[str]:
+    """Return the pip packages an Ansible collection needs (empty if unknown)."""
+    deps = COLLECTION_DEPS.get(collection_name)
+    if deps is None:
+        deps = COLLECTION_DEPS.get(collection_name.split(":")[0].strip())
+    return list(deps) if deps else []
 
 
 async def ensure_collection_deps(collection_name: str) -> tuple[bool, str]:

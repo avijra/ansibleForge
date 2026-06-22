@@ -1,6 +1,6 @@
 [project]
 name = "ansible-forge"
-version = "11.2.1"
+version = "11.3.0"
 description = "The definitive AI agent harness for Ansible — generate, validate, execute, and manage any Ansible workflow through natural language."
 readme = "README.md"
 license = { text = "MIT" }

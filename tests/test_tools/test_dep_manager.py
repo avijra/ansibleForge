@@ -11,9 +11,11 @@ from ansible_forge.dep_manager import (
     _MODULE_TO_PIP,
     COLLECTION_DEPS,
     _is_package_installed,
+    collection_pip_deps,
     ensure_collection_deps,
     ensure_packages,
     guess_pip_package,
+    package_present,
     parse_missing_module,
 )
 
@@ -54,6 +56,43 @@ class TestCollectionDepsMapping:
 
     def test_mapping_has_at_least_30_collections(self):
         assert len(COLLECTION_DEPS) >= 30
+
+
+class TestCollectionPipDeps:
+    """Test collection_pip_deps lookup used by the EE in-container installer."""
+
+    def test_known_collection(self):
+        assert "boto3" in collection_pip_deps("amazon.aws")
+
+    def test_versioned_name(self):
+        assert "kubernetes" in collection_pip_deps("kubernetes.core:5.0.0")
+
+    def test_unknown_returns_empty(self):
+        assert collection_pip_deps("unknown.xyz") == []
+
+    def test_f5_has_no_broken_sdk(self):
+        # f5-sdk does not install on Python 3.12 and is not needed by the
+        # modern REST-based f5networks.f5_modules.
+        assert collection_pip_deps("f5networks.f5_modules") == []
+        assert "f5-sdk" not in COLLECTION_DEPS["f5networks.f5_modules"]
+
+
+class TestPackagePresent:
+    """Test package_present directory probe."""
+
+    def test_absent(self, tmp_path: Path):
+        assert not package_present(tmp_path, "boto3")
+
+    def test_present_as_dir(self, tmp_path: Path):
+        (tmp_path / "boto3").mkdir()
+        assert package_present(tmp_path, "boto3")
+
+    def test_present_normalized(self, tmp_path: Path):
+        (tmp_path / "azure_identity").mkdir()
+        assert package_present(tmp_path, "azure-identity")
+
+    def test_missing_dir(self):
+        assert not package_present(Path("/nonexistent/xyz"), "boto3")
 
 
 class TestModuleToPipMapping:
